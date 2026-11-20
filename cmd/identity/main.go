@@ -107,8 +107,13 @@ func runRotate(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "rotation failed: %v\n", err)
 		return 1
 	}
-	_, _ = fmt.Fprintln(stdout, "All signing keys were replaced. The service makes the new key active at the next start.")
+	_, _ = fmt.Fprintln(stdout, rotatedMessage)
 	return 0
 }
+
+// rotatedMessage is the output of a successful rotate-signing-keys --force.
+const rotatedMessage = "All signing keys were replaced. The new key is active. " +
+	"A running service uses it after the next cache reload. " +
+	"A verifier with a cached JWKS can reject new tokens for up to about 15 minutes."
 
 var errNoAdminPort = errors.New("the admin address has no port")

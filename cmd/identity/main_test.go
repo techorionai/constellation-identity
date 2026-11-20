@@ -60,6 +60,18 @@ func TestU14_RotateWithoutForce(t *testing.T) {
 	}
 }
 
+// R1: the output says that the new key is active at once.
+func TestRotatedMessage(t *testing.T) {
+	if strings.Contains(rotatedMessage, "next start") {
+		t.Fatalf("message = %q", rotatedMessage)
+	}
+	for _, want := range []string{"The new key is active", "cache reload"} {
+		if !strings.Contains(rotatedMessage, want) {
+			t.Fatalf("message %q does not have %q", rotatedMessage, want)
+		}
+	}
+}
+
 func TestUnknownCommand(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if got := run([]string{"nope"}, &out, &errOut); got != 2 {
