@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/techorionai/constellation-platform-go/executor"
 	"go.opentelemetry.io/otel"
@@ -258,11 +259,16 @@ func (c *IssueServiceTokenCommand) issue(ctx context.Context, in IssueServiceTok
 	return res, nil
 }
 
+// truncate cuts s to at most n bytes at a character boundary. The result is
+// valid UTF-8, because a log field must not have a part of a character.
 func truncate(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
+	if len(s) <= n {
+		return s
 	}
-	return s
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return strings.ToValidUTF8(s[:n], "")
 }
 
 // newUUID returns a random UUID (version 4).

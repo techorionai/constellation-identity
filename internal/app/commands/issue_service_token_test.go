@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	gojose "github.com/go-jose/go-jose/v4"
 
@@ -548,5 +549,25 @@ func TestIssue2_U13_FailureLog(t *testing.T) {
 	}
 	if !strings.Contains(logText, "client.id_unverified=helpdesk") {
 		t.Fatalf("the log has no unverified client ID:\n%s", logText)
+	}
+}
+
+// Issue2_U10m: the log field of an unverified client ID is cut at a character
+// boundary. The value is valid UTF-8.
+func TestIssue2_U10m_LogTruncatesAtCharacter(t *testing.T) {
+	f := newFixture(t)
+	// 63 ASCII bytes, then a 3-byte character, so byte 64 is inside it.
+	sub := strings.Repeat("a", 63) + "\u20ac"
+	in := request(f.assertion(t, func(c map[string]any) { c["sub"] = sub }))
+	if _, err := f.cmd.Execute(context.Background(), in); oauthCode(t, err) != "invalid_client" {
+		t.Fatalf("error = %v", err)
+	}
+	logText := f.log.String()
+	if !utf8.ValidString(logText) {
+		t.Fatalf("the log has invalid UTF-8: %q", logText)
+	}
+	want := "client.id_unverified=" + strings.Repeat("a", 63)
+	if !strings.Contains(logText, want+"\n") && !strings.Contains(logText, want+" ") {
+		t.Fatalf("the log field is not cut at the character:\n%s", logText)
 	}
 }
