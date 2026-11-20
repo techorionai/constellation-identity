@@ -1,0 +1,138 @@
+version: "2"
+
+run:
+  # Lint the integration test files too.
+  build-tags:
+    - integration
+
+linters:
+  default: standard
+  enable:
+    - misspell
+    - depguard
+    - gosec
+    - errorlint
+    - bodyclose
+    - noctx
+  exclusions:
+    generated: lax
+  settings:
+    depguard:
+      rules:
+        # The domain imports the standard library only.
+        domain-stdlib-only:
+          list-mode: strict
+          files:
+            - "**/internal/domain/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+        # A port imports the domain only.
+        ports-domain-only:
+          files:
+            - "**/internal/ports/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/techorionai/constellation-identity/internal/app
+              desc: A port must not import the application layer.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters
+              desc: A port must not import an adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/handlers
+              desc: A port must not import a handler.
+            - pkg: github.com/techorionai/constellation-identity/internal/services
+              desc: A port must not import the composition root.
+        # The application layer imports ports and the domain. It uses no driver.
+        app-ports-domain:
+          files:
+            - "**/internal/app/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters
+              desc: The application layer must not import an adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/handlers
+              desc: The application layer must not import a handler.
+            - pkg: github.com/techorionai/constellation-identity/internal/services
+              desc: The application layer must not import the composition root.
+            - pkg: github.com/jackc/pgx
+              desc: The application layer must not import a PostgreSQL driver.
+            - pkg: github.com/valkey-io/valkey-go
+              desc: The application layer must not import a Valkey driver.
+            - pkg: net/http
+              desc: The application layer must not import net/http.
+        # An adapter does not import the application layer, a handler, the
+        # composition root, or another adapter.
+        adapter-postgres:
+          files:
+            - "**/internal/adapters/postgres/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/techorionai/constellation-identity/internal/app
+              desc: An adapter must not import the application layer.
+            - pkg: github.com/techorionai/constellation-identity/internal/handlers
+              desc: An adapter must not import a handler.
+            - pkg: github.com/techorionai/constellation-identity/internal/services
+              desc: An adapter must not import the composition root.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/secrets
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/jose
+              desc: An adapter must not import another adapter.
+        adapter-secrets:
+          files:
+            - "**/internal/adapters/secrets/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/techorionai/constellation-identity/internal/app
+              desc: An adapter must not import the application layer.
+            - pkg: github.com/techorionai/constellation-identity/internal/handlers
+              desc: An adapter must not import a handler.
+            - pkg: github.com/techorionai/constellation-identity/internal/services
+              desc: An adapter must not import the composition root.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/postgres
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/jose
+              desc: An adapter must not import another adapter.
+        adapter-jose:
+          files:
+            - "**/internal/adapters/jose/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/techorionai/constellation-identity/internal/app
+              desc: An adapter must not import the application layer.
+            - pkg: github.com/techorionai/constellation-identity/internal/handlers
+              desc: An adapter must not import a handler.
+            - pkg: github.com/techorionai/constellation-identity/internal/services
+              desc: An adapter must not import the composition root.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/postgres
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/secrets
+              desc: An adapter must not import another adapter.
+        # A handler is a primary adapter. It calls the application layer only.
+        handlers-app-only:
+          files:
+            - "**/internal/handlers/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters
+              desc: A handler must not import an adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/services
+              desc: A handler must not import the composition root.
+            - pkg: github.com/jackc/pgx
+              desc: A handler must not import a PostgreSQL driver.
+        # Only the generated client of platform-go and the generated server import
+        # the runtime packages of oapi-codegen.
+        # Production code does not import the test helpers.
+        no-test-helpers-in-production:
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/resources/test/**"
+          deny:
+            - pkg: github.com/techorionai/constellation-identity/resources/test
+              desc: Only test code can import the test helpers.
+            - pkg: github.com/techorionai/constellation-platform-go/resources/test
+              desc: Only test code can import the test helpers.
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
