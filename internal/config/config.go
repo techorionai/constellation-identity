@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	clientpg "github.com/techorionai/constellation-platform-go/clients/postgres"
 	clientvk "github.com/techorionai/constellation-platform-go/clients/valkey"
@@ -24,7 +26,10 @@ const Prefix = "IDENTITY_"
 
 // Minimum values of the key settings.
 const (
-	MinPublishDelay = 10 * time.Minute
+	// MinPublishDelay is more than the refresh interval of a verifier (10
+	// minutes) plus the key cache reload (1 minute) plus the JWKS max-age (5
+	// minutes).
+	MinPublishDelay = 20 * time.Minute
 	MinRetireAfter  = 30 * time.Minute
 )
 
@@ -97,11 +102,17 @@ func (k Keys) Validate() []error {
 }
 
 // ValidateIssuer checks the issuer URL. It must be absolute, with no query and
-// no fragment. The scheme must be https. The scheme http is accepted only for
+// no fragment, no white space, no trailing slash, and a port from 1 to 65535
+// if it has a port. The scheme must be https. The scheme http is accepted only for
 // localhost, 127.0.0.1, and [::1].
 func ValidateIssuer(s string) error {
 	if s == "" {
 		return errors.New("is required")
+	}
+	for _, r := range s {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return errors.New("must have no white space and no control characters")
+		}
 	}
 	u, err := url.Parse(s)
 	if err != nil {
@@ -115,6 +126,15 @@ func ValidateIssuer(s string) error {
 	}
 	if u.User != nil {
 		return errors.New("must have no user information")
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return errors.New("must have a port from 1 to 65535")
+		}
+	}
+	if strings.HasSuffix(u.Path, "/") {
+		return errors.New("must not end with a slash")
 	}
 	switch u.Scheme {
 	case "https":

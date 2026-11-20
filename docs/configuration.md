@@ -18,7 +18,7 @@ The service reads its settings from environment variables with the prefix `IDENT
 | `IDENTITY_SECRETS__MASTER_KEY_ID` | required | `^[a-z0-9-]{1,32}$` | ID of the master key. |
 | `IDENTITY_SECRETS__PREVIOUS_KEYS` | empty | `<id>:<base64>` items, separated by commas | Old master keys, for master key rotation. |
 | `IDENTITY_KEYS__ROTATION_PERIOD` | `2160h` (90 days) | More than `PUBLISH_DELAY` | Age of the active key before rotation. |
-| `IDENTITY_KEYS__PUBLISH_DELAY` | `1h` | 10 minutes or more | Time that a new key is in the JWKS before it signs. It must be more than the refresh interval of the verifiers (10 minutes in `auth/jwt`). |
+| `IDENTITY_KEYS__PUBLISH_DELAY` | `1h` | 20 minutes or more | Time that a new key is in the JWKS before it signs. It must be more than the refresh interval of the verifiers (10 minutes in `auth/jwt`) plus the key cache reload (1 minute) plus the JWKS `max-age` (5 minutes). |
 | `IDENTITY_KEYS__RETIRE_AFTER` | `24h` | 30 minutes or more | Time that a replaced key stays in the JWKS. It must be more than the longest token life (15 minutes) plus the leeway of the verifiers. |
 | `IDENTITY_CLIENTS_FILE` | empty | | Path of the clients file. Empty means no config clients. |
 
@@ -55,8 +55,9 @@ At each start, under a database lock, the service writes each client of the file
 
 - On the first start, the service makes one active ES256 key.
 - When the active key is older than `ROTATION_PERIOD`, the service makes a `pending` key. The key is in the JWKS at once. It becomes `active` after `PUBLISH_DELAY`.
-- The replaced key becomes `retired`. It stays in the JWKS for `RETIRE_AFTER`, then the service deletes it.
+- The replaced key becomes `retired`. The service deletes its private key at once. Only the public key stays in the JWKS for `RETIRE_AFTER`. Then the service deletes the row.
 - Verifiers refresh the JWKS every 10 minutes. The `PUBLISH_DELAY` gives them time to know the new key before it signs.
+- The first key of a new install and the key after `rotate-signing-keys --force` have no publish delay. The new key signs at once. A verifier with a cached JWKS does not know the key. It can reject new tokens for up to about 15 minutes. This is the refresh interval of the verifier (10 minutes), the cache reload of the service (1 minute), and the JWKS `max-age` (5 minutes). The tokens are valid. No forgery is possible. The verifier accepts them after its next refresh.
 
 ## Recovery after a lost master key
 

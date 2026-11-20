@@ -89,6 +89,9 @@ func TestU8_ClientsFileErrors(t *testing.T) {
 		{"private d", clientYAML("svc", "svc", "", keyYAML("k", jwkYAML(good, `, d: "AAAA"`))), "keys[0].jwk"},
 		{"rsa key", clientYAML("svc", "svc", "", keyYAML("k", rsa)), "keys[0].jwk"},
 		{"duplicate kid", clientYAML("svc", "svc", "", keyYAML("k", jwkYAML(good, "")), keyYAML("k", jwkYAML(good, ""))), "keys[1].kid"},
+		{"n and e in an EC key", clientYAML("svc", "svc", "", keyYAML("k", jwkYAML(good, ", n: AQAB, e: AQAB"))), "keys[0].jwk"},
+		{"alg HS256", clientYAML("svc", "svc", "", keyYAML("k", jwkYAML(good, ", alg: HS256"))), "keys[0].jwk"},
+		{"use enc", clientYAML("svc", "svc", "", keyYAML("k", jwkYAML(good, ", use: enc"))), "keys[0].jwk"},
 		{"bad id", clientYAML("Bad Id", "svc", "", keyYAML("k", jwkYAML(good, ""))), "field id"},
 		{"public type", clientYAML("svc", "svc", "public", keyYAML("k", jwkYAML(good, ""))), "field type"},
 		{"point not on curve", clientYAML("svc", "svc", "", keyYAML("k", "{ kty: EC, crv: P-256, x: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, y: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA }")), "keys[0].jwk"},
@@ -146,7 +149,7 @@ func TestU9_ConfigErrors(t *testing.T) {
 		want  string
 	}{
 		{"no issuer", nil, "IDENTITY_ISSUER", "IDENTITY_ISSUER"},
-		{"publish delay", map[string]string{"IDENTITY_KEYS__PUBLISH_DELAY": "9m"}, "", "IDENTITY_KEYS__PUBLISH_DELAY"},
+		{"publish delay", map[string]string{"IDENTITY_KEYS__PUBLISH_DELAY": "19m"}, "", "IDENTITY_KEYS__PUBLISH_DELAY"},
 		{"retire after", map[string]string{"IDENTITY_KEYS__RETIRE_AFTER": "29m"}, "", "IDENTITY_KEYS__RETIRE_AFTER"},
 		{"rotation period", map[string]string{"IDENTITY_KEYS__ROTATION_PERIOD": "1h"}, "", "IDENTITY_KEYS__ROTATION_PERIOD"},
 		{"bad issuer", map[string]string{"IDENTITY_ISSUER": "http://id.example.com"}, "", "IDENTITY_ISSUER"},
@@ -168,6 +171,15 @@ func TestU9_ConfigErrors(t *testing.T) {
 	}
 }
 
+// R26: the minimum publish delay is 20 minutes.
+func TestPublishDelayMinimum(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("IDENTITY_KEYS__PUBLISH_DELAY", "20m")
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("20m must pass: %v", err)
+	}
+}
+
 // U9a: the issuer rule.
 func TestU9a_IssuerRule(t *testing.T) {
 	pass := []string{
@@ -177,6 +189,9 @@ func TestU9a_IssuerRule(t *testing.T) {
 	fail := []string{
 		"http://id.example.com", "http://identity:8080", "https://id.example.com?a=b", "ftp://x", "",
 		"https://id.example.com#frag", "id.example.com", "https://", "https://u:p@id.example.com",
+		// R24: port range, white space, control characters, trailing slash.
+		"https://x.com:99999", "https://x.com:0", "https://x.com/a b", "https://x.com/", "https://x.com/base/",
+		"https://x.com/a\tb", " https://x.com", "https://x.com/a\x00b", "https://x.com:80a",
 	}
 	for _, s := range pass {
 		if err := config.ValidateIssuer(s); err != nil {

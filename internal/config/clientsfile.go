@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -121,6 +122,7 @@ func parseJWK(m map[string]any, kid string) (domain.PublicJWK, []string) {
 	if m == nil {
 		return domain.PublicJWK{}, []string{"is required"}
 	}
+	var extra []string
 	names := make([]string, 0, len(m))
 	for k := range m {
 		names = append(names, k)
@@ -141,11 +143,20 @@ func parseJWK(m map[string]any, kid string) (domain.PublicJWK, []string) {
 		switch {
 		case domain.IsPrivateJWKField(name):
 			errs = append(errs, fmt.Sprintf("must not have the private member %s", name))
-		case !jwkAllowed[name] && name != "n" && name != "e":
-			errs = append(errs, fmt.Sprintf("has the unknown member %s", name))
+		case !jwkAllowed[name]:
+			extra = append(extra, name)
 		}
 	}
 	jwk := domain.PublicJWK{Kty: str("kty"), Crv: str("crv"), X: str("x"), Y: str("y"), Use: str("use"), Alg: str("alg")}
+	if len(extra) > 0 && jwk.Kty == "EC" {
+		errs = append(errs, fmt.Sprintf("has the members %s, which an EC key does not have", strings.Join(extra, ", ")))
+	}
+	if jwk.Alg != "" && jwk.Alg != domain.AlgES256 {
+		errs = append(errs, "member alg must be ES256")
+	}
+	if jwk.Use != "" && jwk.Use != "sig" {
+		errs = append(errs, "member use must be sig")
+	}
 	if k := str("kid"); k != "" && k != kid {
 		errs = append(errs, "member kid must be equal to the kid of the key")
 	}
