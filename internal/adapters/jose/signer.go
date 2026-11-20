@@ -16,26 +16,24 @@ type Signer struct{}
 
 var _ tokensigner.Signer = Signer{}
 
-// Sign returns the compact JWS of the claims. A header member "alg" or "kid"
-// in header is an error, because the key gives them.
+// Sign returns the compact JWS of the claims. The only header member that the
+// caller can set is "typ". Any other member is an error. The key gives "alg"
+// and "kid", and members such as "jku", "jwk", "x5u", and "crit" change how a
+// verifier finds keys or reads the token.
 func (Signer) Sign(key tokensigner.Key, claims map[string]any, header map[string]any) (string, error) {
 	if key.Private == nil || key.KID == "" {
 		return "", errors.New("sign: the key is not complete")
 	}
 	opts := (&gojose.SignerOptions{}).WithType("JWT")
 	for k, v := range header {
-		if k == "alg" || k == "kid" {
+		if k != "typ" {
 			return "", fmt.Errorf("sign: header member %q is not allowed", k)
 		}
-		if k == "typ" {
-			s, ok := v.(string)
-			if !ok {
-				return "", errors.New("sign: header member typ must be a string")
-			}
-			opts = opts.WithType(gojose.ContentType(s))
-			continue
+		s, ok := v.(string)
+		if !ok {
+			return "", errors.New("sign: header member typ must be a string")
 		}
-		opts = opts.WithHeader(gojose.HeaderKey(k), v)
+		opts = opts.WithType(gojose.ContentType(s))
 	}
 	jwk := gojose.JSONWebKey{Key: key.Private, KeyID: key.KID, Algorithm: string(gojose.ES256)}
 	sig, err := gojose.NewSigner(gojose.SigningKey{Algorithm: gojose.ES256, Key: jwk}, opts)
