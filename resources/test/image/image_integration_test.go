@@ -37,12 +37,12 @@ func repoRoot(t *testing.T) string {
 func buildImage(ctx context.Context, t *testing.T, root string) string {
 	t.Helper()
 	tag := "identity-test:" + strings.ToLower(rand.Text())
-	out, err := exec.CommandContext(ctx, "docker", "build", "-t", tag, root).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "docker", "build", "-t", tag, root).CombinedOutput() //nolint:gosec // A test.
 	if err != nil {
 		t.Fatalf("docker build: %v: %s", err, out)
 	}
 	t.Cleanup(func() {
-		_ = exec.CommandContext(context.Background(), "docker", "rmi", "-f", tag).Run()
+		_ = exec.CommandContext(context.Background(), "docker", "rmi", "-f", tag).Run() //nolint:gosec // A test.
 	})
 	return tag
 }
@@ -91,7 +91,7 @@ func TestI7_Image(t *testing.T) {
 			Image:        image,
 			ExposedPorts: []string{"8080/tcp", "9090/tcp"},
 			Networks:     []string{net.Name},
-			Env: map[string]string{
+			Env: map[string]string{ //nolint:gosec // Throwaway passwords of test containers.
 				"IDENTITY_ISSUER":                 "http://localhost:8080",
 				"IDENTITY_DATABASE__URL":          "postgres://identity:pgpass@pg:5432/identity?sslmode=disable",
 				"IDENTITY_DATABASE__NAME":         "identity",

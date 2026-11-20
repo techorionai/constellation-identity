@@ -15,7 +15,8 @@ func write(t *testing.T, path, content string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	err := os.WriteFile(path, []byte(content), 0o600) //nolint:gosec // A test.
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -26,7 +27,7 @@ func lint(t *testing.T, dir string) (string, error) {
 	if err != nil {
 		t.Skip("golangci-lint is not installed")
 	}
-	cmd := exec.CommandContext(context.Background(), bin, "run", "./...")
+	cmd := exec.CommandContext(context.Background(), bin, "run", "./...") //nolint:gosec // A test.
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
