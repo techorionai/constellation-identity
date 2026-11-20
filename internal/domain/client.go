@@ -47,6 +47,8 @@ type ClientKey struct {
 type ClientConfig struct {
 	Client Client
 	Keys   []ClientKey
+	// Roles are the role assignments of the file. They have the source config.
+	Roles []RoleRef
 }
 
 // IdentityApp is the application key of the identity service.
