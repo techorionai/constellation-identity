@@ -203,9 +203,9 @@ func TestIssue2Integration(t *testing.T) {
 			t.Fatalf("second page = %s", b)
 		}
 		resp, _ = s.Do(t, http.MethodGet, "/v1/roles?pageSize=0", read, "")
-		if resp.StatusCode != http.StatusOK {
-			// pageSize=0 is the default for the service.
-			t.Logf("pageSize=0: status = %d", resp.StatusCode)
+		// The contract has minimum 1 for pageSize.
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("pageSize=0: status = %d", resp.StatusCode)
 		}
 		resp, _ = s.Do(t, http.MethodGet, "/v1/roles?pageToken=%21%21", read, "")
 		if resp.StatusCode != http.StatusBadRequest {

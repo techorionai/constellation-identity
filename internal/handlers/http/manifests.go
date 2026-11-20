@@ -11,10 +11,12 @@ import (
 	"github.com/techorionai/constellation-identity/internal/handlers/http/gen"
 )
 
-// pageParams returns the page token and the page size of a list request.
+// pageParams returns the page token and the page size of a list request. A
+// request with no pageSize gets the default. An explicit pageSize goes to the
+// query as it is, so the query rejects 0.
 func pageParams(token *string, size *int32) (string, int) {
 	var t string
-	var n int
+	n := queries.DefaultPageSize
 	if token != nil {
 		t = *token
 	}

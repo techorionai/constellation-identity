@@ -8,17 +8,17 @@ import (
 
 // The page sizes of the contract.
 const (
-	defaultPageSize = 50
+	// DefaultPageSize is the size of a page when the request has no pageSize.
+	DefaultPageSize = 50
 	maxPageSize     = 200
 	maxTokenLength  = 1024
 )
 
-// pageSize returns the size of a page. 0 means the default. A value outside
-// 1 to 200 is an invalid input.
+// pageSize checks the size of a page. A value outside 1 to 200, also 0, is an
+// invalid input. The caller applies DefaultPageSize when the request has no
+// pageSize.
 func pageSize(n int) (int, error) {
 	switch {
-	case n == 0:
-		return defaultPageSize, nil
 	case n < 1 || n > maxPageSize:
 		return 0, apperrors.NewInvalidInput("pageSize must be from 1 to 200")
 	}
