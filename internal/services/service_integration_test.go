@@ -369,12 +369,18 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
-	// I6c: the operations of later issues.
+	// I6c: the operations of later issues. A /v1 operation needs a token. The
+	// operations that are not in /v1 answer 501. A token request with no
+	// assertion is not valid.
 	t.Run("I6c_not_implemented", func(t *testing.T) {
 		s := env.Start(t)
-		resp, body := s.Get(t, "/v1/roles")
+		resp, _ := s.Get(t, "/v1/users")
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("/v1/users = %d", resp.StatusCode)
+		}
+		resp, body := s.Get(t, "/oauth/userinfo")
 		if resp.StatusCode != http.StatusNotImplemented {
-			t.Fatalf("/v1/roles = %d", resp.StatusCode)
+			t.Fatalf("/oauth/userinfo = %d", resp.StatusCode)
 		}
 		var p map[string]any
 		if err := json.Unmarshal(body, &p); err != nil || p["code"] != "not_implemented" {
@@ -388,10 +394,11 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("/oauth/token = %d", resp.StatusCode)
 		}
 		var e map[string]any
-		if err := json.Unmarshal(body, &e); err != nil || e["error"] != "unsupported_grant_type" {
+		if err := json.Unmarshal(body, &e); err != nil || e["error"] != "invalid_request" {
 			t.Fatalf("error body = %s", body)
 		}
 	})
+
 	// I5a (R23): a retired key has no secret from the time it is retired. The
 	// row stays until RetireAfter.
 	t.Run("I5a_retired_key_has_no_secret", func(t *testing.T) {

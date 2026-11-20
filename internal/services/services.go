@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/auth/jwt"
 	clientpg "github.com/techorionai/constellation-platform-go/clients/postgres"
 	clientvk "github.com/techorionai/constellation-platform-go/clients/valkey"
 	"github.com/techorionai/constellation-platform-go/decorators"
@@ -29,11 +30,14 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	"github.com/techorionai/constellation-identity/api/openapi"
+	adapterjose "github.com/techorionai/constellation-identity/internal/adapters/jose"
 	"github.com/techorionai/constellation-identity/internal/adapters/postgres"
 	adaptersecrets "github.com/techorionai/constellation-identity/internal/adapters/secrets"
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/app/keys"
 	"github.com/techorionai/constellation-identity/internal/app/queries"
+	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
 	"github.com/techorionai/constellation-identity/internal/config"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	httpapi "github.com/techorionai/constellation-identity/internal/handlers/http"
@@ -95,6 +99,7 @@ type App struct {
 	pub    *http.Server
 	mgr    *keys.Manager
 	cache  *keys.Cache
+	verify *jwt.Verifier
 	reg    metric.Registration
 
 	serveWG   sync.WaitGroup
@@ -127,8 +132,17 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		}
 	}()
 
-	// The clients file errors stop the start before any connection.
+	// The clients file errors stop the start before any connection. So do the
+	// scope table check and the check of the own manifest.
 	clientConfigs, err := config.LoadClientsFile(cfg.ClientsFile)
+	if err != nil {
+		return nil, err
+	}
+	scopes, err := httpapi.NewScopeTable(openapi.Spec)
+	if err != nil {
+		return nil, err
+	}
+	ownManifest, err := loadOwnManifest()
 	if err != nil {
 		return nil, err
 	}
@@ -187,6 +201,19 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	}
 	migrated.Store(true)
 
+	// Publish the own manifest before the public server starts, so that the
+	// roles of the identity service exist before the first request.
+	clientRepo := postgres.NewClients(a.db.Pool)
+	manifestRepo := postgres.NewManifests(a.db.Pool)
+	publish := decorators.ApplyTracing(decorators.ApplyLogging(
+		commands.NewPublishManifest(manifestRepo, clientRepo, log), "PublishManifest",
+		decorators.WithLogger(log), decorators.WithErrorLevel(errorLevel)), "PublishManifest")
+	if _, err := publish.Execute(ctx, commands.PublishManifest{
+		Manifest: ownManifest, PublishedBy: domain.IdentityApp, Internal: true,
+	}); err != nil {
+		return nil, fmt.Errorf("publish the own manifest: %w", err)
+	}
+
 	// 4. Make the key manager and the key cache. Check that the active key
 	// decrypts before the manager can change any key.
 	signingRepo := postgres.NewSigningKeys(a.db.Pool)
@@ -212,7 +239,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 
 	// 5. Sync the clients file.
 	syncClients := decorators.ApplyTracingNoResult(decorators.ApplyLoggingNoResult[commands.SyncClients](
-		commands.NewSyncClients(postgres.NewClients(a.db.Pool), log), "SyncClients"), "SyncClients")
+		commands.NewSyncClients(clientRepo, log), "SyncClients"), "SyncClients")
 	if err := syncClients.Execute(ctx, commands.SyncClients{Clients: clientConfigs}); err != nil {
 		return nil, fmt.Errorf("sync the clients file: %w", err)
 	}
@@ -222,7 +249,39 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		queries.NewGetJWKS(a.cache), "GetJWKS"), "GetJWKS")
 	discovery := decorators.ApplyTracing(decorators.ApplyLogging(
 		queries.NewGetDiscovery(cfg.Issuer), "GetDiscovery"), "GetDiscovery")
-	api := httpapi.New(httpapi.Deps{JWKS: jwks, Discovery: discovery, Log: log})
+	if a.verify, err = NewVerifier(cfg.Issuer, a.cache); err != nil {
+		return nil, err
+	}
+	a.verify.Start(context.WithoutCancel(ctx))
+	issueCmd, err := commands.NewIssueServiceToken(commands.IssueServiceTokenDeps{
+		Issuer:      cfg.Issuer,
+		Clients:     clientRepo,
+		ClientRoles: postgres.NewClientRoles(a.db.Pool),
+		Manifests:   manifestRepo,
+		JTI:         postgres.NewJTIStore(a.db.Pool),
+		Keys:        a.cache,
+		Signer:      adapterjose.Signer{},
+		Parser:      adapterjose.AssertionParser{},
+		Log:         log,
+	})
+	if err != nil {
+		return nil, err
+	}
+	// The command writes its own failure log, so it has no logging decorator.
+	issue := decorators.ApplyTracing(issueCmd, "IssueServiceToken",
+		decorators.WithErrorClassifier(func(err error) bool {
+			oe, ok := apperrors.AsOAuthError(err)
+			return !ok || oe.Code == apperrors.OAuthServerError
+		}))
+	listManifests := withObservability(queries.NewListManifests(manifestRepo), "ListManifests", log)
+	getManifest := withObservability(queries.NewGetManifest(manifestRepo), "GetManifest", log)
+	listRoles := withObservability(queries.NewListRoles(manifestRepo), "ListRoles", log)
+	getRole := withObservability(queries.NewGetRole(manifestRepo), "GetRole", log)
+	api := httpapi.New(httpapi.Deps{
+		JWKS: jwks, Discovery: discovery, IssueToken: issue, PublishManifest: publish,
+		ListManifests: listManifests, GetManifest: getManifest, ListRoles: listRoles, GetRole: getRole,
+		Verifier: a.verify, Scopes: scopes, Log: log,
+	})
 	handler := otelhttp.NewHandler(requestid.Middleware()(api.Handler()), "identity")
 	if a.pubL, err = (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.HTTP.Addr); err != nil {
 		return nil, fmt.Errorf("listen on the public address: %w", err)
@@ -313,6 +372,9 @@ func (a *App) release(ctx context.Context) {
 		}
 		if a.reg != nil {
 			_ = a.reg.Unregister()
+		}
+		if a.verify != nil {
+			a.verify.Close()
 		}
 		if a.mgr != nil {
 			a.mgr.Close()

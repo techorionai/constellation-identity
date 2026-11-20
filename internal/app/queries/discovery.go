@@ -58,7 +58,7 @@ func (q *GetDiscoveryQuery) Execute(context.Context, GetDiscovery) (DiscoveryRes
 		ScopesSupported:                            []string{},
 		ResponseTypesSupported:                     []string{"code"},
 		SubjectTypesSupported:                      []string{"public"},
-		GrantTypesSupported:                        []string{},
+		GrantTypesSupported:                        []string{"client_credentials"},
 		CodeChallengeMethodsSupported:              []string{"S256"},
 		IDTokenSigningAlgValuesSupported:           []string{domain.AlgES256},
 		TokenEndpointAuthMethodsSupported:          []string{"private_key_jwt"},

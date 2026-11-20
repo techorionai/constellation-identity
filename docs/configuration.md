@@ -13,7 +13,7 @@ The service reads its settings from environment variables with the prefix `IDENT
 | `IDENTITY_ADMIN__CHECK_TIMEOUT` | `2s` | | Time limit of the readiness checks. |
 | `IDENTITY_ADMIN__DRAIN_DELAY` | `5s` | | Time that `/readyz` is 503 before the public server stops. |
 | `IDENTITY_DATABASE__URL`, `IDENTITY_DATABASE__NAME` | required | platform-go `clients/postgres` rules | PostgreSQL. Also `IDENTITY_DATABASE__URL_FILE`. |
-| `IDENTITY_VALKEY__ADDRESS`, `IDENTITY_VALKEY__KEY_PREFIX` | required | platform-go `clients/valkey` rules | Valkey. Use the key prefix `identity`. |
+| `IDENTITY_VALKEY__ADDRESS`, `IDENTITY_VALKEY__KEY_PREFIX` | required | platform-go `clients/valkey` rules | Valkey. Use the key prefix `identity`. The token flow does not store data in Valkey. The service connects to it and checks it in `/readyz`. |
 | `IDENTITY_SECRETS__MASTER_KEY` or `IDENTITY_SECRETS__MASTER_KEY_FILE` | required | 32 bytes, base64 | Master key for the envelope encryption of the signing keys. |
 | `IDENTITY_SECRETS__MASTER_KEY_ID` | required | `^[a-z0-9-]{1,32}$` | ID of the master key. |
 | `IDENTITY_SECRETS__PREVIOUS_KEYS` | empty | `<id>:<base64>` items, separated by commas | Old master keys, for master key rotation. |
@@ -38,6 +38,8 @@ clients:
     keys:
       - kid: helpdesk-2026-11
         jwk: { kty: EC, crv: P-256, x: "...", y: "..." }
+    roles:
+      - demo:agent
 ```
 
 Rules:
@@ -46,8 +48,13 @@ Rules:
 - A service client must not have `app: identity`.
 - `type` is `service` or missing. A missing `type` means `service`.
 - Each key is a public EC P-256 JWK. A private member (`d`, `p`, `q`, `dp`, `dq`, `qi`, `k`) is an error. `kid` values are unique in a client.
+- `roles` is a list of role references `<app>:<role>`. A value that does not match the form, or that occurs two times, is an error. The error names the client and the value.
 - `clients: []` is valid.
 - An error stops the start. The message names the client and the field.
+
+At each start the service replaces the assignments with the source `config` of each client with the `roles` of the file. An assignment with the source `api` stays. A role that does not exist yet, because its app did not publish the manifest, is a pending assignment. It applies when the manifest arrives, so services can start in any order. Every service client also has the implicit role `identity:service`. See [manifests.md](manifests.md).
+
+The only accepted audience of a client assertion is the value of `IDENTITY_ISSUER`. See [tokens.md](tokens.md).
 
 At each start, under a database lock, the service writes each client of the file with the source `config`. A client with the source `config` that is not in the file is set to `disabled`. A client with the source `api` is not changed. If the file has the ID of an `api` client, the service ignores the file entry and writes a `warn` log record.
 

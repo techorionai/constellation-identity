@@ -1,0 +1,72 @@
+{
+  "app": "identity",
+  "permissions": [
+    {
+      "key": "identity:user:read",
+      "description": "Read users."
+    },
+    {
+      "key": "identity:user:write",
+      "description": "Create, change, and disable users, and make invites for invited users."
+    },
+    {
+      "key": "identity:role:read",
+      "description": "Read roles and manifests."
+    },
+    {
+      "key": "identity:role:assign",
+      "description": "Assign and remove roles."
+    },
+    {
+      "key": "identity:client:read",
+      "description": "Read clients."
+    },
+    {
+      "key": "identity:client:write",
+      "description": "Create, change, and disable clients and their keys. An operation with this permission also needs identity:admin."
+    },
+    {
+      "key": "identity:admin",
+      "description": "Full administration. Only the role admin holds it."
+    },
+    {
+      "key": "identity:session:read",
+      "description": "Read sessions."
+    },
+    {
+      "key": "identity:session:revoke",
+      "description": "Revoke sessions."
+    },
+    {
+      "key": "identity:manifest:publish",
+      "description": "Publish the manifest of the own app."
+    }
+  ],
+  "defaultRoles": [
+    {
+      "key": "admin",
+      "name": "Admin",
+      "description": "Administrator of the identity service. It has all permissions.",
+      "permissions": [
+        "identity:user:read",
+        "identity:user:write",
+        "identity:role:read",
+        "identity:role:assign",
+        "identity:client:read",
+        "identity:client:write",
+        "identity:admin",
+        "identity:session:read",
+        "identity:session:revoke",
+        "identity:manifest:publish"
+      ]
+    },
+    {
+      "key": "service",
+      "name": "Service",
+      "description": "Role of every service client. It can publish the manifest of its own app.",
+      "permissions": [
+        "identity:manifest:publish"
+      ]
+    }
+  ]
+}

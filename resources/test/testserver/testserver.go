@@ -230,7 +230,7 @@ func (e *Env) buildConfig(t testing.TB, opts []Option) (config.Config, *settings
 	}
 	user, password := e.VK.NewACLUser(t, "identity")
 	cfg := config.Config{
-		Issuer: fmt.Sprintf("http://127.0.0.1:%d", port),
+		Issuer: fmt.Sprintf("http://localhost:%d", port),
 		HTTP:   config.HTTP{Addr: fmt.Sprintf("127.0.0.1:%d", port)},
 		Admin:  health.Config{Addr: "127.0.0.1:0", CheckTimeout: 2 * time.Second, DrainDelay: time.Millisecond},
 		Database: clientpg.Config{

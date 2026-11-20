@@ -1,13 +1,16 @@
 package httpapi_test
 
 import (
+	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/techorionai/constellation-platform-go/auth"
+
+	"github.com/techorionai/constellation-identity/api/openapi"
 	"github.com/techorionai/constellation-identity/internal/app/queries"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	httpapi "github.com/techorionai/constellation-identity/internal/handlers/http"
@@ -22,6 +25,26 @@ func newServer(issuer string, keys ...domain.PublicJWK) http.Handler {
 		JWKS:      queries.NewGetJWKS(fakeKeys{keys}),
 		Discovery: queries.NewGetDiscovery(issuer),
 	}).Handler()
+}
+
+// allScopes is a verifier that accepts the token "ok" for a principal with
+// all scopes of the test.
+type allScopes struct{ scopes []string }
+
+func (v allScopes) Verify(_ context.Context, token string) (auth.Principal, error) {
+	if token != "ok" {
+		return auth.Principal{}, auth.ErrInvalidToken
+	}
+	return auth.Principal{ID: "tester", Type: auth.PrincipalService, ClientID: "tester", Scopes: v.scopes, Audience: "identity"}, nil
+}
+
+func realScopes(t *testing.T) httpapi.ScopeTable {
+	t.Helper()
+	table, err := httpapi.NewScopeTable(openapi.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return table
 }
 
 func get(h http.Handler, method, path, body string) *httptest.ResponseRecorder {
@@ -78,7 +101,7 @@ func TestU10_Discovery(t *testing.T) {
 			t.Errorf("%s = %v, want [%s]", k, l, want)
 		}
 	}
-	if l, ok := doc["grant_types_supported"].([]any); !ok || len(l) != 0 {
+	if l, ok := doc["grant_types_supported"].([]any); !ok || len(l) != 1 || l[0] != "client_credentials" {
 		t.Errorf("grant_types_supported = %v", doc["grant_types_supported"])
 	}
 }
@@ -97,42 +120,5 @@ func TestJWKSBodyAndCache(t *testing.T) {
 	}
 	if len(set.Keys) != 1 || set.Keys[0]["kid"] != "abc" || set.Keys[0]["use"] != "sig" {
 		t.Fatalf("keys = %v", set.Keys)
-	}
-}
-
-// The operations of later issues answer 501 with a Problem body.
-func TestNotImplementedOperations(t *testing.T) {
-	h := newServer("https://id.example.com")
-	for _, path := range []string{"/v1/roles", "/v1/me", "/oauth/userinfo", "/v1/users"} {
-		rec := get(h, http.MethodGet, path, "")
-		if rec.Code != http.StatusNotImplemented {
-			t.Fatalf("%s: status = %d", path, rec.Code)
-		}
-		if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
-			t.Fatalf("%s: Content-Type = %q", path, ct)
-		}
-		var p map[string]any
-		if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
-			t.Fatal(err)
-		}
-		if p["code"] != "not_implemented" || p["status"] != float64(501) {
-			t.Fatalf("%s: problem = %v", path, p)
-		}
-	}
-}
-
-func TestTokenEndpointUnsupportedGrant(t *testing.T) {
-	h := newServer("https://id.example.com")
-	rec := get(h, http.MethodPost, "/oauth/token", "grant_type=client_credentials")
-	if rec.Code != http.StatusBadRequest {
-		body, _ := io.ReadAll(rec.Body)
-		t.Fatalf("status = %d, body %s", rec.Code, body)
-	}
-	var e map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil {
-		t.Fatal(err)
-	}
-	if e["error"] != "unsupported_grant_type" {
-		t.Fatalf("error body = %v", e)
 	}
 }

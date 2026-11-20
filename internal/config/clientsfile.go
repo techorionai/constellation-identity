@@ -24,6 +24,8 @@ type rawClient struct {
 	Name string   `yaml:"name"`
 	Type string   `yaml:"type"`
 	Keys []rawKey `yaml:"keys"`
+	// Roles are role references <app>:<role>.
+	Roles []string `yaml:"roles"`
 }
 
 type rawKey struct {
@@ -106,6 +108,20 @@ func ParseClientsFile(data []byte) ([]domain.ClientConfig, error) {
 				bad(field+".jwk", "%s", e)
 			}
 			cc.Keys = append(cc.Keys, domain.ClientKey{ClientID: rc.ID, KID: rk.KID, PublicJWK: jwk})
+		}
+		seenRoles := map[domain.RoleRef]bool{}
+		for j, value := range rc.Roles {
+			field := fmt.Sprintf("roles[%d]", j)
+			ref, err := domain.ParseRoleRef(value)
+			switch {
+			case err != nil:
+				bad(field, "%q is not a role reference of the form <app>:<role>", value)
+			case seenRoles[ref]:
+				bad(field, "%q is used two times", value)
+			default:
+				seenRoles[ref] = true
+				cc.Roles = append(cc.Roles, ref)
+			}
 		}
 		out = append(out, cc)
 	}
