@@ -129,7 +129,7 @@ func captureTokenRequest(f gen.StrictHandlerFunc, operation string) gen.StrictHa
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error) {
 		tr := tokenRequest{
 			post:                 r.PostForm,
-			secondAuthentication: r.Form.Has("client_secret") || r.Header.Get("Authorization") != "",
+			secondAuthentication: r.Form.Has("client_secret") || hasBasicAuthorization(r),
 		}
 		for _, name := range []string{"grant_type", "client_assertion_type", "client_assertion", "client_id", "audience", "scope"} {
 			if len(r.Form[name]) > 1 {
@@ -138,6 +138,15 @@ func captureTokenRequest(f gen.StrictHandlerFunc, operation string) gen.StrictHa
 		}
 		return f(context.WithValue(ctx, tokenRequestKey{}, tr), w, r, request)
 	}
+}
+
+// hasBasicAuthorization reports whether the request has an Authorization header
+// with the scheme Basic. This is a second authentication method. A header with
+// another scheme, for example one that a gateway adds, does not change the
+// result.
+func hasBasicAuthorization(r *http.Request) bool {
+	scheme, _, _ := strings.Cut(strings.TrimSpace(r.Header.Get("Authorization")), " ")
+	return strings.EqualFold(scheme, "Basic")
 }
 
 // jwksResponse adds the Cache-Control header to the JWKS response.

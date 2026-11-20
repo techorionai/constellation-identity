@@ -38,7 +38,7 @@ type IssueServiceToken struct {
 	Audience string
 	Scope    string
 	// SecondAuthentication is true if the request has a client secret or an
-	// Authorization header, besides the assertion.
+	// Authorization header with the scheme Basic, besides the assertion.
 	SecondAuthentication bool
 	// RepeatedParameter is true if a single-value parameter occurs more than
 	// one time.

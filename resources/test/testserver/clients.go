@@ -216,6 +216,28 @@ func (s *Server) PostToken(t testing.TB, form url.Values) (Response, []byte) {
 	return s.Post(t, "/oauth/token", form.Encode())
 }
 
+// PostTokenAuthorization posts the form to the token endpoint with an
+// Authorization header.
+func (s *Server) PostTokenAuthorization(t testing.TB, form url.Values, authorization string) (Response, []byte) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.PublicURL+"/oauth/token", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("testserver: request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", authorization)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("testserver: POST /oauth/token: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("testserver: read body: %v", err)
+	}
+	return Response{StatusCode: resp.StatusCode, Header: resp.Header}, b
+}
+
 // Do sends a request with a bearer token and a JSON body to the public URL.
 // An empty token sends no Authorization header. An empty body sends no body.
 func (s *Server) Do(t testing.TB, method, path, token, body string) (Response, []byte) {

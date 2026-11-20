@@ -483,6 +483,18 @@ func TestIssue2Integration(t *testing.T) {
 		form = testserver.TokenForm(s.Assertion(t, demo, nil), "identity", "identity:manifest:publish")
 		form.Set("grant_type", "authorization_code")
 		oauthError(t, s, form, 400, "unsupported_grant_type")
+
+		// R9: a Basic header is a second authentication method. A header with
+		// another scheme, for example one from a gateway, is ignored.
+		form = testserver.TokenForm(s.Assertion(t, demo, nil), "identity", "identity:manifest:publish")
+		resp, b := s.PostTokenAuthorization(t, form, "Basic dTpw")
+		if resp.StatusCode != 400 || decode(t, b)["error"] != "invalid_request" {
+			t.Fatalf("Basic header: status = %d, body = %s", resp.StatusCode, b)
+		}
+		resp, b = s.PostTokenAuthorization(t, form, "Bearer gateway")
+		if resp.StatusCode != 200 || decode(t, b)["access_token"] == nil {
+			t.Fatalf("Bearer header: status = %d, body = %s", resp.StatusCode, b)
+		}
 	})
 
 	// I10: a role of an app that did not publish yet.

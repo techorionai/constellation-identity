@@ -225,6 +225,34 @@ func TestIssue2_TokenEndpointResponses(t *testing.T) {
 	}
 }
 
+// The service rejects an Authorization header with the scheme Basic only. A
+// header with another scheme does not change the result.
+func TestIssue2_U12e_AuthorizationHeaderScheme(t *testing.T) {
+	var seen commands.IssueServiceToken
+	h := tokenServer(func(in commands.IssueServiceToken) (commands.IssueServiceTokenResult, error) {
+		seen = in
+		return commands.IssueServiceTokenResult{AccessToken: "tok", ExpiresIn: 300, Scope: "demo:ticket:read"}, nil
+	})
+	body := url.Values{
+		"grant_type": {"client_credentials"}, "client_assertion_type": {domain.AssertionType},
+		"client_assertion": {"a.b.c"}, "audience": {"demo"}, "scope": {"demo:ticket:read"},
+	}.Encode()
+	for header, want := range map[string]bool{
+		"Basic dTpw": true, "basic dTpw": true, "Bearer x": false, "Negotiate x": false, "": false,
+	} {
+		seen = commands.IssueServiceToken{}
+		req := httptest.NewRequestWithContext(t0(), http.MethodPost, "/oauth/token", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if header != "" {
+			req.Header.Set("Authorization", header)
+		}
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		if seen.SecondAuthentication != want {
+			t.Errorf("Authorization %q: SecondAuthentication = %v, want %v", header, seen.SecondAuthentication, want)
+		}
+	}
+}
+
 func TestIssue2_TokenEndpointErrors(t *testing.T) {
 	for code, status := range map[string]int{
 		"invalid_request": 400, "invalid_client": 401, "unauthorized_client": 400, "invalid_scope": 400,
