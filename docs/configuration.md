@@ -9,22 +9,35 @@ The service reads its settings from environment variables with the prefix `IDENT
 | `IDENTITY_ISSUER` | required | Absolute URL with no query and no fragment. `https` is required. `http` is accepted only when the host is `localhost`, `127.0.0.1`, or `[::1]`. | Public base URL, for example `https://id.example.com`. It is the `iss` claim of all tokens. |
 | `IDENTITY_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN`, or `ERROR` | Log level. |
 | `IDENTITY_HTTP__ADDR` | `:8080` | | Public listener. |
+| `IDENTITY_HTTP__TRUSTED_PROXIES` | empty | Comma-separated CIDR ranges | Proxies whose `X-Forwarded-For` value the service uses for the client IP. See [security.md](security.md). |
 | `IDENTITY_ADMIN__ADDR` | `:9090` | | Listener for `/livez` and `/readyz`. Do not publish it at the edge. |
 | `IDENTITY_ADMIN__CHECK_TIMEOUT` | `2s` | | Time limit of the readiness checks. |
 | `IDENTITY_ADMIN__DRAIN_DELAY` | `5s` | | Time that `/readyz` is 503 before the public server stops. |
 | `IDENTITY_DATABASE__URL`, `IDENTITY_DATABASE__NAME` | required | platform-go `clients/postgres` rules | PostgreSQL. Also `IDENTITY_DATABASE__URL_FILE`. |
-| `IDENTITY_VALKEY__ADDRESS`, `IDENTITY_VALKEY__KEY_PREFIX` | required | platform-go `clients/valkey` rules | Valkey. Use the key prefix `identity`. The token flow does not store data in Valkey. The service connects to it and checks it in `/readyz`. |
+| `IDENTITY_VALKEY__ADDRESS`, `IDENTITY_VALKEY__KEY_PREFIX` | required | platform-go `clients/valkey` rules | Valkey. Use the key prefix `identity`. The token flow does not store data in Valkey. The login failure counters are in Valkey (keys `identity:login:fail:*`). The service checks Valkey in `/readyz`. |
 | `IDENTITY_SECRETS__MASTER_KEY` or `IDENTITY_SECRETS__MASTER_KEY_FILE` | required | 32 bytes, base64 | Master key for the envelope encryption of the signing keys. |
 | `IDENTITY_SECRETS__MASTER_KEY_ID` | required | `^[a-z0-9-]{1,32}$` | ID of the master key. |
 | `IDENTITY_SECRETS__PREVIOUS_KEYS` | empty | `<id>:<base64>` items, separated by commas | Old master keys, for master key rotation. |
 | `IDENTITY_KEYS__ROTATION_PERIOD` | `2160h` (90 days) | More than `PUBLISH_DELAY` | Age of the active key before rotation. |
 | `IDENTITY_KEYS__PUBLISH_DELAY` | `1h` | 20 minutes or more | Time that a new key is in the JWKS before it signs. It must be more than the refresh interval of the verifiers (10 minutes in `auth/jwt`) plus the key cache reload (1 minute) plus the JWKS `max-age` (5 minutes). |
 | `IDENTITY_KEYS__RETIRE_AFTER` | `24h` | 30 minutes or more | Time that a replaced key stays in the JWKS. It must be more than the longest token life (15 minutes) plus the leeway of the verifiers. |
+| `IDENTITY_SETUP__TTL` | `24h` | 10 minutes to 7 days | Life of the first-admin setup token. |
+| `IDENTITY_INVITE__TTL` | `72h` | 10 minutes to 30 days | Life of an invite token. |
+| `IDENTITY_SESSION__IDLE_TIMEOUT` | `12h` | 5 minutes to `SESSION__ABSOLUTE_TIMEOUT` | Idle expiry of a browser session. |
+| `IDENTITY_SESSION__ABSOLUTE_TIMEOUT` | `168h` (7 days) | 1 hour to 90 days | Absolute expiry of a browser session. |
+| `IDENTITY_PASSWORD__MAX_CONCURRENT` | `4` | 1 to 64 | Number of password hashes that run at the same time. Each hash uses 64 MiB of memory. |
+| `IDENTITY_PASSWORD__QUEUE_TIMEOUT` | `2s` | 100 ms to 30 s | Longest wait for a hash slot. After it, the page gives status 503. |
+| `IDENTITY_LOGIN__MAX_FAILURES_PER_EMAIL` | `5` | 1 to 100 | Failed logins for one email in the window. |
+| `IDENTITY_LOGIN__MAX_FAILURES_PER_IP` | `50` | 1 to 10000 | Failed logins from one client IP in the window. |
+| `IDENTITY_LOGIN__FAILURE_WINDOW` | `15m` | 1 minute to 24 hours | Life of the failure counters. |
+| `IDENTITY_RETENTION__TOKENS__PERIOD`, `IDENTITY_RETENTION__SESSIONS__PERIOD` | `168h` | | Age after which the service deletes ended tokens and sessions. Also `INTERVAL` and `BATCH_SIZE`. See `retention` in `constellation-platform-go`. |
 | `IDENTITY_CLIENTS_FILE` | empty | | Path of the clients file. Empty means no config clients. |
 
 Telemetry uses the standard `OTEL_*` variables. See the `telemetry` package of `constellation-platform-go`.
 
 The service stops at start with a message that names the variable when a rule fails.
+
+The session cookie has the name `__Host-constellation_session` and the flag `Secure`. A browser accepts a `Secure` cookie on `http://localhost`. Every other host needs TLS. `IDENTITY_ISSUER` has the same rule.
 
 ## The clients file
 
