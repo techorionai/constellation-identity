@@ -33,7 +33,7 @@ A token has one audience. It has only scopes that start with `<audience>:` and t
 | `scope` | Required. Permission keys of the audience, separated by spaces. |
 | `client_id` | Optional. If it is present, it must be equal to the `sub` of the assertion. |
 
-A request with a client secret, with an `Authorization` header, or with a repeated parameter is not valid.
+A request with a client secret, with an `Authorization` header that has the scheme `Basic`, or with a repeated parameter is not valid. The service ignores an `Authorization` header with another scheme, for example a header that a gateway adds.
 
 ## The assertion
 
@@ -48,7 +48,7 @@ The client signs the assertion with a private key. The service knows the public 
 
 ## Replay protection
 
-After all other checks, the service runs `SET identity:jti:<sha256(client_id, jti)> 1 NX EX <ttl>` in Valkey. `ttl` is `max(exp - now + 30 s, 30 s)`. A second use gives `invalid_client`. If Valkey is not available, the answer is `temporarily_unavailable` (503) and the service issues no token.
+The service records the `jti` after it checks the assertion (the header, the client, the signature, and the claims). It records the `jti` before it checks the audience and the scope. A request that fails the audience check or the scope check has used its `jti`, and the client must sign a new assertion for the next request. The record is `SET identity:jti:<sha256(client_id, jti)> 1 NX EX <ttl>` in Valkey. `ttl` is `max(exp - now + 30 s, 30 s)`. A second use gives `invalid_client`. If Valkey is not available, the answer is `temporarily_unavailable` (503) and the service issues no token.
 
 ## Errors
 

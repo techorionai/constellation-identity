@@ -476,6 +476,11 @@ func TestIssue2Integration(t *testing.T) {
 		oauthError(t, s, testserver.TokenForm(s.Assertion(t, demo, nil), "demo", "demo:ticket:read"), 400, "invalid_scope")
 		oauthError(t, s, testserver.TokenForm(s.Assertion(t, demo, nil), "identity", ""), 400, "invalid_scope")
 
+		// R16: a request that fails the scope check has used its jti.
+		used := s.Assertion(t, demo, nil)
+		oauthError(t, s, testserver.TokenForm(used, "identity", "identity:client:read"), 400, "invalid_scope")
+		oauthError(t, s, testserver.TokenForm(used, "identity", "identity:manifest:publish"), 401, "invalid_client")
+
 		// A client secret next to the assertion, and another grant.
 		form := testserver.TokenForm(s.Assertion(t, demo, nil), "identity", "identity:manifest:publish")
 		form.Set("client_secret", "x")
