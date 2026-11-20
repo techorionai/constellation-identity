@@ -130,10 +130,11 @@ func (m *Manager) ForceRotate(ctx context.Context) error {
 }
 
 func (m *Manager) pass(ctx context.Context) error {
-	keys, err := m.repo.List(ctx)
+	all, err := m.repo.List(ctx)
 	if err != nil {
 		return err
 	}
+	keys := m.validRows(ctx, all)
 	now := m.now()
 
 	// 1. No active or pending key: make an active key at once.
@@ -185,6 +186,22 @@ func (m *Manager) pass(ctx context.Context) error {
 
 	// 5. Delete each secret that has no row, or whose row is retired.
 	return m.deleteSecrets(ctx, live)
+}
+
+// validRows returns the rows that pass SigningKey.Validate. The manager
+// ignores each other row. Such a row is never counted as pending or active and
+// never activated. It cannot make the manager delete the secret of a valid
+// key. Each ignored row gets an error log record.
+func (m *Manager) validRows(ctx context.Context, all []domain.SigningKey) []domain.SigningKey {
+	rows := make([]domain.SigningKey, 0, len(all))
+	for _, row := range all {
+		if err := row.Validate(); err != nil {
+			m.log.ErrorContext(ctx, "signing key row is not valid and is ignored", "kid", row.KID, "error", err)
+			continue
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 // retiredSince returns the time that the key became retired. A retired row

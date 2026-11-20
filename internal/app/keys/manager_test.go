@@ -498,3 +498,81 @@ func TestCacheKeepsOldContentOnError(t *testing.T) {
 		t.Fatal("good cache must have an active key")
 	}
 }
+
+// attackerRow returns a pending row whose kid is not the thumbprint of its key.
+func attackerRow(t *testing.T, activatesAt time.Time) domain.SigningKey {
+	t.Helper()
+	row, _, err := domain.NewSigningKey(time.Now(), domain.KeyPending, activatesAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row.KID = "attacker"
+	row.PublicJWK.Kid = "attacker"
+	row.PrivateKeyName = domain.PrivateKeyName("attacker")
+	return row
+}
+
+// hasErrorRecord reports whether the logs have an error record for the kid.
+func (r *rig) hasErrorRecord(t *testing.T, kid string) bool {
+	t.Helper()
+	for _, rec := range r.records(t) {
+		if rec["level"] == "ERROR" && rec["kid"] == kid {
+			return true
+		}
+	}
+	return false
+}
+
+// U20 (R22): an invalid pending row with a far activation time does not stop
+// the rotation.
+func TestU20_InvalidFuturePendingRowDoesNotStopRotation(t *testing.T) {
+	r := newRig()
+	r.run(t)
+	if err := r.repo.Insert(context.Background(), attackerRow(t, r.clock.now.AddDate(1, 0, 0))); err != nil {
+		t.Fatal(err)
+	}
+	r.clock.Add(policy.RotationPeriod + time.Minute)
+	ks := r.run(t)
+	valid := 0
+	for _, k := range ks {
+		if k.KID != "attacker" && k.State == domain.KeyPending {
+			valid++
+		}
+	}
+	if valid != 1 {
+		t.Fatalf("valid pending keys = %d, want 1 (states %v)", valid, states(ks))
+	}
+	if !r.hasErrorRecord(t, "attacker") {
+		t.Fatal("no error log record with the kid of the invalid row")
+	}
+}
+
+// U21 (R22): an invalid pending row that is due is not activated. The real
+// active key and its secret stay.
+func TestU21_InvalidDuePendingRowIsNotActivated(t *testing.T) {
+	r := newRig()
+	active := r.run(t)[0]
+	if err := r.repo.Insert(context.Background(), attackerRow(t, r.clock.now.Add(-time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	r.clock.Add(time.Minute)
+	ks := r.run(t)
+	for _, k := range ks {
+		switch k.KID {
+		case active.KID:
+			if k.State != domain.KeyActive {
+				t.Fatalf("real key state = %s, want active", k.State)
+			}
+		case "attacker":
+			if k.State != domain.KeyPending {
+				t.Fatalf("attacker state = %s, want pending", k.State)
+			}
+		}
+	}
+	if _, err := r.store.Get(context.Background(), active.PrivateKeyName); err != nil {
+		t.Fatalf("the secret of the real key is gone: %v", err)
+	}
+	if !r.hasErrorRecord(t, "attacker") {
+		t.Fatal("no error log record with the kid of the invalid row")
+	}
+}

@@ -452,4 +452,61 @@ func TestIntegration(t *testing.T) {
 			t.Fatal("the database must refuse a retired row with no retired_at")
 		}
 	})
+
+	// insertAttacker inserts a pending row whose kid is not the thumbprint of
+	// its key.
+	insertAttacker := func(t *testing.T, s *testserver.Server, activatesAt time.Time) {
+		t.Helper()
+		attacker, _, err := domain.NewSigningKey(time.Now(), domain.KeyPending, activatesAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attacker.PublicJWK.Kid = "attacker"
+		jwk, err := json.Marshal(attacker.PublicJWK)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.Pool(t).Exec(ctx, `INSERT INTO signing_keys (kid, alg, public_jwk, private_key_name, state, created_at, activates_at)
+			VALUES ('attacker', 'ES256', $1, $2, 'pending', now(), $3)`, jwk, domain.PrivateKeyName("attacker"), activatesAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// I9 (R22): an invalid pending row with a far activation time does not
+	// stop the rotation.
+	t.Run("I9_invalid_future_pending_row", func(t *testing.T) {
+		s := env.Start(t,
+			testserver.WithKeyPolicy(domain.KeyPolicy{RotationPeriod: 3 * time.Second, PublishDelay: time.Second, RetireAfter: time.Hour}),
+			testserver.WithKeyIntervals(200*time.Millisecond, 200*time.Millisecond))
+		insertAttacker(t, s, time.Now().AddDate(1, 0, 0))
+		deadline := time.Now().Add(20 * time.Second)
+		for count(t, s, `SELECT count(*) FROM signing_keys WHERE kid <> 'attacker' AND state <> 'retired'`) < 2 {
+			if time.Now().After(deadline) {
+				t.Fatal("the rotation does not make a valid pending key")
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+
+	// I10 (R22): an invalid pending row that is due is not activated. The real
+	// key stays active with its secret, and the service stays ready.
+	t.Run("I10_invalid_due_pending_row", func(t *testing.T) {
+		s := env.Start(t, testserver.WithKeyIntervals(200*time.Millisecond, 200*time.Millisecond))
+		realKid := jwksKeys(t, s)[0]["kid"].(string)
+		insertAttacker(t, s, time.Now().Add(-time.Hour))
+		time.Sleep(2 * time.Second)
+		if n := count(t, s, `SELECT count(*) FROM signing_keys WHERE kid = $1 AND state = 'active'`, realKid); n != 1 {
+			t.Fatal("the real key is not active")
+		}
+		if n := count(t, s, `SELECT count(*) FROM signing_keys WHERE kid = 'attacker' AND state = 'pending'`); n != 1 {
+			t.Fatal("the attacker row changed state")
+		}
+		if n := count(t, s, `SELECT count(*) FROM platform_secrets WHERE name = $1`, domain.PrivateKeyName(realKid)); n != 1 {
+			t.Fatal("the secret of the real key is gone")
+		}
+		if got := readyz(t, s); got != http.StatusOK {
+			t.Fatalf("readyz = %d", got)
+		}
+	})
 }
