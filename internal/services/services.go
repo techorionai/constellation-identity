@@ -41,6 +41,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/config"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	httpapi "github.com/techorionai/constellation-identity/internal/handlers/http"
+	"github.com/techorionai/constellation-identity/internal/handlers/http/pages"
 	"github.com/techorionai/constellation-identity/internal/ports/privatekeys"
 	"github.com/techorionai/constellation-identity/migrations"
 )
@@ -59,6 +60,11 @@ type options struct {
 	cacheInterval   time.Duration
 	policy          *domain.KeyPolicy
 	log             *slog.Logger
+	// hashMemoryKiB and hashTime change the argon2id parameters. Zero means the
+	// default.
+	hashMemoryKiB  uint32
+	hashTime       uint32
+	retentionAfter func(time.Duration) <-chan time.Time
 }
 
 // Option changes the composition. The options are for tests. Production code
@@ -76,6 +82,19 @@ func WithKeyPolicy(p domain.KeyPolicy) Option { return func(o *options) { o.poli
 
 // WithLogger sets the logger of the service.
 func WithLogger(l *slog.Logger) Option { return func(o *options) { o.log = l } }
+
+// WithPasswordCost sets the memory (in KiB) and the number of passes of the
+// argon2id hash. A test uses a small cost to be fast. Production code uses the
+// default.
+func WithPasswordCost(memoryKiB, passes uint32) Option {
+	return func(o *options) { o.hashMemoryKiB, o.hashTime = memoryKiB, passes }
+}
+
+// WithRetentionAfter sets the timer function of the retention runner. A test
+// uses it to run a tick at once.
+func WithRetentionAfter(after func(time.Duration) <-chan time.Time) Option {
+	return func(o *options) { o.retentionAfter = after }
+}
 
 func newOptions(opts []Option) options {
 	o := options{managerInterval: defaultKeyManagerInterval, cacheInterval: defaultCacheInterval, log: slog.Default()}
@@ -101,6 +120,10 @@ type App struct {
 	cache  *keys.Cache
 	verify *jwt.Verifier
 	reg    metric.Registration
+
+	sessionReg    metric.Registration
+	stopRetention context.CancelFunc
+	retentionWG   sync.WaitGroup
 
 	serveWG   sync.WaitGroup
 	closeOnce sync.Once
@@ -214,6 +237,16 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		return nil, fmt.Errorf("publish the own manifest: %w", err)
 	}
 
+	// Make the users stack and the first-admin setup token. The own manifest is
+	// published already, so the role identity:admin exists.
+	users, err := a.buildUsers(o)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.ensureSetupToken(ctx, users); err != nil {
+		return nil, err
+	}
+
 	// 4. Make the key manager and the key cache. Check that the active key
 	// decrypts before the manager can change any key.
 	signingRepo := postgres.NewSigningKeys(a.db.Pool)
@@ -236,6 +269,16 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	if err := a.registerMetrics(); err != nil {
 		return nil, err
 	}
+	if err := a.registerSessionGauge(users.sessions); err != nil {
+		return nil, err
+	}
+	retentionCtx, stop := context.WithCancel(context.WithoutCancel(ctx))
+	a.stopRetention = stop
+	a.retentionWG.Add(1)
+	go func() {
+		defer a.retentionWG.Done()
+		_ = users.retention.Run(retentionCtx)
+	}()
 
 	// 5. Sync the clients file.
 	syncClients := decorators.ApplyTracingNoResult(decorators.ApplyLoggingNoResult[commands.SyncClients](
@@ -282,7 +325,9 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		ListManifests: listManifests, GetManifest: getManifest, ListRoles: listRoles, GetRole: getRole,
 		Verifier: a.verify, Scopes: scopes, Log: log,
 	})
-	handler := otelhttp.NewHandler(requestid.Middleware()(api.Handler()), "identity")
+	// RedactToken is outside the tracing handler, so no span has a token.
+	handler := pages.RedactToken(otelhttp.NewHandler(
+		requestid.Middleware()(publicHandler(api.Handler(), users.pages.Routes())), "identity"))
 	if a.pubL, err = (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.HTTP.Addr); err != nil {
 		return nil, fmt.Errorf("listen on the public address: %w", err)
 	}
@@ -369,6 +414,13 @@ func (a *App) release(ctx context.Context) {
 	a.closeOnce.Do(func() {
 		if a.pub != nil {
 			_ = a.pub.Close()
+		}
+		if a.stopRetention != nil {
+			a.stopRetention()
+			a.retentionWG.Wait()
+		}
+		if a.sessionReg != nil {
+			_ = a.sessionReg.Unregister()
 		}
 		if a.reg != nil {
 			_ = a.reg.Unregister()

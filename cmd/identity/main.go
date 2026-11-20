@@ -5,6 +5,7 @@
 //	identity                              Start the server.
 //	identity healthcheck                  Exit 0 if /readyz of the admin port is 200.
 //	identity rotate-signing-keys --force  Replace all signing keys.
+//	identity setup-link                   Print a new first-admin setup link.
 package main
 
 import (
@@ -43,6 +44,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runHealthcheck(stdout, stderr)
 	case "rotate-signing-keys":
 		return runRotate(args[1:], stdout, stderr)
+	case "setup-link":
+		return runSetupLink(stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		return 2

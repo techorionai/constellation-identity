@@ -1,0 +1,61 @@
+{{define "header"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<link rel="stylesheet" href="/assets/pages.css">
+</head>
+<body>
+<main>
+<h1>{{.Title}}</h1>
+{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+{{end}}
+{{define "footer"}}</main>
+</body>
+</html>
+{{end}}
+{{define "login"}}{{template "header" .}}
+<form method="post" action="/login">
+<input type="hidden" name="return_to" value="{{.ReturnTo}}">
+<label for="email">Email</label>
+<input id="email" name="email" type="email" autocomplete="username" required value="{{.Email}}">
+<label for="password">Password</label>
+<input id="password" name="password" type="password" autocomplete="current-password" required>
+<button type="submit">Log in</button>
+</form>
+{{template "footer" .}}{{end}}
+{{define "setup"}}{{template "header" .}}
+<p>Make the first admin account.</p>
+<form method="post" action="/setup">
+<input type="hidden" name="token" value="{{.Token}}">
+<label for="email">Email</label>
+<input id="email" name="email" type="email" autocomplete="username" required value="{{.Email}}">
+<label for="name">Name</label>
+<input id="name" name="name" type="text" autocomplete="name" required value="{{.Name}}">
+<label for="password">Password</label>
+<input id="password" name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="512">
+<label for="password2">Password again</label>
+<input id="password2" name="password2" type="password" autocomplete="new-password" required minlength="12" maxlength="512">
+<button type="submit">Make account</button>
+</form>
+{{template "footer" .}}{{end}}
+{{define "invite"}}{{template "header" .}}
+<p>Choose a password for your account.</p>
+<form method="post" action="/invite">
+<input type="hidden" name="token" value="{{.Token}}">
+<label for="password">Password</label>
+<input id="password" name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="512">
+<label for="password2">Password again</label>
+<input id="password2" name="password2" type="password" autocomplete="new-password" required minlength="12" maxlength="512">
+<button type="submit">Set password</button>
+</form>
+{{template "footer" .}}{{end}}
+{{define "done"}}{{template "header" .}}
+<p>You are logged in as {{.UserName}}</p>
+<form method="post" action="/logout">
+<button type="submit">Log out</button>
+</form>
+{{template "footer" .}}{{end}}
+{{define "message"}}{{template "header" .}}
+{{template "footer" .}}{{end}}
