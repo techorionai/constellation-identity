@@ -1,0 +1,15 @@
+name: Image
+on:
+  pull_request:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  image:
+    uses: techorionai/constellation-ci/.github/workflows/image.yml@v0.3.0
+    permissions:
+      contents: read
+      packages: write
+    with:
+      push: true

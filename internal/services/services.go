@@ -1,0 +1,367 @@
+// Package services is the composition root. It makes all adapters and use
+// cases and connects them.
+package services
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	clientpg "github.com/techorionai/constellation-platform-go/clients/postgres"
+	clientvk "github.com/techorionai/constellation-platform-go/clients/valkey"
+	"github.com/techorionai/constellation-platform-go/decorators"
+	"github.com/techorionai/constellation-platform-go/health"
+	healthpg "github.com/techorionai/constellation-platform-go/health/postgres"
+	healthvk "github.com/techorionai/constellation-platform-go/health/valkey"
+	"github.com/techorionai/constellation-platform-go/migrate"
+	migratepg "github.com/techorionai/constellation-platform-go/migrate/postgres"
+	"github.com/techorionai/constellation-platform-go/requestid"
+	platformsecrets "github.com/techorionai/constellation-platform-go/secrets"
+	secretspg "github.com/techorionai/constellation-platform-go/secrets/postgres"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
+	"github.com/techorionai/constellation-identity/internal/adapters/postgres"
+	adaptersecrets "github.com/techorionai/constellation-identity/internal/adapters/secrets"
+	"github.com/techorionai/constellation-identity/internal/app/commands"
+	"github.com/techorionai/constellation-identity/internal/app/keys"
+	"github.com/techorionai/constellation-identity/internal/app/queries"
+	"github.com/techorionai/constellation-identity/internal/config"
+	"github.com/techorionai/constellation-identity/internal/domain"
+	httpapi "github.com/techorionai/constellation-identity/internal/handlers/http"
+	"github.com/techorionai/constellation-identity/internal/ports/privatekeys"
+	"github.com/techorionai/constellation-identity/migrations"
+)
+
+// Default intervals of the key loops.
+const (
+	defaultKeyManagerInterval = 10 * time.Minute
+	defaultCacheInterval      = time.Minute
+)
+
+// ErrMasterKeyMismatch means the active signing key does not decrypt.
+var ErrMasterKeyMismatch = errors.New("the active signing key does not decrypt with the master key")
+
+type options struct {
+	managerInterval time.Duration
+	cacheInterval   time.Duration
+	policy          *domain.KeyPolicy
+	log             *slog.Logger
+}
+
+// Option changes the composition. The options are for tests. Production code
+// uses the config.
+type Option func(*options)
+
+// WithKeyIntervals sets the interval of the key manager and the interval of the
+// key cache reload.
+func WithKeyIntervals(manager, cache time.Duration) Option {
+	return func(o *options) { o.managerInterval, o.cacheInterval = manager, cache }
+}
+
+// WithKeyPolicy sets the key policy. It does not go through the config checks.
+func WithKeyPolicy(p domain.KeyPolicy) Option { return func(o *options) { o.policy = &p } }
+
+// WithLogger sets the logger of the service.
+func WithLogger(l *slog.Logger) Option { return func(o *options) { o.log = l } }
+
+func newOptions(opts []Option) options {
+	o := options{managerInterval: defaultKeyManagerInterval, cacheInterval: defaultCacheInterval, log: slog.Default()}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+// App is a running service.
+type App struct {
+	cfg    config.Config
+	log    *slog.Logger
+	db     *clientpg.Client
+	kv     *clientvk.Client
+	pgChk  *healthpg.Checker
+	state  *health.State
+	adminL net.Listener
+	admin  *http.Server
+	pubL   net.Listener
+	pub    *http.Server
+	mgr    *keys.Manager
+	cache  *keys.Cache
+	reg    metric.Registration
+
+	serveWG   sync.WaitGroup
+	closeOnce sync.Once
+}
+
+// PublicAddr returns the address of the public listener.
+func (a *App) PublicAddr() string { return a.pubL.Addr().String() }
+
+// AdminAddr returns the address of the admin listener.
+func (a *App) AdminAddr() string { return a.adminL.Addr().String() }
+
+type funcChecker struct {
+	name string
+	fn   func() error
+}
+
+func (c funcChecker) Name() string                { return c.name }
+func (c funcChecker) Check(context.Context) error { return c.fn() }
+
+// Start runs the startup order of the service and returns when the service is
+// ready. On an error it releases everything that it made.
+func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err error) {
+	o := newOptions(opts)
+	log := o.log
+	a := &App{cfg: cfg, log: log}
+	defer func() {
+		if err != nil {
+			a.release(context.WithoutCancel(ctx))
+		}
+	}()
+
+	// The clients file errors stop the start before any connection.
+	clientConfigs, err := config.LoadClientsFile(cfg.ClientsFile)
+	if err != nil {
+		return nil, err
+	}
+
+	// 1. Connect to PostgreSQL and Valkey.
+	if a.db, err = clientpg.New(ctx, cfg.Database); err != nil {
+		return nil, fmt.Errorf("connect to PostgreSQL: %w", err)
+	}
+	if a.kv, err = clientvk.New(ctx, cfg.Valkey); err != nil {
+		return nil, fmt.Errorf("connect to Valkey: %w", err)
+	}
+	if a.pgChk, err = healthpg.NewChecker(ctx, a.db.Pool); err != nil {
+		return nil, fmt.Errorf("make PostgreSQL checker: %w", err)
+	}
+
+	// 2. Start the admin server. /livez is 200. /readyz is 503.
+	var migrated atomic.Bool
+	secretRepo := secretspg.NewRepository(a.db.Pool)
+	ring, err := platformsecrets.NewKeyRing(cfg.Secrets)
+	if err != nil {
+		return nil, fmt.Errorf("master key: %w", err)
+	}
+	store := adaptersecrets.New(platformsecrets.NewService(ring, secretRepo))
+	a.cache = keys.NewCache(postgres.NewSigningKeys(a.db.Pool), store, log)
+	a.state = health.NewState(
+		a.pgChk,
+		healthvk.NewChecker(a.kv.Raw),
+		funcChecker{"migrations", func() error {
+			if !migrated.Load() {
+				return errors.New("migrations are not done")
+			}
+			return nil
+		}},
+		funcChecker{"signing_key", func() error {
+			if !a.cache.HasActive() {
+				return errors.New("no active signing key")
+			}
+			return nil
+		}},
+	)
+	if a.adminL, err = (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Admin.Addr); err != nil {
+		return nil, fmt.Errorf("listen on the admin address: %w", err)
+	}
+	a.admin = &http.Server{
+		Handler:           health.NewHandler(a.state, cfg.Admin),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	a.serve(a.admin, a.adminL, "admin")
+
+	// 3. Run the migrations of the secrets store, then of the service.
+	if err := RunMigrations(ctx, a.db); err != nil {
+		return nil, err
+	}
+	migrated.Store(true)
+
+	// 4. Make the key manager and the key cache. Check that the active key
+	// decrypts before the manager can change any key.
+	signingRepo := postgres.NewSigningKeys(a.db.Pool)
+	policy := cfg.Keys.Policy()
+	if o.policy != nil {
+		policy = *o.policy
+	}
+	a.mgr = keys.NewManager(signingRepo, store, policy, keys.WithLogger(log))
+	if err := a.reloadCache(ctx); err != nil {
+		return nil, err
+	}
+	if err := a.mgr.Run(ctx); err != nil {
+		return nil, fmt.Errorf("run the key manager: %w", err)
+	}
+	if err := a.reloadCache(ctx); err != nil {
+		return nil, err
+	}
+	a.mgr.Start(context.WithoutCancel(ctx), o.managerInterval)
+	a.cache.Start(context.WithoutCancel(ctx), o.cacheInterval)
+	if err := a.registerMetrics(); err != nil {
+		return nil, err
+	}
+
+	// 5. Sync the clients file.
+	syncClients := decorators.ApplyTracingNoResult(decorators.ApplyLoggingNoResult[commands.SyncClients](
+		commands.NewSyncClients(postgres.NewClients(a.db.Pool), log), "SyncClients"), "SyncClients")
+	if err := syncClients.Execute(ctx, commands.SyncClients{Clients: clientConfigs}); err != nil {
+		return nil, fmt.Errorf("sync the clients file: %w", err)
+	}
+
+	// 6. Start the public server, then tell the state that the service is ready.
+	jwks := decorators.ApplyTracing(decorators.ApplyLogging(
+		queries.NewGetJWKS(a.cache), "GetJWKS"), "GetJWKS")
+	discovery := decorators.ApplyTracing(decorators.ApplyLogging(
+		queries.NewGetDiscovery(cfg.Issuer), "GetDiscovery"), "GetDiscovery")
+	api := httpapi.New(httpapi.Deps{JWKS: jwks, Discovery: discovery, Log: log})
+	handler := otelhttp.NewHandler(requestid.Middleware()(api.Handler()), "identity")
+	if a.pubL, err = (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.HTTP.Addr); err != nil {
+		return nil, fmt.Errorf("listen on the public address: %w", err)
+	}
+	a.pub = &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	a.serve(a.pub, a.pubL, "public")
+	a.state.MarkStarted()
+	return a, nil
+}
+
+func (a *App) serve(srv *http.Server, l net.Listener, name string) {
+	a.serveWG.Add(1)
+	go func() {
+		defer a.serveWG.Done()
+		if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			a.log.Error("server stopped", "server", name, "error", err)
+		}
+	}()
+}
+
+// reloadCache loads the key cache. A key that does not decrypt gives the
+// error of the master key.
+func (a *App) reloadCache(ctx context.Context) error {
+	err := a.cache.Reload(ctx)
+	if errors.Is(err, privatekeys.ErrUndecryptable) {
+		//nolint:staticcheck // The text is the message of the plan.
+		return fmt.Errorf("%w `%s`. Use the master key of the install, or run `identity rotate-signing-keys --force`.",
+			ErrMasterKeyMismatch, a.cfg.Secrets.MasterKeyID)
+	}
+	if err != nil {
+		return fmt.Errorf("load the signing keys: %w", err)
+	}
+	return nil
+}
+
+func (a *App) registerMetrics() error {
+	meter := otel.Meter("identity")
+	gauge, err := meter.Int64ObservableGauge("identity.signing_keys",
+		metric.WithDescription("Signing keys by state."))
+	if err != nil {
+		return fmt.Errorf("make the signing key gauge: %w", err)
+	}
+	a.reg, err = meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		for state, n := range a.cache.Counts() {
+			o.ObserveInt64(gauge, int64(n), metric.WithAttributes(attribute.String("state", string(state))))
+		}
+		return nil
+	}, gauge)
+	if err != nil {
+		return fmt.Errorf("register the signing key gauge: %w", err)
+	}
+	return nil
+}
+
+// Shutdown stops the service in the order of the platform-go guide: drain the
+// admin server, stop the public server, stop the loops, close the clients,
+// and stop the admin server last.
+func (a *App) Shutdown(ctx context.Context) error {
+	var errs []error
+	if a.state != nil {
+		a.state.MarkDraining()
+		t := time.NewTimer(a.cfg.Admin.DrainDelay)
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+		}
+	}
+	if a.pub != nil {
+		errs = append(errs, a.pub.Shutdown(ctx))
+	}
+	a.release(ctx)
+	return errors.Join(errs...)
+}
+
+// release stops everything that Start made. It is safe to call it more than
+// one time.
+func (a *App) release(ctx context.Context) {
+	a.closeOnce.Do(func() {
+		if a.pub != nil {
+			_ = a.pub.Close()
+		}
+		if a.reg != nil {
+			_ = a.reg.Unregister()
+		}
+		if a.mgr != nil {
+			a.mgr.Close()
+		}
+		if a.cache != nil {
+			a.cache.Close()
+		}
+		if a.pgChk != nil {
+			a.pgChk.Close()
+		}
+		if a.kv != nil {
+			a.kv.Close()
+		}
+		if a.db != nil {
+			a.db.Close()
+		}
+		if a.admin != nil {
+			sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			_ = a.admin.Shutdown(sctx)
+			cancel()
+		}
+		if a.adminL != nil {
+			_ = a.adminL.Close()
+		}
+		if a.pubL != nil {
+			_ = a.pubL.Close()
+		}
+		a.serveWG.Wait()
+	})
+}
+
+// RunMigrations runs the migrations of the secrets store, then the migrations
+// of the service.
+func RunMigrations(ctx context.Context, db *clientpg.Client) error {
+	secretsMigrator, err := migratepg.NewMigrator(db.Pool, secretspg.Migrations(),
+		migratepg.MigratorOptions{MigrationsTable: secretspg.MigrationsTable})
+	if err != nil {
+		return fmt.Errorf("make the secrets migrator: %w", err)
+	}
+	if _, err := migrate.Run(ctx, migratepg.NewLocker(db.Pool, secretspg.MigrationsTable), secretsMigrator,
+		migrate.Options{Name: secretspg.MigrationsTable}); err != nil {
+		return fmt.Errorf("run the secrets migrations: %w", err)
+	}
+	migrator, err := migratepg.NewMigrator(db.Pool, migrations.Files, migratepg.MigratorOptions{})
+	if err != nil {
+		return fmt.Errorf("make the migrator: %w", err)
+	}
+	if _, err := migrate.Run(ctx, migratepg.NewLocker(db.Pool, ""), migrator, migrate.Options{}); err != nil {
+		return fmt.Errorf("run the migrations: %w", err)
+	}
+	return nil
+}
