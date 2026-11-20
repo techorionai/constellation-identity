@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	platformconfig "github.com/techorionai/constellation-platform-go/config"
 	"github.com/techorionai/constellation-platform-go/health"
 	"github.com/techorionai/constellation-platform-go/resources/test/containers"
+	"github.com/techorionai/constellation-platform-go/retention"
 	"github.com/techorionai/constellation-platform-go/secrets"
 
 	"github.com/techorionai/constellation-identity/internal/config"
@@ -79,6 +81,11 @@ type settings struct {
 	managerInterval time.Duration
 	cacheInterval   time.Duration
 	clientsFile     string
+	logger          *slog.Logger
+	configure       []func(*config.Config)
+	passwordMemory  uint32
+	passwordPasses  uint32
+	retentionAfter  func(time.Duration) <-chan time.Time
 }
 
 // Option changes a test server.
@@ -102,6 +109,26 @@ func WithKeyIntervals(manager, cache time.Duration) Option {
 
 // WithClientsFile sets the path of the clients file.
 func WithClientsFile(path string) Option { return func(s *settings) { s.clientsFile = path } }
+
+// WithLogger sets the logger of the service, for example a LogCapture.
+func WithLogger(l *slog.Logger) Option { return func(s *settings) { s.logger = l } }
+
+// WithConfigure changes the config before the service starts. The change does
+// not go through the config checks.
+func WithConfigure(f func(*config.Config)) Option {
+	return func(s *settings) { s.configure = append(s.configure, f) }
+}
+
+// WithPasswordCost sets the memory (in KiB) and the passes of the argon2id
+// hash. The default of the test server is small, so that tests are fast.
+func WithPasswordCost(memoryKiB, passes uint32) Option {
+	return func(s *settings) { s.passwordMemory, s.passwordPasses = memoryKiB, passes }
+}
+
+// WithRetentionAfter sets the timer function of the retention runner.
+func WithRetentionAfter(after func(time.Duration) <-chan time.Time) Option {
+	return func(s *settings) { s.retentionAfter = after }
+}
 
 // Server is a running service.
 type Server struct {
@@ -131,7 +158,13 @@ func (e *Env) TryStart(t testing.TB, opts ...Option) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	svcOpts := []services.Option{}
+	svcOpts := []services.Option{services.WithPasswordCost(s.passwordMemory, s.passwordPasses)}
+	if s.logger != nil {
+		svcOpts = append(svcOpts, services.WithLogger(s.logger))
+	}
+	if s.retentionAfter != nil {
+		svcOpts = append(svcOpts, services.WithRetentionAfter(s.retentionAfter))
+	}
 	if s.policy != nil {
 		svcOpts = append(svcOpts, services.WithKeyPolicy(*s.policy))
 	}
@@ -176,6 +209,8 @@ func (s *Server) Pool(t testing.TB) *pgxpool.Pool {
 type Response struct {
 	StatusCode int
 	Header     http.Header
+	// Cookies are the cookies of the Set-Cookie headers. Only a Web client fills it.
+	Cookies []*http.Cookie
 }
 
 // Get does a GET request to the public URL and returns the response and the body.
@@ -213,7 +248,7 @@ func (s *Server) Post(t testing.TB, path string, form string) (Response, []byte)
 
 func (e *Env) buildConfig(t testing.TB, opts []Option) (config.Config, *settings, error) {
 	t.Helper()
-	s := &settings{}
+	s := &settings{passwordMemory: 1024, passwordPasses: 1}
 	for _, o := range opts {
 		o(s)
 	}
@@ -239,9 +274,21 @@ func (e *Env) buildConfig(t testing.TB, opts []Option) (config.Config, *settings
 		Valkey: clientvk.Config{
 			Address: e.VK.Address(), Username: user, Password: password, KeyPrefix: "identity", DialTimeout: 5 * time.Second,
 		},
-		Secrets:     secrets.Config{MasterKey: platformconfig.Secret(s.masterKey), MasterKeyID: s.masterKeyID},
-		Keys:        config.Keys{RotationPeriod: 2160 * time.Hour, PublishDelay: time.Hour, RetireAfter: 24 * time.Hour},
+		Secrets:  secrets.Config{MasterKey: platformconfig.Secret(s.masterKey), MasterKeyID: s.masterKeyID},
+		Keys:     config.Keys{RotationPeriod: 2160 * time.Hour, PublishDelay: time.Hour, RetireAfter: 24 * time.Hour},
+		Setup:    config.Setup{TTL: 24 * time.Hour},
+		Invite:   config.Invite{TTL: 72 * time.Hour},
+		Session:  config.Session{IdleTimeout: 12 * time.Hour, AbsoluteTimeout: 168 * time.Hour},
+		Password: config.Password{MaxConcurrent: 4, QueueTimeout: 5 * time.Second},
+		Login:    config.Login{MaxFailuresPerEmail: 5, MaxFailuresPerIP: 50, FailureWindow: 15 * time.Minute},
+		Retention: config.Retention{
+			Tokens:   retention.Config{Interval: time.Hour, BatchSize: 1000},
+			Sessions: retention.Config{Interval: time.Hour, BatchSize: 1000},
+		},
 		ClientsFile: s.clientsFile,
+	}
+	for _, f := range s.configure {
+		f(&cfg)
 	}
 	return cfg, s, nil
 }
