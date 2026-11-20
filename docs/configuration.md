@@ -38,6 +38,8 @@ clients:
     keys:
       - kid: helpdesk-2026-11
         jwk: { kty: EC, crv: P-256, x: "...", y: "..." }
+    roles:
+      - demo:agent
 ```
 
 Rules:
@@ -46,8 +48,13 @@ Rules:
 - A service client must not have `app: identity`.
 - `type` is `service` or missing. A missing `type` means `service`.
 - Each key is a public EC P-256 JWK. A private member (`d`, `p`, `q`, `dp`, `dq`, `qi`, `k`) is an error. `kid` values are unique in a client.
+- `roles` is a list of role references `<app>:<role>`. A value that does not match the form, or that occurs two times, is an error. The error names the client and the value.
 - `clients: []` is valid.
 - An error stops the start. The message names the client and the field.
+
+At each start the service replaces the assignments with the source `config` of each client with the `roles` of the file. An assignment with the source `api` stays. A role that does not exist yet, because its app did not publish the manifest, is a pending assignment. It applies when the manifest arrives, so services can start in any order. Every service client also has the implicit role `identity:service`. See [manifests.md](manifests.md).
+
+The only accepted audience of a client assertion is the value of `IDENTITY_ISSUER`. See [tokens.md](tokens.md).
 
 At each start, under a database lock, the service writes each client of the file with the source `config`. A client with the source `config` that is not in the file is set to `disabled`. A client with the source `api` is not changed. If the file has the ID of an `api` client, the service ignores the file entry and writes a `warn` log record.
 

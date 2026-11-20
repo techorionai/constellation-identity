@@ -6,12 +6,13 @@ The service follows the hexagonal architecture guide of the planner repository. 
 
 ```txt
 cmd/identity/main.go            Starts the service. Subcommands "healthcheck" and "rotate-signing-keys".
-api/openapi/                    Constellation.Identity.openapi.yaml, CONTRACTS_VERSION
-internal/domain/                Pure types and rules (signing key states, client rules)
+api/openapi/                    Constellation.Identity.openapi.yaml, identity-manifest.json, CONTRACTS_VERSION
+internal/domain/                Pure types and rules (signing keys, clients, manifests, roles, assertions, scopes)
 internal/ports/<port>/          Interfaces
 internal/adapters/postgres/     Repositories
 internal/adapters/secrets/      Adapter of the port "privatekeys" on platform-go secrets
-internal/adapters/jose/         Adapter of the port "tokensigner" with go-jose
+internal/adapters/jose/         Adapters of the ports "tokensigner" and "assertion" with go-jose
+internal/adapters/valkey/       Adapter of the port "jtistore"
 internal/app/{commands,queries} Use cases with platform-go executors and decorators
 internal/app/keys/              Key manager and in-memory key cache
 internal/handlers/http/         Generated server (gen/), handlers
@@ -32,18 +33,27 @@ The `.golangci.yml` file has `depguard` rules for the import table of the guide.
 | Private key store | `internal/ports/privatekeys` | `internal/adapters/secrets` on `secrets.Service` |
 | Token signer | `internal/ports/tokensigner` | `internal/adapters/jose` |
 | Client repository | `internal/ports/clients` | `internal/adapters/postgres` |
+| Manifest and role repository | `internal/ports/manifests` | `internal/adapters/postgres` |
+| Client role repository | `internal/ports/clientroles` | `internal/adapters/postgres` |
+| Assertion parser | `internal/ports/assertion` | `internal/adapters/jose` |
+| Replay store (`jti`) | `internal/ports/jtistore` | `internal/adapters/valkey` |
 
 ## Routes
 
 `oapi-codegen` makes the `std-http-server` and `strict-server` code for all operations of the contract. One generated router serves OAuth, discovery, and `/v1`. The service uses no OIDC provider library. The `go-jose` library signs JWTs.
 
-The middleware chain is `otelhttp`, then `requestid`, then the router.
+The middleware chain is `otelhttp`, then `requestid`, then a body limit of 1 MiB, then the router. Each `/v1` route adds `auth.Middleware` and `auth.RequireScopes` with the `x-required-scopes` list of the operation. The route pattern of the router gives the list. See [tokens.md](tokens.md).
+
+The service reads the lists from the embedded OpenAPI file at start (`NewScopeTable`). A `/v1` operation with no list stops the start. A request for a `/v1` route with no entry fails with a 500 (fail closed).
+
+The token endpoint is the use case `IssueServiceToken` in `internal/app/commands/`. It uses the ports `clients`, `clientroles`, `manifests`, `jtistore`, `assertion`, and `tokensigner`, and the key cache. The `/v1` routes use `auth/jwt` of `constellation-platform-go` as an in-process verifier. Its JWKS comes from the key cache through a round tripper, not from the network.
 
 | Route | State |
 | ----- | ----- |
 | `GET /.well-known/jwks.json` | Implemented. `Cache-Control: public, max-age=300`. |
 | `GET /.well-known/openid-configuration` | Implemented. `Cache-Control: public, max-age=3600`. |
-| `POST /oauth/token` | 400 `unsupported_grant_type` until the grants come. |
+| `POST /oauth/token` | Grant `client_credentials`. Other grants give 400 `unsupported_grant_type` until issue 4. |
+| `PUT /v1/permission-manifests/{app}`, `GET /v1/permission-manifests`, `GET /v1/permission-manifests/{app}`, `GET /v1/roles`, `GET /v1/roles/{role}` | Implemented. |
 | All other operations | 501 `Problem` with the code `not_implemented`. |
 
 ## Startup order
@@ -51,7 +61,7 @@ The middleware chain is `otelhttp`, then `requestid`, then the router.
 1. Load the clients file (an error stops the start).
 2. Connect to PostgreSQL and Valkey.
 3. Start the admin server. `/livez` is 200 and `/readyz` is 503.
-4. Run the migrations of `secrets/postgres`, then the migrations of the service.
+4. Run the migrations of `secrets/postgres`, then the migrations of the service. Then publish the own manifest of the service (the roles `identity:admin` and `identity:service`).
 5. Load the key cache. A key that does not decrypt stops the start. Then run the key manager one time and load the cache again. The first load comes before the manager, so the manager never makes a key after a master key change.
 6. Start the key manager loop (10 minutes) and the cache reload loop (1 minute).
 7. Sync the clients file.
@@ -87,4 +97,4 @@ The environment-only rule of `constellation-platform-go` says "no config files".
 
 ## Telemetry
 
-The service name is `identity`. Metrics: `identity.signing_keys` (gauge, attribute `state`) and `identity.key_rotation` (counter, attribute `outcome` with `ok` or `error`). Each key state change writes one `info` log record with `kid`, `old_state`, and `new_state`. No log record has a private key.
+The service name is `identity`. Metrics: `identity.signing_keys` (gauge, attribute `state`) and `identity.key_rotation` (counter, attribute `outcome` with `ok` or `error`). Token metrics: `identity.tokens.issued` (counter, attributes `grant_type` and `principal_type`) and `identity.token.errors` (counter, attribute `error`). See [tokens.md](tokens.md) for the log rule. Each key state change writes one `info` log record with `kid`, `old_state`, and `new_state`. No log record has a private key.

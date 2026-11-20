@@ -28,7 +28,13 @@ The integration tests need Docker. They start PostgreSQL and Valkey with testcon
    ```
 
 2. Write the version in `api/openapi/CONTRACTS_VERSION`.
-3. Run `go generate ./...`. Implement the new operations or the new fields.
+3. Copy the manifest of the identity service from the same tag:
+
+   ```sh
+   git -C ../constellation-contracts show vX.Y.Z:services/identity/manifest.json > api/openapi/identity-manifest.json
+   ```
+
+4. Run `go generate ./...`. Implement the new operations or the new fields.
 
 ## Rotation test values
 
