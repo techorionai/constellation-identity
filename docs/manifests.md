@@ -9,7 +9,18 @@ A service publishes the permissions and the default roles of its app in a manife
 1. `{app}` is not `identity`. The app `identity` is reserved. The service publishes its own manifest at start, from the embedded copy of `services/identity/manifest.json` of `constellation-contracts`. No client can publish it.
 2. The caller is a service client. Its `app` is equal to `{app}` and to `manifest.app`.
 3. The checks of the keys run and return all problems in one answer.
-4. The service stores the manifest in one transaction. It locks the row of the app first. If the hash is the stored hash, nothing changes and the answer has the stored version. Otherwise the service replaces the permissions, the roles, and the role permissions, and increments the version.
+4. The service stores the manifest in one transaction. It locks the row of the app first. If the hash is the stored hash, nothing changes and the answer has the stored version. Otherwise the service replaces the permissions, the roles, and the role permissions, and increments the version. The inserts run in batches of at most 1000 rows, with one statement for each batch.
+
+## Limits
+
+A manifest over a limit gets 422 and a field error. A character is one Unicode code point.
+
+| Limit | Value | Code | Pointer |
+| ----- | ----- | ---- | ------- |
+| Permissions in a manifest | 200 | `too_many_permissions` | `/permissions` |
+| Roles in a manifest | 50 | `too_many_roles` | `/defaultRoles` |
+| Permissions in one role | 100 | `too_many_role_permissions` | `/defaultRoles/<i>/permissions` |
+| Characters in a description | 256 | `description_too_long` | `/permissions/<i>/description` and `/defaultRoles/<i>/description` |
 
 ## Errors
 
@@ -22,6 +33,7 @@ The answer is 422 with a `Problem`. The `code` of the `Problem` is the code of t
 | `role_permission_unknown` | A role permission is not in `permissions`. | `/defaultRoles/<i>/permissions/<j>` |
 | `duplicate_key` | A permission key, a role key, or a role permission occurs two times. | The second occurrence |
 | `invalid_key` | A key does not match its pattern. | The key |
+| `too_many_permissions`, `too_many_roles`, `too_many_role_permissions`, `description_too_long` | A manifest is over a limit. See "Limits". | See "Limits" |
 
 A permission key has the form `<app>:<resource>:<action>`. The only exception is `identity:admin`.
 

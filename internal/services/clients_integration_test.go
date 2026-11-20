@@ -5,14 +5,19 @@ package services_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/techorionai/constellation-platform-go/auth"
 	"github.com/techorionai/constellation-platform-go/auth/jwt"
 	"github.com/techorionai/constellation-platform-go/clients/identity"
@@ -210,6 +215,110 @@ func TestIssue2Integration(t *testing.T) {
 		resp, _ = s.Do(t, http.MethodGet, "/v1/roles?pageToken=%21%21", read, "")
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("bad page token: status = %d", resp.StatusCode)
+		}
+	})
+
+	// I2b: ListManifests loads a page in a fixed number of queries.
+	t.Run("I2b_list_query_count", func(t *testing.T) {
+		s := env.Start(t)
+		cfg, err := pgxpool.ParseConfig(string(s.DB.URL))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tracer := &queryCounter{}
+		cfg.ConnConfig.Tracer = tracer
+		pool, err := pgxpool.NewWithConfig(ctx, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(pool.Close)
+		repo := postgres.NewManifests(pool)
+		for _, app := range []string{"aaa", "bbb", "ccc"} {
+			_, err := repo.Publish(ctx, domain.Manifest{
+				App:         app,
+				Permissions: []domain.PermissionDef{{Key: app + ":thing:read", Description: "Read."}, {Key: app + ":thing:write", Description: "Write."}},
+				Roles: []domain.RoleDef{
+					{Key: "reader", Name: "Reader", Description: "R.", Permissions: []string{app + ":thing:read"}},
+					{Key: "writer", Name: "Writer", Description: "W.", Permissions: []string{app + ":thing:read", app + ":thing:write"}},
+				},
+			}, "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		listCount := func(limit int) (int, []domain.PublishedManifest) {
+			before := tracer.n.Load()
+			items, err := repo.List(ctx, "", limit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return int(tracer.n.Load() - before), items
+		}
+		one, items1 := listCount(1)
+		three, items3 := listCount(3)
+		if len(items1) != 1 || len(items3) != 3 {
+			t.Fatalf("items = %d and %d", len(items1), len(items3))
+		}
+		if one != three {
+			t.Fatalf("queries for 1 app = %d, for 3 apps = %d", one, three)
+		}
+		for _, m := range items3 {
+			if len(m.Manifest.Permissions) != 2 || len(m.Manifest.Roles) != 2 || len(m.Manifest.Roles[1].Permissions) != 2 {
+				t.Fatalf("manifest %s is not complete: %+v", m.Manifest.App, m.Manifest)
+			}
+		}
+	})
+
+	// I13: the limits of a manifest, and the batch inserts.
+	t.Run("I13_manifest_limits", func(t *testing.T) {
+		demo := testserver.NewServiceClient(t, "demo", "demo")
+		s := env.Start(t, testserver.WithClients(t, demo))
+		tok := token(t, s, demo, "identity", "identity:manifest:publish")
+		build := func(permissions, roles, perRole int) string {
+			var perms []string
+			for i := range permissions {
+				perms = append(perms, fmt.Sprintf("demo:thing:p%d", i))
+			}
+			var order []string
+			defs := map[string][]string{}
+			for i := range roles {
+				key := fmt.Sprintf("r%d", i)
+				order = append(order, key)
+				defs[key] = perms[:min(perRole, len(perms))]
+			}
+			return manifestJSON(t, "demo", perms, order, defs)
+		}
+		resp, m := publish(t, s, tok, "demo", build(201, 1, 1))
+		if resp.StatusCode != http.StatusUnprocessableEntity || m["code"] != "too_many_permissions" {
+			t.Fatalf("201 permissions: %d %v", resp.StatusCode, m)
+		}
+		resp, m = publish(t, s, tok, "demo", build(1, 51, 1))
+		if resp.StatusCode != http.StatusUnprocessableEntity || m["code"] != "too_many_roles" {
+			t.Fatalf("51 roles: %d %v", resp.StatusCode, m)
+		}
+		resp, m = publish(t, s, tok, "demo", build(101, 1, 101))
+		if resp.StatusCode != http.StatusUnprocessableEntity || m["code"] != "too_many_role_permissions" {
+			t.Fatalf("101 role permissions: %d %v", resp.StatusCode, m)
+		}
+		long := strings.Replace(build(1, 1, 1), `"Permission demo:thing:p0"`, `"`+strings.Repeat("a", 257)+`"`, 1)
+		resp, m = publish(t, s, tok, "demo", long)
+		if resp.StatusCode != http.StatusUnprocessableEntity || m["code"] != "description_too_long" {
+			t.Fatalf("long description: %d %v", resp.StatusCode, m)
+		}
+		if n := count(t, s, `SELECT count(*) FROM apps WHERE key = 'demo'`); n != 0 {
+			t.Fatalf("a rejected manifest changed the tables (apps = %d)", n)
+		}
+
+		// 200 permissions, 50 roles, 100 permissions in each role.
+		resp, m = publish(t, s, tok, "demo", build(200, 50, 100))
+		if resp.StatusCode != http.StatusOK || m["version"] != float64(1) {
+			t.Fatalf("manifest at the limits: %d %v", resp.StatusCode, m)
+		}
+		if n := count(t, s, `SELECT count(*) FROM permissions WHERE app = 'demo'`); n != 200 {
+			t.Fatalf("permissions = %d", n)
+		}
+		if n := count(t, s, `SELECT count(*) FROM role_permissions WHERE app = 'demo'`); n != 5000 {
+			t.Fatalf("role permissions = %d", n)
 		}
 	})
 
@@ -690,6 +799,16 @@ func TestIssue2Integration(t *testing.T) {
 		}
 	})
 }
+
+// queryCounter is a pgx tracer that counts the queries.
+type queryCounter struct{ n atomic.Int64 }
+
+func (c *queryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	c.n.Add(1)
+	return ctx
+}
+
+func (c *queryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // countJTIs returns the number of rows in client_assertion_jtis.
 func countJTIs(t *testing.T, s *testserver.Server) int {

@@ -2,8 +2,8 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -70,26 +70,8 @@ func (r *Manifests) Publish(ctx context.Context, m domain.Manifest, publishedBy 
 			return domain.PublishedManifest{}, fmt.Errorf("delete old manifest: %w", err)
 		}
 	}
-	for _, p := range m.Permissions {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO permissions (key, app, description) VALUES ($1, $2, $3)`,
-			p.Key, m.App, p.Description); err != nil {
-			return domain.PublishedManifest{}, fmt.Errorf("insert permission %s: %w", p.Key, err)
-		}
-	}
-	for _, role := range m.Roles {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO roles (app, key, name, description) VALUES ($1, $2, $3, $4)`,
-			m.App, role.Key, role.Name, role.Description); err != nil {
-			return domain.PublishedManifest{}, fmt.Errorf("insert role %s: %w", role.Key, err)
-		}
-		for _, perm := range role.Permissions {
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO role_permissions (app, role, permission) VALUES ($1, $2, $3)`,
-				m.App, role.Key, perm); err != nil {
-				return domain.PublishedManifest{}, fmt.Errorf("insert role permission %s: %w", perm, err)
-			}
-		}
+	if err := insertManifestRows(ctx, tx, m); err != nil {
+		return domain.PublishedManifest{}, err
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE apps SET manifest_version = manifest_version + 1, manifest_hash = $2,
@@ -107,45 +89,137 @@ func (r *Manifests) Publish(ctx context.Context, m domain.Manifest, publishedBy 
 	return out, nil
 }
 
+// insertBatch is the largest number of rows in one insert statement.
+const insertBatch = 1000
+
+// insertManifestRows inserts the permissions, the roles, and the role
+// permissions of a manifest. Each statement inserts a batch of rows from
+// unnest arrays, so the number of statements is small.
+func insertManifestRows(ctx context.Context, tx pgx.Tx, m domain.Manifest) error {
+	for chunk := range slices.Chunk(m.Permissions, insertBatch) {
+		keys := make([]string, len(chunk))
+		descriptions := make([]string, len(chunk))
+		for i, p := range chunk {
+			keys[i], descriptions[i] = p.Key, p.Description
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO permissions (key, app, description)
+			SELECT k, $1, d FROM unnest($2::text[], $3::text[]) AS t (k, d)`,
+			m.App, keys, descriptions); err != nil {
+			return fmt.Errorf("insert permissions: %w", err)
+		}
+	}
+	for chunk := range slices.Chunk(m.Roles, insertBatch) {
+		keys := make([]string, len(chunk))
+		names := make([]string, len(chunk))
+		descriptions := make([]string, len(chunk))
+		for i, r := range chunk {
+			keys[i], names[i], descriptions[i] = r.Key, r.Name, r.Description
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO roles (app, key, name, description)
+			SELECT $1, k, n, d FROM unnest($2::text[], $3::text[], $4::text[]) AS t (k, n, d)`,
+			m.App, keys, names, descriptions); err != nil {
+			return fmt.Errorf("insert roles: %w", err)
+		}
+	}
+	type rolePermission struct{ role, permission string }
+	var pairs []rolePermission
+	for _, r := range m.Roles {
+		for _, p := range r.Permissions {
+			pairs = append(pairs, rolePermission{role: r.Key, permission: p})
+		}
+	}
+	for chunk := range slices.Chunk(pairs, insertBatch) {
+		roles := make([]string, len(chunk))
+		permissions := make([]string, len(chunk))
+		for i, p := range chunk {
+			roles[i], permissions[i] = p.role, p.permission
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO role_permissions (app, role, permission)
+			SELECT $1, r, p FROM unnest($2::text[], $3::text[]) AS t (r, p)`,
+			m.App, roles, permissions); err != nil {
+			return fmt.Errorf("insert role permissions: %w", err)
+		}
+	}
+	return nil
+}
+
 // loadManifest reads the manifest of an app.
 func loadManifest(ctx context.Context, q querier, app string) (domain.PublishedManifest, error) {
-	out := domain.PublishedManifest{Manifest: domain.Manifest{App: app}}
-	err := q.QueryRow(ctx, `
-		SELECT manifest_version, manifest_hash, published_at, published_by
-		FROM apps WHERE key = $1 AND manifest_version > 0`, app).
-		Scan(&out.Version, &out.Hash, &out.PublishedAt, &out.PublishedBy)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.PublishedManifest{}, fmt.Errorf("manifest of app %s: %w", app, manifests.ErrNotFound)
-	}
-	if err != nil {
-		return domain.PublishedManifest{}, fmt.Errorf("get app: %w", err)
-	}
-
-	rows, err := q.Query(ctx, `SELECT key, description FROM permissions WHERE app = $1 ORDER BY key`, app)
-	if err != nil {
-		return domain.PublishedManifest{}, fmt.Errorf("list permissions: %w", err)
-	}
-	for rows.Next() {
-		var p domain.PermissionDef
-		if err := rows.Scan(&p.Key, &p.Description); err != nil {
-			rows.Close()
-			return domain.PublishedManifest{}, fmt.Errorf("scan permission: %w", err)
-		}
-		out.Manifest.Permissions = append(out.Manifest.Permissions, p)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return domain.PublishedManifest{}, fmt.Errorf("list permissions: %w", err)
-	}
-
-	roles, err := queryRoles(ctx, q, `WHERE r.app = $1`, 0, app)
+	out, err := loadManifests(ctx, q, []string{app})
 	if err != nil {
 		return domain.PublishedManifest{}, err
 	}
+	if len(out) == 0 {
+		return domain.PublishedManifest{}, fmt.Errorf("manifest of app %s: %w", app, manifests.ErrNotFound)
+	}
+	return out[0], nil
+}
+
+// loadManifests reads the manifests of some apps with 3 queries, for any
+// number of apps. An app with no published manifest is not in the result. The
+// result is in order of the app key.
+func loadManifests(ctx context.Context, q querier, apps []string) ([]domain.PublishedManifest, error) {
+	rows, err := q.Query(ctx, `
+		SELECT key, manifest_version, manifest_hash, published_at, published_by
+		FROM apps WHERE key = ANY($1) AND manifest_version > 0 ORDER BY key`, apps)
+	if err != nil {
+		return nil, fmt.Errorf("get apps: %w", err)
+	}
+	var out []domain.PublishedManifest
+	index := make(map[string]int, len(apps))
+	for rows.Next() {
+		var m domain.PublishedManifest
+		if err := rows.Scan(&m.Manifest.App, &m.Version, &m.Hash, &m.PublishedAt, &m.PublishedBy); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan app: %w", err)
+		}
+		index[m.Manifest.App] = len(out)
+		out = append(out, m)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("get apps: %w", err)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+
+	rows, err = q.Query(ctx, `
+		SELECT app, key, description FROM permissions WHERE app = ANY($1) ORDER BY app, key`, apps)
+	if err != nil {
+		return nil, fmt.Errorf("list permissions: %w", err)
+	}
+	for rows.Next() {
+		var (
+			app string
+			p   domain.PermissionDef
+		)
+		if err := rows.Scan(&app, &p.Key, &p.Description); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan permission: %w", err)
+		}
+		if i, ok := index[app]; ok {
+			out[i].Manifest.Permissions = append(out[i].Manifest.Permissions, p)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list permissions: %w", err)
+	}
+
+	roles, err := queryRoles(ctx, q, `WHERE r.app = ANY($1)`, 0, apps)
+	if err != nil {
+		return nil, err
+	}
 	for _, role := range roles {
-		out.Manifest.Roles = append(out.Manifest.Roles, domain.RoleDef{
-			Key: role.Ref.Role, Name: role.Name, Description: role.Description, Permissions: role.Permissions,
-		})
+		if i, ok := index[role.Ref.App]; ok {
+			out[i].Manifest.Roles = append(out[i].Manifest.Roles, domain.RoleDef{
+				Key: role.Ref.Role, Name: role.Name, Description: role.Description, Permissions: role.Permissions,
+			})
+		}
 	}
 	return out, nil
 }
@@ -210,18 +284,10 @@ func (r *Manifests) List(ctx context.Context, afterApp string, limit int) ([]dom
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list apps: %w", err)
 	}
-	out := make([]domain.PublishedManifest, 0, len(apps))
-	for _, app := range apps {
-		m, err := loadManifest(ctx, r.pool, app)
-		if errors.Is(err, manifests.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, m)
+	if len(apps) == 0 {
+		return []domain.PublishedManifest{}, nil
 	}
-	return out, nil
+	return loadManifests(ctx, r.pool, apps)
 }
 
 // HasManifest reports whether the app has a published manifest.

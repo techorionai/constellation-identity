@@ -1,8 +1,10 @@
 package domain_test
 
 import (
+	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,5 +211,55 @@ func TestIssue2_RoleRef(t *testing.T) {
 		if _, err := domain.ParseRoleRef(bad); err == nil {
 			t.Errorf("ParseRoleRef(%q) passed", bad)
 		}
+	}
+}
+
+// Issue2_U4c: the limits of a manifest.
+func TestIssue2_U4c_ManifestLimits(t *testing.T) {
+	over := demoManifest()
+	over.Permissions = nil
+	for i := range domain.MaxManifestPermissions + 1 {
+		over.Permissions = append(over.Permissions, domain.PermissionDef{Key: fmt.Sprintf("helpdesk:ticket:p%d", i), Description: "P."})
+	}
+	over.Roles = nil
+	for i := range domain.MaxManifestRoles + 1 {
+		over.Roles = append(over.Roles, domain.RoleDef{Key: fmt.Sprintf("r%d", i), Name: "R", Description: "R.", Permissions: []string{}})
+	}
+	for i := range domain.MaxRolePermissions + 1 {
+		over.Roles[0].Permissions = append(over.Roles[0].Permissions, over.Permissions[i].Key)
+	}
+	long := strings.Repeat("a", domain.MaxDescriptionLength+1)
+	over.Permissions[0].Description = long
+	over.Roles[1].Description = long
+	got := codesAndFields(domain.CheckManifest(over))
+	want := [][2]string{
+		{domain.CodeTooManyPermissions, "/permissions"},
+		{domain.CodeTooManyRoles, "/defaultRoles"},
+		{domain.CodeDescriptionTooLong, "/permissions/0/description"},
+		{domain.CodeTooManyRolePermissions, "/defaultRoles/0/permissions"},
+		{domain.CodeDescriptionTooLong, "/defaultRoles/1/description"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("errors = %v, want %v", got, want)
+	}
+
+	// A manifest at each limit. A description of 256 multi-byte characters is
+	// 768 bytes and is valid, because the limit counts characters.
+	at := demoManifest()
+	at.Permissions = at.Permissions[:0]
+	for i := range domain.MaxManifestPermissions {
+		at.Permissions = append(at.Permissions, domain.PermissionDef{Key: fmt.Sprintf("helpdesk:ticket:p%d", i), Description: "P."})
+	}
+	at.Roles = nil
+	for i := range domain.MaxManifestRoles {
+		at.Roles = append(at.Roles, domain.RoleDef{Key: fmt.Sprintf("r%d", i), Name: "R", Description: "R.", Permissions: []string{}})
+	}
+	for i := range domain.MaxRolePermissions {
+		at.Roles[0].Permissions = append(at.Roles[0].Permissions, at.Permissions[i].Key)
+	}
+	at.Permissions[0].Description = strings.Repeat("a", domain.MaxDescriptionLength)
+	at.Roles[1].Description = strings.Repeat("\u20ac", domain.MaxDescriptionLength)
+	if errs := domain.CheckManifest(at); len(errs) != 0 {
+		t.Fatalf("errors at the limits = %v", errs)
 	}
 }

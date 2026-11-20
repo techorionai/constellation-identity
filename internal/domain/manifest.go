@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // The codes of the manifest checks. They are the codes of the contract.
@@ -18,6 +19,20 @@ const (
 	CodeRolePermissionUnknown = "role_permission_unknown"
 	CodeDuplicateKey          = "duplicate_key"
 	CodeInvalidKey            = "invalid_key"
+
+	// The codes of the manifest limits. They are not in the contract.
+	CodeTooManyPermissions     = "too_many_permissions"
+	CodeTooManyRoles           = "too_many_roles"
+	CodeTooManyRolePermissions = "too_many_role_permissions"
+	CodeDescriptionTooLong     = "description_too_long"
+)
+
+// The limits of a manifest. A description length is a number of characters.
+const (
+	MaxManifestPermissions = 200
+	MaxManifestRoles       = 50
+	MaxRolePermissions     = 100
+	MaxDescriptionLength   = 256
 )
 
 // AdminPermission is the permission of full administration. It has two
@@ -109,8 +124,18 @@ func CheckManifest(m Manifest) []FieldError {
 	if !ValidAppKey(m.App) {
 		add(CodeInvalidKey, "/app", "The app key is not valid.")
 	}
+	if len(m.Permissions) > MaxManifestPermissions {
+		add(CodeTooManyPermissions, "/permissions", "A manifest has at most %d permissions.", MaxManifestPermissions)
+	}
+	if len(m.Roles) > MaxManifestRoles {
+		add(CodeTooManyRoles, "/defaultRoles", "A manifest has at most %d roles.", MaxManifestRoles)
+	}
 	defined := make(map[string]bool, len(m.Permissions))
 	for i, p := range m.Permissions {
+		if utf8.RuneCountInString(p.Description) > MaxDescriptionLength {
+			add(CodeDescriptionTooLong, fmt.Sprintf("/permissions/%d/description", i),
+				"A description has at most %d characters.", MaxDescriptionLength)
+		}
 		field := fmt.Sprintf("/permissions/%d/key", i)
 		switch {
 		case !ValidPermissionKey(p.Key):
@@ -125,6 +150,14 @@ func CheckManifest(m Manifest) []FieldError {
 	}
 	roles := make(map[string]bool, len(m.Roles))
 	for i, r := range m.Roles {
+		if utf8.RuneCountInString(r.Description) > MaxDescriptionLength {
+			add(CodeDescriptionTooLong, fmt.Sprintf("/defaultRoles/%d/description", i),
+				"A description has at most %d characters.", MaxDescriptionLength)
+		}
+		if len(r.Permissions) > MaxRolePermissions {
+			add(CodeTooManyRolePermissions, fmt.Sprintf("/defaultRoles/%d/permissions", i),
+				"A role has at most %d permissions.", MaxRolePermissions)
+		}
 		field := fmt.Sprintf("/defaultRoles/%d/key", i)
 		if !ValidRoleKey(r.Key) {
 			add(CodeInvalidKey, field, "The role key is not valid.")
