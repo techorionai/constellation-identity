@@ -70,6 +70,18 @@ func (r *Clients) UpsertConfig(ctx context.Context, c domain.ClientConfig) (bool
 		c.Client.ID, kids); err != nil {
 		return false, fmt.Errorf("delete old keys of %s: %w", c.Client.ID, err)
 	}
+	// Replace the assignments of the file. An assignment with source api stays.
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM client_roles WHERE client_id = $1 AND source = 'config'`, c.Client.ID); err != nil {
+		return false, fmt.Errorf("delete old roles of %s: %w", c.Client.ID, err)
+	}
+	for _, ref := range c.Roles {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO client_roles (client_id, app, role, source) VALUES ($1, $2, $3, 'config')
+			ON CONFLICT (client_id, app, role) DO NOTHING`, c.Client.ID, ref.App, ref.Role); err != nil {
+			return false, fmt.Errorf("insert role %s of %s: %w", ref, c.Client.ID, err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit: %w", err)
 	}
