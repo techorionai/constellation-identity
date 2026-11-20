@@ -72,11 +72,47 @@ type KeyPolicy struct {
 // Thumbprint returns the kid of a public key: the first 32 lowercase hex
 // characters of the RFC 7638 SHA-256 thumbprint.
 func Thumbprint(pub *ecdsa.PublicKey) string {
-	jwk := PublicJWKOf(pub)
 	// RFC 7638: the members in lexicographic order, with no white space.
+	return ThumbprintOfJWK(PublicJWKOf(pub))
+}
+
+// ThumbprintOfJWK returns the kid of a public JWK, as Thumbprint does for a
+// key. The JWK must be valid. Use ValidatePublicJWK first.
+func ThumbprintOfJWK(jwk PublicJWK) string {
 	canonical := fmt.Sprintf(`{"crv":%q,"kty":%q,"x":%q,"y":%q}`, jwk.Crv, jwk.Kty, jwk.X, jwk.Y)
 	sum := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(sum[:])[:32]
+}
+
+// Validate checks that the row is consistent. The public key must be a P-256
+// key on the curve, the RFC 7638 thumbprint of the key must be the kid, the
+// members alg and use must be ES256 and sig, and the private key name must be
+// PrivateKeyName(kid). The JWKS serves only a row that passes this check.
+func (k SigningKey) Validate() error {
+	if err := ValidatePublicJWK(k.PublicJWK); err != nil {
+		return fmt.Errorf("signing key %s: %w", k.KID, err)
+	}
+	if got := ThumbprintOfJWK(k.PublicJWK); got != k.KID {
+		return fmt.Errorf("signing key %s: the thumbprint of the public key is %s", k.KID, got)
+	}
+	if k.PublicJWK.Kid != k.KID {
+		return fmt.Errorf("signing key %s: the member kid of the public key is not the kid", k.KID)
+	}
+	if k.Alg != AlgES256 || k.PublicJWK.Alg != AlgES256 {
+		return fmt.Errorf("signing key %s: alg must be %s", k.KID, AlgES256)
+	}
+	if k.PublicJWK.Use != "sig" {
+		return fmt.Errorf("signing key %s: use must be sig", k.KID)
+	}
+	if k.PrivateKeyName != PrivateKeyName(k.KID) {
+		return fmt.Errorf("signing key %s: the private key name is not %s", k.KID, PrivateKeyName(k.KID))
+	}
+	switch k.State {
+	case KeyPending, KeyActive, KeyRetired:
+	default:
+		return fmt.Errorf("signing key %s: unknown state %q", k.KID, k.State)
+	}
+	return nil
 }
 
 // PublicJWKOf returns the JWK of a P-256 public key. The result has no kid.

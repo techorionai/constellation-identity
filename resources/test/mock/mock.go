@@ -66,6 +66,40 @@ func (r *SigningKeys) UpdateState(_ context.Context, kid string, state domain.Ke
 	return fmt.Errorf("signing key %s not found", kid)
 }
 
+// Activate retires the keys in retire and makes the key kid active. All
+// changes apply or none applies, as in a transaction.
+func (r *SigningKeys) Activate(_ context.Context, kid string, retire []string, retiredAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	saved := slices.Clone(r.rows)
+	set := func(id string, state domain.KeyState, at *time.Time) error {
+		if r.UpdateStateHook != nil {
+			if err := r.UpdateStateHook(id, state); err != nil {
+				return err
+			}
+		}
+		for i := range r.rows {
+			if r.rows[i].KID == id {
+				r.rows[i].State = state
+				r.rows[i].RetiredAt = at
+				return nil
+			}
+		}
+		return fmt.Errorf("signing key %s not found", id)
+	}
+	for _, old := range retire {
+		if err := set(old, domain.KeyRetired, &retiredAt); err != nil {
+			r.rows = saved
+			return err
+		}
+	}
+	if err := set(kid, domain.KeyActive, nil); err != nil {
+		r.rows = saved
+		return err
+	}
+	return nil
+}
+
 // Delete removes a key row.
 func (r *SigningKeys) Delete(_ context.Context, kid string) error {
 	if r.DeleteHook != nil {

@@ -24,12 +24,15 @@ type Cache struct {
 	store privatekeys.Store
 	log   *slog.Logger
 
+	reloadMu sync.Mutex // Serializes Reload.
+
 	mu     sync.RWMutex
 	keys   []domain.SigningKey
 	active *tokensigner.Key
 
-	wg   sync.WaitGroup
-	stop context.CancelFunc
+	stopMu sync.Mutex // Protects stop.
+	wg     sync.WaitGroup
+	stop   context.CancelFunc
 }
 
 // NewCache makes an empty cache. Call Reload before use.
@@ -41,11 +44,23 @@ func NewCache(repo signingkeys.Repository, store privatekeys.Store, log *slog.Lo
 }
 
 // Reload reads the keys. It decrypts the private key of the active key when
-// the active key is new. On an error, the cache keeps its old content.
+// the active key is new. On an error, the cache keeps its old content. A row
+// that fails SigningKey.Validate is not served and is logged. Calls of Reload
+// run one at a time.
 func (c *Cache) Reload(ctx context.Context) error {
-	rows, err := c.repo.List(ctx)
+	c.reloadMu.Lock()
+	defer c.reloadMu.Unlock()
+	all, err := c.repo.List(ctx)
 	if err != nil {
 		return err
+	}
+	rows := make([]domain.SigningKey, 0, len(all))
+	for _, row := range all {
+		if err := row.Validate(); err != nil {
+			c.log.ErrorContext(ctx, "signing key row is not valid and is not served", "kid", row.KID, "error", err)
+			continue
+		}
+		rows = append(rows, row)
 	}
 	var activeRow *domain.SigningKey
 	for i := range rows {
@@ -84,8 +99,14 @@ func (c *Cache) Reload(ctx context.Context) error {
 	return nil
 }
 
-// Start reloads the cache every interval until Close.
+// Start reloads the cache every interval until Close. If the loop already
+// runs, Start does nothing.
 func (c *Cache) Start(ctx context.Context, interval time.Duration) {
+	c.stopMu.Lock()
+	defer c.stopMu.Unlock()
+	if c.stop != nil {
+		return
+	}
 	ctx, c.stop = context.WithCancel(ctx)
 	c.wg.Add(1)
 	go func() {
@@ -107,8 +128,12 @@ func (c *Cache) Start(ctx context.Context, interval time.Duration) {
 
 // Close stops the reload loop and waits for it.
 func (c *Cache) Close() {
-	if c.stop != nil {
-		c.stop()
+	c.stopMu.Lock()
+	stop := c.stop
+	c.stop = nil
+	c.stopMu.Unlock()
+	if stop != nil {
+		stop()
 	}
 	c.wg.Wait()
 }

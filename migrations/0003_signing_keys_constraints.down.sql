@@ -1,0 +1,2 @@
+DROP INDEX signing_keys_one_active_idx;
+ALTER TABLE signing_keys DROP CONSTRAINT signing_keys_retired_at_check;

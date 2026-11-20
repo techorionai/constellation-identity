@@ -65,17 +65,19 @@ The key manager runs under a PostgreSQL advisory lock, so one instance changes t
 
 1. No `active` or `pending` key: make a key and activate it at once.
 2. The active key is older than `ROTATION_PERIOD` and no key is `pending`: make a `pending` key with `activates_at = now + PUBLISH_DELAY`.
-3. A `pending` key has `activates_at <= now`: make it `active` and set the old key to `retired`.
-4. A `retired` key has `retired_at + RETIRE_AFTER <= now`: delete it.
-5. Delete each secret under `identity/signing-keys/` that has no row.
+3. A `pending` key has `activates_at <= now`: make it `active` and set the old key to `retired`. Both changes are one database transaction.
+4. A `retired` key has `retired_at + RETIRE_AFTER <= now`: delete the row. A `retired` key has no private key, so there is no secret to delete.
+5. Delete each secret under `identity/signing-keys/` that has no row, or whose row is `retired`. This deletes the private key of the old key in the pass that retires it.
 
 The `kid` is the first 32 lowercase hex characters of the RFC 7638 SHA-256 thumbprint of the public key. The secret name is `identity/signing-keys/<kid>`.
 
 Write order:
 
 - A new key: put the secret first, then insert the row. A failure after the put leaves a secret with no row. Rule 5 deletes it.
-- A deleted key: delete the row first, then the secret. A failure after the row delete leaves a secret with no row. Rule 5 deletes it.
-- Thus a row never points to a missing secret.
+- A key that becomes `retired`: change the states in one transaction, then delete the secret. A failure after the transaction leaves a secret with a `retired` row. Rule 5 deletes it on the next run.
+- Thus a `pending` or `active` row never points to a missing secret. A `retired` row has no secret, or a secret that rule 5 deletes.
+
+The cache serves a row only if the row is valid. The RFC 7638 thumbprint of the public key must be the `kid`. The members `kty`, `crv`, `alg`, and `use` must be `EC`, `P-256`, `ES256`, and `sig`. The `private_key_name` must be `identity/signing-keys/<kid>`. The database has a unique index for one `active` row, and a check that a `retired` row has `retired_at`.
 
 The JWKS has the `pending`, `active`, and `retired` public keys. Only the `active` key signs. Each instance keeps the keys in memory and reloads them every minute.
 

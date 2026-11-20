@@ -17,6 +17,10 @@ type Repository interface {
 	// UpdateState sets the state of a key. retiredAt is set only for the
 	// state retired.
 	UpdateState(ctx context.Context, kid string, state domain.KeyState, retiredAt *time.Time) error
+	// Activate makes the pending key kid active and retires each key in
+	// retire with retiredAt. It does all changes in one transaction, so a
+	// failure leaves the old states.
+	Activate(ctx context.Context, kid string, retire []string, retiredAt time.Time) error
 	// Delete removes a key row.
 	Delete(ctx context.Context, kid string) error
 	// WithLock runs fn while this instance holds the cluster lock of the key

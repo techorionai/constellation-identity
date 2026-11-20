@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	clientpg "github.com/techorionai/constellation-platform-go/clients/postgres"
+	"github.com/techorionai/constellation-platform-go/transaction"
+	txpg "github.com/techorionai/constellation-platform-go/transaction/postgres"
 
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/signingkeys"
@@ -79,6 +81,20 @@ func (r *SigningKeys) UpdateState(ctx context.Context, kid string, state domain.
 		return fmt.Errorf("update signing key: %w", err)
 	}
 	return nil
+}
+
+// Activate retires the keys in retire, then makes the key kid active. It is
+// one transaction. The order matters: the unique index allows one active key.
+func (r *SigningKeys) Activate(ctx context.Context, kid string, retire []string, retiredAt time.Time) error {
+	tx := txpg.NewTransactor(r.pool)
+	return tx.WithinTx(ctx, func(ctx context.Context) error {
+		for _, old := range retire {
+			if err := r.UpdateState(ctx, old, domain.KeyRetired, &retiredAt); err != nil {
+				return err
+			}
+		}
+		return r.UpdateState(ctx, kid, domain.KeyActive, nil)
+	}, transaction.Name("activate_signing_key"))
 }
 
 // Delete removes a key row.

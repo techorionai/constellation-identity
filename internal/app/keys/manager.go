@@ -29,6 +29,7 @@ type Manager struct {
 	log    *slog.Logger
 	rotate metric.Int64Counter
 
+	mu   sync.Mutex // Protects stop.
 	wg   sync.WaitGroup
 	stop context.CancelFunc
 }
@@ -69,8 +70,13 @@ func (m *Manager) Run(ctx context.Context) error {
 }
 
 // Start runs Run every interval until Close. The first pass is the job of the
-// caller.
+// caller. If the loop already runs, Start does nothing.
 func (m *Manager) Start(ctx context.Context, interval time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stop != nil {
+		return
+	}
 	ctx, m.stop = context.WithCancel(ctx)
 	m.wg.Add(1)
 	go func() {
@@ -92,8 +98,12 @@ func (m *Manager) Start(ctx context.Context, interval time.Duration) {
 
 // Close stops the loop and waits for it.
 func (m *Manager) Close() {
-	if m.stop != nil {
-		m.stop()
+	m.mu.Lock()
+	stop := m.stop
+	m.stop = nil
+	m.mu.Unlock()
+	if stop != nil {
+		stop()
 	}
 	m.wg.Wait()
 }
@@ -111,7 +121,7 @@ func (m *Manager) ForceRotate(ctx context.Context) error {
 				return err
 			}
 		}
-		if err := m.deleteOrphans(ctx, nil); err != nil {
+		if err := m.deleteSecrets(ctx, nil); err != nil {
 			return err
 		}
 		_, err = m.createKey(ctx, domain.KeyActive, m.now())
@@ -149,36 +159,66 @@ func (m *Manager) pass(ctx context.Context) error {
 	}
 
 	// 3. A pending key is due: activate it and retire the old active key.
+	// Both changes are one transaction. The secret of the old key goes in
+	// step 5.
 	for i := range keys {
 		if keys[i].State != domain.KeyPending || keys[i].ActivatesAt.After(now) {
 			continue
 		}
-		for j := range keys {
-			if keys[j].State == domain.KeyActive {
-				if err := m.setState(ctx, &keys[j], domain.KeyRetired, &now); err != nil {
-					return err
-				}
-			}
-		}
-		if err := m.setState(ctx, &keys[i], domain.KeyActive, nil); err != nil {
+		if err := m.activate(ctx, keys, i, now); err != nil {
 			return err
 		}
 	}
 
-	// 4. Delete a retired key when its time in the JWKS is over.
+	// 4. Delete the row of a retired key when its time in the JWKS is over.
 	live := keys[:0:0]
 	for _, k := range keys {
-		if k.State == domain.KeyRetired && k.RetiredAt != nil && !k.RetiredAt.Add(m.policy.RetireAfter).After(now) {
-			if err := m.deleteKey(ctx, k); err != nil {
+		if k.State == domain.KeyRetired && !retiredSince(k).Add(m.policy.RetireAfter).After(now) {
+			if err := m.repo.Delete(ctx, k.KID); err != nil {
 				return err
 			}
+			m.logChange(ctx, k.KID, string(k.State), "deleted")
 			continue
 		}
 		live = append(live, k)
 	}
 
-	// 5. Delete each secret that has no row.
-	return m.deleteOrphans(ctx, live)
+	// 5. Delete each secret that has no row, or whose row is retired.
+	return m.deleteSecrets(ctx, live)
+}
+
+// retiredSince returns the time that the key became retired. A retired row
+// with no retired_at uses created_at, so that the row does not stay for ever.
+func retiredSince(k domain.SigningKey) time.Time {
+	if k.RetiredAt != nil {
+		return *k.RetiredAt
+	}
+	return k.CreatedAt
+}
+
+// activate makes keys[i] active and retires each active key in one
+// transaction. On an error, the keys keep their states.
+func (m *Manager) activate(ctx context.Context, keys []domain.SigningKey, i int, now time.Time) error {
+	var retire []string
+	for _, k := range keys {
+		if k.State == domain.KeyActive {
+			retire = append(retire, k.KID)
+		}
+	}
+	if err := m.repo.Activate(ctx, keys[i].KID, retire, now); err != nil {
+		return err
+	}
+	for j := range keys {
+		if keys[j].State == domain.KeyActive {
+			keys[j].State = domain.KeyRetired
+			keys[j].RetiredAt = &now
+			m.logChange(ctx, keys[j].KID, string(domain.KeyActive), domain.KeyRetired)
+		}
+	}
+	keys[i].State = domain.KeyActive
+	keys[i].RetiredAt = nil
+	m.logChange(ctx, keys[i].KID, string(domain.KeyPending), domain.KeyActive)
+	return nil
 }
 
 func find(keys []domain.SigningKey, state domain.KeyState) *domain.SigningKey {
@@ -212,17 +252,6 @@ func (m *Manager) createKey(ctx context.Context, state domain.KeyState, activate
 	return key, nil
 }
 
-func (m *Manager) setState(ctx context.Context, k *domain.SigningKey, state domain.KeyState, retiredAt *time.Time) error {
-	if err := m.repo.UpdateState(ctx, k.KID, state, retiredAt); err != nil {
-		return err
-	}
-	old := k.State
-	k.State = state
-	k.RetiredAt = retiredAt
-	m.logChange(ctx, k.KID, string(old), state)
-	return nil
-}
-
 // deleteKey deletes the row first, then the secret. A failure after the row
 // delete leaves a secret with no row. The next pass deletes it.
 func (m *Manager) deleteKey(ctx context.Context, k domain.SigningKey) error {
@@ -236,21 +265,25 @@ func (m *Manager) deleteKey(ctx context.Context, k domain.SigningKey) error {
 	return nil
 }
 
-func (m *Manager) deleteOrphans(ctx context.Context, keys []domain.SigningKey) error {
+// deleteSecrets deletes each secret under the prefix that has no row, or whose
+// row is retired. A retired key does not sign, so it needs no private key.
+func (m *Manager) deleteSecrets(ctx context.Context, keys []domain.SigningKey) error {
 	names, err := m.store.ListNames(ctx, domain.SigningKeyPrefix)
 	if err != nil {
 		return fmt.Errorf("list private keys: %w", err)
 	}
 	var errs []error
 	for _, name := range names {
-		if slices.ContainsFunc(keys, func(k domain.SigningKey) bool { return k.PrivateKeyName == name }) {
+		if slices.ContainsFunc(keys, func(k domain.SigningKey) bool {
+			return k.PrivateKeyName == name && k.State != domain.KeyRetired
+		}) {
 			continue
 		}
 		if err := m.store.Delete(ctx, name); err != nil {
-			errs = append(errs, fmt.Errorf("delete orphan private key: %w", err))
+			errs = append(errs, fmt.Errorf("delete private key: %w", err))
 			continue
 		}
-		m.log.InfoContext(ctx, "signing key secret with no row deleted", "name", name)
+		m.log.InfoContext(ctx, "signing key secret deleted: no row or retired row", "name", name)
 	}
 	return errors.Join(errs...)
 }

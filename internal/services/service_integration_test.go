@@ -392,4 +392,64 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("error body = %s", body)
 		}
 	})
+	// I5a (R23): a retired key has no secret from the time it is retired. The
+	// row stays until RetireAfter.
+	t.Run("I5a_retired_key_has_no_secret", func(t *testing.T) {
+		s := env.Start(t,
+			testserver.WithKeyPolicy(domain.KeyPolicy{RotationPeriod: 3 * time.Second, PublishDelay: time.Second, RetireAfter: time.Hour}),
+			testserver.WithKeyIntervals(200*time.Millisecond, 200*time.Millisecond))
+		deadline := time.Now().Add(20 * time.Second)
+		for count(t, s, `SELECT count(*) FROM signing_keys WHERE state = 'retired'`) == 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("no retired key")
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		const query = `SELECT count(*) FROM signing_keys k JOIN platform_secrets p ON p.name = k.private_key_name WHERE k.state = 'retired'`
+		for count(t, s, query) != 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("the secret of a retired key stays")
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if n := count(t, s, `SELECT count(*) FROM signing_keys WHERE state = 'retired'`); n == 0 {
+			t.Fatal("the retired row must stay until RetireAfter")
+		}
+	})
+
+	// I8 (R22): the JWKS does not serve a row whose kid is not the thumbprint
+	// of its key. The database refuses a second active row and a retired row
+	// with no retired_at.
+	t.Run("I8_rows_bound_to_kid", func(t *testing.T) {
+		s := env.Start(t, testserver.WithKeyIntervals(time.Hour, 200*time.Millisecond))
+		attacker, _, err := domain.NewSigningKey(time.Now(), domain.KeyPending, time.Now().AddDate(1, 0, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		attacker.KID = "attacker"
+		attacker.PublicJWK.Kid = "attacker"
+		attacker.PrivateKeyName = domain.PrivateKeyName("attacker")
+		jwk, err := json.Marshal(attacker.PublicJWK)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pool := s.Pool(t)
+		const insert = `INSERT INTO signing_keys (kid, alg, public_jwk, private_key_name, state, created_at, activates_at, retired_at)
+			VALUES ($1, 'ES256', $2, $3, $4, now(), $5, $6)`
+		if _, err := pool.Exec(ctx, insert, "attacker", jwk, attacker.PrivateKeyName, "pending", attacker.ActivatesAt, nil); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Second)
+		for _, k := range jwksKeys(t, s) {
+			if k["kid"] == "attacker" {
+				t.Fatal("the JWKS serves a key whose kid is not its thumbprint")
+			}
+		}
+		if _, err := pool.Exec(ctx, insert, "second", jwk, domain.PrivateKeyName("second"), "active", time.Now(), nil); err == nil {
+			t.Fatal("the database must refuse a second active row")
+		}
+		if _, err := pool.Exec(ctx, insert, "gone", jwk, domain.PrivateKeyName("gone"), "retired", time.Now(), nil); err == nil {
+			t.Fatal("the database must refuse a retired row with no retired_at")
+		}
+	})
 }

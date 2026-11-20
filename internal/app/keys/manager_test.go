@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -131,11 +132,29 @@ func TestU3_PendingKeyBecomesActive(t *testing.T) {
 			}
 		}
 	}
-	recs := r.records(t)
-	if len(recs) != 2 {
-		t.Fatalf("log records = %d, want 2", len(recs))
+	// R23: the private key of the retired key is deleted in the same pass.
+	for _, name := range r.store.Names() {
+		if name == domain.PrivateKeyName(first.KID) {
+			t.Fatal("the secret of the retired key stays")
+		}
 	}
+	if len(r.store.Names()) != 1 {
+		t.Fatalf("secrets = %v, want only the secret of the active key", r.store.Names())
+	}
+	recs := r.records(t)
+	if len(recs) < 2 {
+		t.Fatalf("log records = %d, want 2 state changes", len(recs))
+	}
+	var changes []map[string]any
 	for _, rec := range recs {
+		if rec["msg"] == "signing key state changed" {
+			changes = append(changes, rec)
+		}
+	}
+	if len(changes) != 2 {
+		t.Fatalf("state change records = %d, want 2", len(changes))
+	}
+	for _, rec := range changes {
 		if rec["level"] != "INFO" || rec["kid"] == nil || rec["old_state"] == nil || rec["new_state"] == nil {
 			t.Fatalf("record = %v", rec)
 		}
@@ -145,7 +164,8 @@ func TestU3_PendingKeyBecomesActive(t *testing.T) {
 	}
 }
 
-// U4: a retired key is deleted after RetireAfter. The row goes first.
+// U4: a retired key row is deleted after RetireAfter. The secret was deleted
+// when the key became retired.
 func TestU4_RetiredKeyIsDeleted(t *testing.T) {
 	r := newRig()
 	first := r.run(t)[0]
@@ -153,10 +173,12 @@ func TestU4_RetiredKeyIsDeleted(t *testing.T) {
 	r.run(t)
 	r.clock.Add(policy.PublishDelay)
 	r.run(t)
+	if len(r.store.Names()) != 1 {
+		t.Fatalf("secrets after the retire = %v, want 1", r.store.Names())
+	}
 
-	var order []string
-	r.repo.DeleteHook = func(string) error { order = append(order, "row"); return nil }
-	r.store.DeleteHook = func(string) error { order = append(order, "secret"); return nil }
+	var deletes []string
+	r.store.DeleteHook = func(n string) error { deletes = append(deletes, n); return nil }
 
 	r.clock.Add(policy.RetireAfter - time.Second)
 	if ks, _ := r.repo.List(context.Background()); len(ks) != 2 {
@@ -171,8 +193,8 @@ func TestU4_RetiredKeyIsDeleted(t *testing.T) {
 	if len(ks) != 1 || ks[0].KID == first.KID {
 		t.Fatalf("keys after delete = %v", states(ks))
 	}
-	if strings.Join(order, ",") != "row,secret" {
-		t.Fatalf("delete order = %v", order)
+	if len(deletes) != 0 {
+		t.Fatalf("secret deletes at the row delete = %v, want none", deletes)
 	}
 	if len(r.store.Names()) != 1 {
 		t.Fatalf("secrets = %v", r.store.Names())
@@ -203,22 +225,21 @@ func TestU4a_FailureAfterPutLeavesNoRow(t *testing.T) {
 	}
 }
 
-// U4b: the secret delete fails after the row delete. The next run deletes it.
-func TestU4b_FailureAfterRowDeleteLeavesNoRow(t *testing.T) {
+// U4b: the secret delete fails when the key becomes retired. The row is
+// retired and the secret stays. The next run deletes the secret.
+func TestU4b_FailureAtRetireLeavesSecretOfRetiredRow(t *testing.T) {
 	r := newRig()
 	first := r.run(t)[0]
 	r.clock.Add(policy.RotationPeriod + time.Minute)
 	r.run(t)
 	r.clock.Add(policy.PublishDelay)
-	r.run(t)
-	r.clock.Add(policy.RetireAfter)
 
 	r.store.DeleteHook = func(string) error { return errors.New("delete failed") }
 	if err := r.mgr.Run(context.Background()); err == nil {
 		t.Fatal("want an error")
 	}
 	ks, _ := r.repo.List(context.Background())
-	if len(ks) != 1 {
+	if len(ks) != 2 || ks[0].KID != first.KID || ks[0].State != domain.KeyRetired {
 		t.Fatalf("rows = %v", states(ks))
 	}
 	has := func(name string) bool {
@@ -235,8 +256,167 @@ func TestU4b_FailureAfterRowDeleteLeavesNoRow(t *testing.T) {
 	r.store.DeleteHook = nil
 	r.run(t)
 	if has(domain.PrivateKeyName(first.KID)) {
-		t.Fatal("the next run must delete the secret with no row")
+		t.Fatal("the next run must delete the secret of the retired row")
 	}
+	if ks, _ := r.repo.List(context.Background()); len(ks) != 2 {
+		t.Fatalf("the retired row must stay until RetireAfter: %v", states(ks))
+	}
+}
+
+// R10: the activation is one transaction. A failure of the second write
+// leaves the old states, so the service never has no active key.
+func TestR10_ActivationIsAtomic(t *testing.T) {
+	r := newRig()
+	first := r.run(t)[0]
+	r.clock.Add(policy.RotationPeriod + time.Minute)
+	r.run(t)
+	r.clock.Add(policy.PublishDelay)
+
+	r.repo.UpdateStateHook = func(_ string, state domain.KeyState) error {
+		if state == domain.KeyActive {
+			return errors.New("second write failed")
+		}
+		return nil
+	}
+	if err := r.mgr.Run(context.Background()); err == nil {
+		t.Fatal("want an error")
+	}
+	ks, _ := r.repo.List(context.Background())
+	var active []string
+	for _, k := range ks {
+		if k.State == domain.KeyActive {
+			active = append(active, k.KID)
+		}
+	}
+	if len(active) != 1 || active[0] != first.KID {
+		t.Fatalf("states after the failure = %v, want the old key active", states(ks))
+	}
+	r.repo.UpdateStateHook = nil
+	ks = r.run(t)
+	if got := strings.Join(states(ks), ","); got != "retired,active" {
+		t.Fatalf("states after the repair = %s", got)
+	}
+}
+
+// R13: a retired row with no retired_at is deleted after RetireAfter.
+func TestR13_RetiredRowWithoutTimeIsDeleted(t *testing.T) {
+	r := newRig()
+	first := r.run(t)[0]
+	r.clock.Add(policy.RotationPeriod + time.Minute)
+	r.run(t)
+	r.clock.Add(policy.PublishDelay)
+	r.run(t)
+	if err := r.repo.UpdateState(context.Background(), first.KID, domain.KeyRetired, nil); err != nil {
+		t.Fatal(err)
+	}
+	r.clock.Add(policy.RetireAfter)
+	ks := r.run(t)
+	if len(ks) != 1 || ks[0].KID == first.KID {
+		t.Fatalf("keys = %v", states(ks))
+	}
+}
+
+// R11: a second Start does not start a second loop. Close stops the loop.
+func TestR11_StartTwiceAndClose(t *testing.T) {
+	r := newRig()
+	ctx := context.Background()
+	r.mgr.Start(ctx, time.Hour)
+	r.mgr.Start(ctx, time.Hour)
+	cache := keys.NewCache(r.repo, r.store, nil)
+	cache.Start(ctx, time.Hour)
+	cache.Start(ctx, time.Hour)
+	done := make(chan struct{})
+	go func() {
+		r.mgr.Close()
+		cache.Close()
+		r.mgr.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close does not stop the loops")
+	}
+}
+
+// R12: Reload calls at the same time are safe and end with the newest state.
+func TestR12_ConcurrentReload(t *testing.T) {
+	r := newRig()
+	r.run(t)
+	cache := keys.NewCache(r.repo, r.store, nil)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 5 {
+				if err := cache.Reload(context.Background()); err != nil {
+					t.Error(err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if !cache.HasActive() {
+		t.Fatal("the cache has no active key")
+	}
+}
+
+// R22: the cache does not serve a row whose kid is not the thumbprint of its
+// key, or whose members are wrong.
+func TestR22_CacheRejectsRowsNotBoundToKid(t *testing.T) {
+	good, _, err := domain.NewSigningKey(time.Now(), domain.KeyActive, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := domain.NewSigningKey(time.Now(), domain.KeyPending, time.Now().AddDate(1, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mut := func(f func(k *domain.SigningKey)) domain.SigningKey {
+		k := other
+		f(&k)
+		return k
+	}
+	bad := map[string]domain.SigningKey{
+		"kid is not the thumbprint": mut(func(k *domain.SigningKey) {
+			k.KID = "attacker"
+			k.PublicJWK.Kid = "attacker"
+			k.PrivateKeyName = domain.PrivateKeyName("attacker")
+		}),
+		"jwk kid differs":        mut(func(k *domain.SigningKey) { k.PublicJWK.Kid = "x" }),
+		"wrong kty":              mut(func(k *domain.SigningKey) { k.PublicJWK.Kty = "RSA" }),
+		"wrong crv":              mut(func(k *domain.SigningKey) { k.PublicJWK.Crv = "P-384" }),
+		"wrong alg":              mut(func(k *domain.SigningKey) { k.PublicJWK.Alg = "HS256" }),
+		"wrong use":              mut(func(k *domain.SigningKey) { k.PublicJWK.Use = "enc" }),
+		"wrong private key name": mut(func(k *domain.SigningKey) { k.PrivateKeyName = domain.PrivateKeyName("other") }),
+	}
+	for name, row := range bad {
+		t.Run(name, func(t *testing.T) {
+			r := newRig()
+			// A valid active key with its secret, from the manager.
+			active := r.run(t)[0]
+			if err := r.repo.Insert(context.Background(), row); err != nil {
+				t.Fatal(err)
+			}
+			cache := keys.NewCache(r.repo, r.store, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)))
+			if err := cache.Reload(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			jwks := cache.JWKS()
+			if len(jwks) != 1 || jwks[0].Kid != active.KID {
+				t.Fatalf("jwks = %+v, want only the valid key", jwks)
+			}
+		})
+	}
+	t.Run("valid row passes", func(t *testing.T) {
+		if err := good.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		if err := other.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 // U5: the cache JWKS has pending, active, and retired keys and no private field.
