@@ -67,26 +67,6 @@ func (unimplemented) MeGet(context.Context, gen.MeGetRequestObject) (gen.MeGetRe
 	return nil, errNotImplemented
 }
 
-func (unimplemented) PermissionManifestsList(context.Context, gen.PermissionManifestsListRequestObject) (gen.PermissionManifestsListResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) PermissionManifestsGet(context.Context, gen.PermissionManifestsGetRequestObject) (gen.PermissionManifestsGetResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) PermissionManifestsPublish(context.Context, gen.PermissionManifestsPublishRequestObject) (gen.PermissionManifestsPublishResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) RolesList(context.Context, gen.RolesListRequestObject) (gen.RolesListResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) RolesGet(context.Context, gen.RolesGetRequestObject) (gen.RolesGetResponseObject, error) {
-	return nil, errNotImplemented
-}
-
 func (unimplemented) SessionsRevoke(context.Context, gen.SessionsRevokeRequestObject) (gen.SessionsRevokeResponseObject, error) {
 	return nil, errNotImplemented
 }
