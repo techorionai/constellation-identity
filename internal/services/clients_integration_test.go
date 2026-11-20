@@ -434,6 +434,17 @@ func TestIssue2Integration(t *testing.T) {
 			t.Fatalf("headers = %v", resp.Header)
 		}
 		oauthError(t, s, form, 401, "invalid_client")
+		if n := countJTIs(t, s); n != 1 {
+			t.Fatalf("rows in client_assertion_jtis = %d, want 1", n)
+		}
+
+		// I7c: a Valkey data loss does not allow a replay, because the record
+		// is in PostgreSQL.
+		admin := env.VK.Admin(t)
+		if err := admin.Do(ctx, admin.B().Flushall().Build()).Error(); err != nil {
+			t.Fatalf("flushall: %v", err)
+		}
+		oauthError(t, s, form, 401, "invalid_client")
 
 		// I7a: an expired assertion, two times.
 		old := s.Assertion(t, demo, func(c, _ map[string]any) {
@@ -443,6 +454,57 @@ func TestIssue2Integration(t *testing.T) {
 		oldForm := testserver.TokenForm(old, "identity", "identity:manifest:publish")
 		oauthError(t, s, oldForm, 401, "invalid_client")
 		oauthError(t, s, oldForm, 401, "invalid_client")
+	})
+
+	// I7b: each insert deletes up to 100 expired rows.
+	t.Run("I7b_cleanup", func(t *testing.T) {
+		demo := testserver.NewServiceClient(t, "demo", "demo")
+		s := env.Start(t, testserver.WithClients(t, demo))
+		pool := s.Pool(t)
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO client_assertion_jtis (key, expires_at)
+			SELECT 'old-' || i, now() - interval '1 hour' FROM generate_series(1, 150) AS i`); err != nil {
+			t.Fatal(err)
+		}
+		if tok := token(t, s, demo, "identity", "identity:manifest:publish"); tok == "" {
+			t.Fatal("no token")
+		}
+		var expired int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM client_assertion_jtis WHERE expires_at < now()`).Scan(&expired); err != nil {
+			t.Fatal(err)
+		}
+		if expired != 50 {
+			t.Fatalf("expired rows after the first request = %d, want 50", expired)
+		}
+		if tok := token(t, s, demo, "identity", "identity:manifest:publish"); tok == "" {
+			t.Fatal("no token")
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM client_assertion_jtis WHERE expires_at < now()`).Scan(&expired); err != nil {
+			t.Fatal(err)
+		}
+		if expired != 0 {
+			t.Fatalf("expired rows after the second request = %d, want 0", expired)
+		}
+		// The rows of the 2 assertions stay.
+		if n := countJTIs(t, s); n != 2 {
+			t.Fatalf("rows = %d, want 2", n)
+		}
+	})
+
+	// I11: the jti insert fails. The token request gives 503 and no token.
+	t.Run("I11_jti_store_down", func(t *testing.T) {
+		demo := testserver.NewServiceClient(t, "demo", "demo")
+		s := env.Start(t, testserver.WithClients(t, demo))
+		form := testserver.TokenForm(s.Assertion(t, demo, nil), "identity", "identity:manifest:publish")
+		// Only the jti insert fails. The client and key reads still work.
+		if _, err := s.Pool(t).Exec(ctx, `ALTER TABLE client_assertion_jtis RENAME TO client_assertion_jtis_off`); err != nil {
+			t.Fatal(err)
+		}
+		resp, b := s.PostToken(t, form)
+		m := decode(t, b)
+		if resp.StatusCode != http.StatusServiceUnavailable || m["error"] != "temporarily_unavailable" || m["access_token"] != nil {
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, b)
+		}
 	})
 
 	// I8, I9, and I9a.
@@ -629,21 +691,14 @@ func TestIssue2Integration(t *testing.T) {
 	})
 }
 
-// I11: Valkey stops. The token request gives 503 and no token. The test has its
-// own containers, because it stops Valkey.
-func TestIssue2Integration_I11_ValkeyDown(t *testing.T) {
-	env := testserver.NewEnv(t)
-	demo := testserver.NewServiceClient(t, "demo", "demo")
-	s := env.Start(t, testserver.WithClients(t, demo))
-	form := testserver.TokenForm(s.Assertion(t, demo, nil), "identity", "identity:manifest:publish")
-	if err := env.VK.Stop(ctx); err != nil {
+// countJTIs returns the number of rows in client_assertion_jtis.
+func countJTIs(t *testing.T, s *testserver.Server) int {
+	t.Helper()
+	var n int
+	if err := s.Pool(t).QueryRow(ctx, `SELECT count(*) FROM client_assertion_jtis`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	resp, b := s.PostToken(t, form)
-	m := decode(t, b)
-	if resp.StatusCode != http.StatusServiceUnavailable || m["error"] != "temporarily_unavailable" || m["access_token"] != nil {
-		t.Fatalf("status = %d, body = %s", resp.StatusCode, b)
-	}
+	return n
 }
 
 func toStrings(v any) []string {

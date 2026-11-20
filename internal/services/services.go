@@ -34,7 +34,6 @@ import (
 	adapterjose "github.com/techorionai/constellation-identity/internal/adapters/jose"
 	"github.com/techorionai/constellation-identity/internal/adapters/postgres"
 	adaptersecrets "github.com/techorionai/constellation-identity/internal/adapters/secrets"
-	adaptervalkey "github.com/techorionai/constellation-identity/internal/adapters/valkey"
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/app/keys"
 	"github.com/techorionai/constellation-identity/internal/app/queries"
@@ -259,7 +258,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		Clients:     clientRepo,
 		ClientRoles: postgres.NewClientRoles(a.db.Pool),
 		Manifests:   manifestRepo,
-		JTI:         adaptervalkey.NewJTIStore(a.kv.Raw, a.kv.Keys),
+		JTI:         postgres.NewJTIStore(a.db.Pool),
 		Keys:        a.cache,
 		Signer:      adapterjose.Signer{},
 		Parser:      adapterjose.AssertionParser{},

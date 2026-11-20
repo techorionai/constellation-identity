@@ -48,7 +48,7 @@ The client signs the assertion with a private key. The service knows the public 
 
 ## Replay protection
 
-The service records the `jti` after it checks the assertion (the header, the client, the signature, and the claims). It records the `jti` before it checks the audience and the scope. A request that fails the audience check or the scope check has used its `jti`, and the client must sign a new assertion for the next request. The record is `SET identity:jti:<sha256(client_id, jti)> 1 NX EX <ttl>` in Valkey. `ttl` is `max(exp - now + 30 s, 30 s)`. A second use gives `invalid_client`. If Valkey is not available, the answer is `temporarily_unavailable` (503) and the service issues no token.
+The service records the `jti` after it checks the assertion (the header, the client, the signature, and the claims). It records the `jti` before it checks the audience and the scope. A request that fails the audience check or the scope check has used its `jti`, and the client must sign a new assertion for the next request. The record is a row of the PostgreSQL table `client_assertion_jtis`. The key is the hex SHA-256 of the client ID, a zero byte, and the `jti`. The statement is `INSERT ... ON CONFLICT (key) DO NOTHING` with `expires_at = now() + <ttl>`. A statement that inserts 0 rows is a replay. `ttl` is `max(exp - now + 30 s, 30 s)`. A second use gives `invalid_client`. If PostgreSQL fails, the answer is `temporarily_unavailable` (503) and the service issues no token. Valkey does not hold the `jti`, so a Valkey data loss does not allow a replay. Before each insert, the service deletes up to 100 rows with `expires_at` in the past. A row that expired cannot be a replay, because the service rejects the assertion first.
 
 ## Errors
 
@@ -62,7 +62,7 @@ Each error has the body `{"error": "<code>", "error_description": "<text>"}` and
 | `unauthorized_client` | 400 | The client is not a service client. |
 | `invalid_target` | 400 | The audience is missing, is not an app key, or has no published manifest. |
 | `invalid_scope` | 400 | No scope, a scope of another app, or a scope that the client does not have. |
-| `temporarily_unavailable` | 503 | Valkey or the signing key is not available. |
+| `temporarily_unavailable` | 503 | The `jti` store (PostgreSQL) or the signing key is not available. |
 | `server_error` | 500 | Internal error. |
 
 ## Logs

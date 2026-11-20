@@ -9,10 +9,9 @@ cmd/identity/main.go            Starts the service. Subcommands "healthcheck" an
 api/openapi/                    Constellation.Identity.openapi.yaml, identity-manifest.json, CONTRACTS_VERSION
 internal/domain/                Pure types and rules (signing keys, clients, manifests, roles, assertions, scopes)
 internal/ports/<port>/          Interfaces
-internal/adapters/postgres/     Repositories
+internal/adapters/postgres/     Repositories and the "jtistore" adapter
 internal/adapters/secrets/      Adapter of the port "privatekeys" on platform-go secrets
 internal/adapters/jose/         Adapters of the ports "tokensigner" and "assertion" with go-jose
-internal/adapters/valkey/       Adapter of the port "jtistore"
 internal/app/{commands,queries} Use cases with platform-go executors and decorators
 internal/app/keys/              Key manager and in-memory key cache
 internal/handlers/http/         Generated server (gen/), handlers
@@ -36,7 +35,7 @@ The `.golangci.yml` file has `depguard` rules for the import table of the guide.
 | Manifest and role repository | `internal/ports/manifests` | `internal/adapters/postgres` |
 | Client role repository | `internal/ports/clientroles` | `internal/adapters/postgres` |
 | Assertion parser | `internal/ports/assertion` | `internal/adapters/jose` |
-| Replay store (`jti`) | `internal/ports/jtistore` | `internal/adapters/valkey` |
+| Replay store (`jti`) | `internal/ports/jtistore` | `internal/adapters/postgres` |
 
 ## Routes
 
