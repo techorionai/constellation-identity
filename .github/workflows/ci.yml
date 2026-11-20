@@ -9,6 +9,7 @@ jobs:
   go:
     uses: techorionai/constellation-ci/.github/workflows/go.yml@v0.3.0
     with:
-      # The generated server code must be current.
-      unit-command: go generate ./... && git diff --exit-code && go test -race ./...
+      # The generated server code must be current. git status also shows a
+      # new file that the generator made and the author did not commit.
+      unit-command: go generate ./... && test -z "$(git status --porcelain)" && go test -race ./...
       integration-command: go test -race -tags=integration ./...

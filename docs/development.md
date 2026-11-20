@@ -15,7 +15,7 @@ The integration tests need Docker. They start PostgreSQL and Valkey with testcon
 
 ## Generated code
 
-`internal/handlers/http/gen/identity.gen.go` comes from the OpenAPI file in `api/openapi/`. The CI runs `go generate ./... && git diff --exit-code`. Commit the generated file after each change of the contract copy.
+`internal/handlers/http/gen/identity.gen.go` comes from the OpenAPI file in `api/openapi/`. The CI runs `go generate ./... && test -z "$(git status --porcelain)"`. The check also finds a new file that the generator made and the author did not commit. Commit the generated file after each change of the contract copy.
 
 `oapi-codegen` is a `tool` directive in `go.mod`. `go generate` runs `go tool oapi-codegen`. To update the tool, run `go get -tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@<version>`.
 

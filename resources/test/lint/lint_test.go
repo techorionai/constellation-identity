@@ -21,13 +21,30 @@ func write(t *testing.T, path, content string) {
 	}
 }
 
+// golangciVersion is the version of golangci-lint that the lint job of
+// constellation-ci uses. The test runs the same version when the tool is not
+// on the path. The unit and integration jobs of the CI do not install the tool.
+const golangciVersion = "v2.15.0"
+
+// linter returns the command that runs golangci-lint. It uses the tool on the
+// path. If the tool is not on the path, it builds the pinned version with
+// "go run", so that the test also runs in the CI. The test never skips.
+func linter(t *testing.T) []string {
+	t.Helper()
+	if bin, err := exec.LookPath("golangci-lint"); err == nil {
+		return []string{bin}
+	}
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("golangci-lint and go are not on the path: %v", err)
+	}
+	return []string{goBin, "run", "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@" + golangciVersion}
+}
+
 func lint(t *testing.T, dir string) (string, error) {
 	t.Helper()
-	bin, err := exec.LookPath("golangci-lint")
-	if err != nil {
-		t.Skip("golangci-lint is not installed")
-	}
-	cmd := exec.CommandContext(context.Background(), bin, "run", "./...") //nolint:gosec // A test.
+	args := append(linter(t), "run", "./...")
+	cmd := exec.CommandContext(context.Background(), args[0], args[1:]...) //nolint:gosec // A test.
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
