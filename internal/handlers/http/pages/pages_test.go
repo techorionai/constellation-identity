@@ -2,6 +2,7 @@ package pages_test
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -74,6 +75,34 @@ func TestU9_Headers(t *testing.T) {
 	routes.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-site POST = %d, want 403", rec.Code)
+	}
+}
+
+// U9a: the HSTS header is set over https only. A local http use gets none.
+func TestU9a_StrictTransportSecurity(t *testing.T) {
+	for _, tc := range []struct {
+		name, issuer string
+		tls          bool
+		want         string
+	}{
+		{"https issuer", "https://id.example.com", false, "max-age=31536000"},
+		{"TLS request with an http issuer", "http://localhost:8080", true, "max-age=31536000"},
+		{"http issuer and plain request", "http://localhost:8080", false, ""},
+		{"no issuer and plain request", "", false, ""},
+	} {
+		h, err := pages.New(pages.Deps{Issuer: tc.issuer})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := newRequest(http.MethodGet, "/login", nil)
+		if tc.tls {
+			req.TLS = &tls.ConnectionState{}
+		}
+		rec := httptest.NewRecorder()
+		h.Routes().ServeHTTP(rec, req)
+		if got := rec.Header().Get("Strict-Transport-Security"); got != tc.want {
+			t.Errorf("%s: Strict-Transport-Security = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 

@@ -125,7 +125,7 @@ func TestU6b_UnknownEmailCounts(t *testing.T) {
 	}
 }
 
-// U6c: a success deletes the email counter and keeps the IP counter.
+// U6c: a success deletes the email counter. The IP counter keeps the attempts.
 func TestU6c_SuccessResetsEmailCounter(t *testing.T) {
 	e := newEnv()
 	e.addUser("active", "active@example.com", domain.UserActive, "right password 1")
@@ -139,8 +139,8 @@ func TestU6c_SuccessResetsEmailCounter(t *testing.T) {
 	if _, ok := e.limiter.Emails["active@example.com"]; ok {
 		t.Fatal("the email counter must be deleted")
 	}
-	if e.limiter.IPs["1.1.1.1"] != 2 {
-		t.Fatalf("IP counter = %d, want 2", e.limiter.IPs["1.1.1.1"])
+	if e.limiter.IPs["1.1.1.1"] != 3 {
+		t.Fatalf("IP counter = %d, want 3 attempts", e.limiter.IPs["1.1.1.1"])
 	}
 }
 
@@ -299,7 +299,7 @@ func TestU13_CreateInvite(t *testing.T) {
 	}
 }
 
-func TestAcceptInviteChecksPasswordBeforeToken(t *testing.T) {
+func TestAcceptInvitePolicyErrorKeepsToken(t *testing.T) {
 	e := newEnv()
 	user, err := commands.NewCreateUser(e.invites()).Execute(ctx, commands.CreateUser{Email: "New@Example.com", Name: "New"})
 	if err != nil {
@@ -324,6 +324,50 @@ func TestAcceptInviteChecksPasswordBeforeToken(t *testing.T) {
 	}
 	if _, err := accept.Execute(ctx, commands.AcceptInvite{Token: token, Password: "a good password 12"}); !errors.Is(err, commands.ErrTokenInvalid) {
 		t.Fatalf("second use: %v", err)
+	}
+}
+
+// U6e: a token that is not valid gives ErrTokenInvalid before any hash runs.
+func TestU6e_BadTokenRunsNoHash(t *testing.T) {
+	e := newEnv()
+	good := "a good password 12"
+	setup := commands.NewCompleteSetup(e.setup())
+	if _, err := setup.Execute(ctx, commands.CompleteSetup{Token: "nope", Email: "a@example.com", Name: "A", Password: good}); !errors.Is(err, commands.ErrTokenInvalid) {
+		t.Fatalf("setup with a bad token: %v", err)
+	}
+	// A bad token is reported before the policy error of the password.
+	if _, err := setup.Execute(ctx, commands.CompleteSetup{Token: "nope", Email: "a@example.com", Name: "A", Password: "short"}); !errors.Is(err, commands.ErrTokenInvalid) {
+		t.Fatalf("setup with a bad token and a short password: %v", err)
+	}
+	accept := commands.NewAcceptInvite(e.invites())
+	if _, err := accept.Execute(ctx, commands.AcceptInvite{Token: "nope", Password: good}); !errors.Is(err, commands.ErrTokenInvalid) {
+		t.Fatalf("invite with a bad token: %v", err)
+	}
+	if _, err := accept.Execute(ctx, commands.AcceptInvite{Token: "", Password: good}); !errors.Is(err, commands.ErrTokenInvalid) {
+		t.Fatalf("invite with an empty token: %v", err)
+	}
+	if e.hasher.Runs() != 0 {
+		t.Fatalf("the hasher ran %d times, want 0", e.hasher.Runs())
+	}
+}
+
+// U6f: a valid setup token does not make a second admin.
+func TestU6f_SetupWithAdminFails(t *testing.T) {
+	e := newEnv()
+	res, err := commands.NewEnsureSetupToken(e.setup()).Execute(ctx, commands.EnsureSetupToken{})
+	if err != nil || res.Link.URL == "" {
+		t.Fatalf("ensure: %v", err)
+	}
+	e.addUser("admin", "admin@example.com", domain.UserActive, "x")
+	_ = e.roles.Assign(ctx, "admin", domain.AdminRole, domain.AssignmentAPI)
+	_, err = commands.NewCompleteSetup(e.setup()).Execute(ctx, commands.CompleteSetup{
+		Token: tokenOf(res.Link.URL), Email: "second@example.com", Name: "Second", Password: "a good password 12",
+	})
+	if !errors.Is(err, commands.ErrTokenInvalid) {
+		t.Fatalf("err = %v, want ErrTokenInvalid", err)
+	}
+	if len(e.users.Rows) != 1 {
+		t.Fatalf("users = %d, want 1", len(e.users.Rows))
 	}
 }
 

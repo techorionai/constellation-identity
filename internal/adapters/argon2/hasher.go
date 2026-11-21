@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/text/unicode/norm"
@@ -55,6 +56,7 @@ type Hasher struct {
 	cfg      Config
 	slots    chan struct{}
 	rejected metric.Int64Counter
+	runs     metric.Int64Counter
 }
 
 var _ passwordhasher.Hasher = (*Hasher)(nil)
@@ -81,7 +83,12 @@ func New(cfg Config) (*Hasher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("argon2: make the counter: %w", err)
 	}
-	return &Hasher{cfg: cfg, slots: make(chan struct{}, cfg.MaxConcurrent), rejected: rejected}, nil
+	runs, err := otel.Meter("identity").Int64Counter("identity.password.runs",
+		metric.WithDescription("Argon2 computations that ran, by operation (hash or verify)."))
+	if err != nil {
+		return nil, fmt.Errorf("argon2: make the counter: %w", err)
+	}
+	return &Hasher{cfg: cfg, slots: make(chan struct{}, cfg.MaxConcurrent), rejected: rejected, runs: runs}, nil
 }
 
 // Normalize returns the password in NFC form.
@@ -110,6 +117,7 @@ func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 		return "", err
 	}
 	defer release()
+	h.runs.Add(context.WithoutCancel(ctx), 1, metric.WithAttributes(attribute.String("op", "hash")))
 	salt := make([]byte, saltLength)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("argon2: random salt: %w", err)
@@ -130,6 +138,7 @@ func (h *Hasher) Verify(ctx context.Context, password, encoded string) (ok, need
 		return false, false, err
 	}
 	defer release()
+	h.runs.Add(context.WithoutCancel(ctx), 1, metric.WithAttributes(attribute.String("op", "verify")))
 	got := argon2.IDKey([]byte(password), salt, p.time, p.memory, p.threads, uint32(len(key))) //nolint:gosec // The length is 32.
 	if subtle.ConstantTimeCompare(got, key) != 1 {
 		return false, false, nil

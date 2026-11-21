@@ -4,6 +4,7 @@ package services_test
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -78,6 +79,29 @@ func loginCount(t *testing.T, outcome string) int64 {
 	return total
 }
 
+// passwordRuns returns the number of argon2 computations (hash and verify)
+// since the start of the test process.
+func passwordRuns(t *testing.T) int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := metricReader.Collect(ctx, &rm); err != nil {
+		t.Fatal(err)
+	}
+	var total int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if m.Name != "identity.password.runs" || !ok {
+				continue
+			}
+			for _, dp := range sum.DataPoints {
+				total += dp.Value
+			}
+		}
+	}
+	return total
+}
+
 // secretLedger collects the secrets of all tests, so that the last test can
 // check that no log record and no span holds one.
 type secretLedger struct {
@@ -119,21 +143,35 @@ func (h *harness) start(t *testing.T, opts ...testserver.Option) *app {
 	h.ledger.mu.Unlock()
 	opts = append([]testserver.Option{testserver.WithLogger(logs.Logger()), testserver.WithMasterKey(h.masterKey, "test")}, opts...)
 	s := h.env.Start(t, opts...)
-	a := &app{Server: s, logs: logs, ledger: h.ledger}
-	for _, l := range logs.SetupLinks(t) {
-		h.ledger.add(&h.ledger.setups, testserver.TokenOf(t, l))
-	}
-	return a
+	return &app{Server: s, logs: logs, ledger: h.ledger}
 }
 
-// setupLink returns the one setup link in the log.
+// startOwnValkey starts a server with a new Valkey container, so that the login
+// counters of other tests do not count. The tests share the client IP of the
+// local host.
+func (h *harness) startOwnValkey(t *testing.T) (*containers.ValkeyInstance, *app) {
+	t.Helper()
+	vk := containers.Valkey(t, containers.WithValkeyImage(testserver.ValkeyImage))
+	env := &testserver.Env{PG: h.env.PG, VK: vk}
+	logs := testserver.NewLogCapture()
+	h.ledger.mu.Lock()
+	h.ledger.logs = append(h.ledger.logs, logs)
+	h.ledger.mu.Unlock()
+	s := env.Start(t, testserver.WithLogger(logs.Logger()), testserver.WithMasterKey(h.masterKey, "test"))
+	return vk, &app{Server: s, logs: logs, ledger: h.ledger}
+}
+
+// setupLink gets a setup link as the operator does, with the same code as the
+// subcommand setup-link. The link is not in the log. The test remembers the
+// token, so that I12 checks that no log record and no span holds it.
 func (a *app) setupLink(t *testing.T) string {
 	t.Helper()
-	links := a.logs.SetupLinks(t)
-	if len(links) != 1 {
-		t.Fatalf("setup links in the log = %d, want 1", len(links))
+	link, err := services.SetupLink(ctx, a.Config, a.logs.Logger())
+	if err != nil {
+		t.Fatalf("setup link: %v", err)
 	}
-	return links[0]
+	a.ledger.add(&a.ledger.setups, testserver.TokenOf(t, link))
+	return link
 }
 
 func (a *app) trackSession(web *testserver.Web) {
@@ -204,28 +242,39 @@ func TestUsersIntegration(t *testing.T) {
 	observability()
 	h := &harness{env: testserver.NewEnv(t), ledger: &secretLedger{}, masterKey: testserver.MasterKey(t)}
 
-	// I1: the first start writes one setup link.
+	// I1: the first start writes one log record that says a link exists. The
+	// record has the expiry and never the link or the token.
 	t.Run("I1_first_start", func(t *testing.T) {
 		a := h.start(t)
-		recs := a.logs.Records(t)
-		var links int
-		for _, r := range recs {
-			if r["msg"] == testserver.SetupLinkMessage {
-				links++
-				if r["level"] != "WARN" {
-					t.Fatalf("level = %v, want WARN", r["level"])
-				}
+		recs := a.logs.SetupPendingRecords(t)
+		if len(recs) != 1 {
+			t.Fatalf("setup log records = %d, want 1", len(recs))
+		}
+		if recs[0]["level"] != "WARN" {
+			t.Fatalf("level = %v, want WARN", recs[0]["level"])
+		}
+		if _, ok := recs[0]["expires_at"]; !ok {
+			t.Fatal("the record must have the expiry")
+		}
+		for key := range recs[0] {
+			if key == "link" || key == "token" {
+				t.Fatalf("the record has the attribute %q", key)
 			}
 		}
-		if links != 1 {
-			t.Fatalf("setup link records = %d, want 1", links)
-		}
-		link := a.setupLink(t)
-		if !strings.HasPrefix(link, a.Config.Issuer+"/setup?token=") {
-			t.Fatalf("link = %q", link)
+		if text := a.logs.Text(); strings.Contains(text, "/setup?token=") || strings.Contains(text, "token=") {
+			t.Fatalf("the log holds a link: %s", text)
 		}
 		if n := count(t, a.Server, `SELECT count(*) FROM one_time_tokens WHERE purpose = 'setup'`); n != 1 {
 			t.Fatalf("setup tokens = %d, want 1", n)
+		}
+		// The identity manifest was published before the token was made.
+		if n := count(t, a.Server, `SELECT count(*) FROM apps a, one_time_tokens t WHERE a.key = 'identity' AND a.published_at <= t.created_at`); n != 1 {
+			t.Fatal("the manifest must be published before the setup token")
+		}
+		// The operator gets the link with the subcommand. The table holds the hash only.
+		link := a.setupLink(t)
+		if !strings.HasPrefix(link, a.Config.Issuer+"/setup?token=") {
+			t.Fatalf("link = %q", link)
 		}
 		token := testserver.TokenOf(t, link)
 		if n := count(t, a.Server, `SELECT count(*) FROM one_time_tokens WHERE token_hash = $1`, domain.HashSecret(token)); n != 1 {
@@ -233,10 +282,6 @@ func TestUsersIntegration(t *testing.T) {
 		}
 		if n := count(t, a.Server, `SELECT count(*) FROM one_time_tokens WHERE token_hash = $1`, token); n != 0 {
 			t.Fatal("the table must not hold the token value")
-		}
-		// The identity manifest was published before the token was made.
-		if n := count(t, a.Server, `SELECT count(*) FROM apps a, one_time_tokens t WHERE a.key = 'identity' AND a.published_at <= t.created_at`); n != 1 {
-			t.Fatal("the manifest must be published before the setup token")
 		}
 	})
 
@@ -246,8 +291,8 @@ func TestUsersIntegration(t *testing.T) {
 		db := a.DB
 		a.Stop()
 		b := h.start(t, testserver.WithDB(db))
-		if links := b.logs.SetupLinks(t); len(links) != 0 {
-			t.Fatalf("setup links after restart = %d, want 0", len(links))
+		if recs := b.logs.SetupPendingRecords(t); len(recs) != 0 {
+			t.Fatalf("setup log records after restart = %d, want 0", len(recs))
 		}
 		if n := count(t, b.Server, `SELECT count(*) FROM one_time_tokens WHERE purpose = 'setup'`); n != 1 {
 			t.Fatalf("setup tokens = %d, want 1", n)
@@ -350,8 +395,8 @@ func TestUsersIntegration(t *testing.T) {
 		db := a.DB
 		a.Stop()
 		b := h.start(t, testserver.WithDB(db))
-		if links := b.logs.SetupLinks(t); len(links) != 0 {
-			t.Fatalf("setup links after restart = %d", len(links))
+		if recs := b.logs.SetupPendingRecords(t); len(recs) != 0 {
+			t.Fatalf("setup log records after restart = %d", len(recs))
 		}
 		if n := count(t, b.Server, `SELECT count(*) FROM one_time_tokens WHERE used_at IS NULL`); n != 0 {
 			t.Fatalf("unused tokens = %d, want 0", n)
@@ -418,12 +463,9 @@ func TestUsersIntegration(t *testing.T) {
 		if n := count(t, apps[0], `SELECT count(*) FROM one_time_tokens WHERE purpose = 'setup'`); n != 1 {
 			t.Fatalf("setup tokens = %d, want 1", n)
 		}
-		total := len(logs[0].SetupLinks(t)) + len(logs[1].SetupLinks(t))
+		total := len(logs[0].SetupPendingRecords(t)) + len(logs[1].SetupPendingRecords(t))
 		if total != 1 {
-			t.Fatalf("setup link records = %d, want 1", total)
-		}
-		for _, l := range append(logs[0].SetupLinks(t), logs[1].SetupLinks(t)...) {
-			h.ledger.add(&h.ledger.setups, testserver.TokenOf(t, l))
+			t.Fatalf("setup log records = %d, want 1", total)
 		}
 	})
 
@@ -687,6 +729,7 @@ func TestUsersIntegration(t *testing.T) {
 	t.Run("I10a_failure_limit", func(t *testing.T) {
 		limitedBefore := loginCount(t, "limited")
 		adminApp.ledger.add(&adminApp.ledger.passwords, adminPassword)
+		runsBefore := passwordRuns(t)
 		for range 5 {
 			web := adminApp.NewWeb()
 			resp, body := web.PostForm(t, "/login", url.Values{"email": {"admin@example.com"}, "password": {"wrong password 123456"}})
@@ -695,6 +738,10 @@ func TestUsersIntegration(t *testing.T) {
 				t.Fatalf("body = %s", body)
 			}
 		}
+		if got := passwordRuns(t) - runsBefore; got != 5 {
+			t.Fatalf("hashes after 5 failed logins = %d, want 5", got)
+		}
+		runsBefore = passwordRuns(t)
 		web := adminApp.NewWeb()
 		resp, body := web.PostForm(t, "/login", url.Values{"email": {"admin@example.com"}, "password": {"wrong password 123456"}})
 		status(t, resp, http.StatusTooManyRequests, "attempt 6")
@@ -708,6 +755,144 @@ func TestUsersIntegration(t *testing.T) {
 		}
 		if got := loginCount(t, "limited") - limitedBefore; got != 2 {
 			t.Fatalf("limited logins = %d, want 2", got)
+		}
+		// R5: the limit stops both requests before the hash.
+		if got := passwordRuns(t) - runsBefore; got != 0 {
+			t.Fatalf("hashes for the limited logins = %d, want 0", got)
+		}
+	})
+
+	// I10c (R6): parallel wrong passwords for one email cannot pass the limit.
+	// The test uses a new server, so that the counters of the other tests do not
+	// count.
+	t.Run("I10c_parallel_login_limit", func(t *testing.T) {
+		_, a := h.startOwnValkey(t)
+		_, resp := a.completeSetup(t, a.setupLink(t), "admin@example.com", "Admin", adminPassword)
+		status(t, resp, http.StatusSeeOther, "setup")
+		runsBefore := passwordRuns(t)
+		const parallel = 40
+		codes := make([]int, parallel)
+		var wg sync.WaitGroup
+		for i := range parallel {
+			wg.Go(func() {
+				r, _ := a.NewWeb().PostForm(t, "/login", url.Values{"email": {"admin@example.com"}, "password": {"wrong password 123456"}})
+				codes[i] = r.StatusCode
+			})
+		}
+		wg.Wait()
+		var unauthorized, limited int
+		for _, c := range codes {
+			switch c {
+			case http.StatusUnauthorized:
+				unauthorized++
+			case http.StatusTooManyRequests:
+				limited++
+			default:
+				t.Fatalf("status = %d, want 401 or 429", c)
+			}
+		}
+		if unauthorized != 5 || limited != parallel-5 {
+			t.Fatalf("401 = %d and 429 = %d, want 5 and %d", unauthorized, limited, parallel-5)
+		}
+		if got := passwordRuns(t) - runsBefore; got != 5 {
+			t.Fatalf("hashes = %d, want 5", got)
+		}
+		r, _ := a.NewWeb().PostForm(t, "/login", url.Values{"email": {"admin@example.com"}, "password": {adminPassword}})
+		status(t, r, http.StatusTooManyRequests, "correct password after the burst")
+	})
+
+	// I10f (R7): a bad token gives the error page and runs no hash.
+	t.Run("I10f_bad_token_no_hash", func(t *testing.T) {
+		runsBefore := passwordRuns(t)
+		for _, path := range []string{"/setup", "/invite"} {
+			web := adminApp.NewWeb()
+			resp, body := web.PostForm(t, path, url.Values{
+				"token": {"nope"}, "email": {"x@example.com"}, "name": {"X"},
+				"password": {"a valid password 99"}, "password2": {"a valid password 99"},
+			})
+			status(t, resp, http.StatusBadRequest, "POST "+path+" with a bad token")
+			if strings.Contains(string(body), "a valid password 99") {
+				t.Fatal("the page must not show the password")
+			}
+		}
+		if got := passwordRuns(t) - runsBefore; got != 0 {
+			t.Fatalf("hashes for bad tokens = %d, want 0", got)
+		}
+	})
+
+	// I10g (R9): a valid setup token cannot make a second admin.
+	t.Run("I10g_setup_with_admin", func(t *testing.T) {
+		pool := adminApp.Pool(t)
+		value, hash, err := domain.NewSecret()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO one_time_tokens (token_hash, purpose, expires_at, created_at)
+			VALUES ($1, 'setup', now() + interval '1 hour', now())`, hash); err != nil {
+			t.Fatal(err)
+		}
+		web := adminApp.NewWeb()
+		resp, _ := web.PostForm(t, "/setup", url.Values{
+			"token": {value}, "email": {"second@example.com"}, "name": {"Second"},
+			"password": {userPassword}, "password2": {userPassword},
+		})
+		adminApp.trackSession(web)
+		status(t, resp, http.StatusBadRequest, "setup with an admin")
+		if n := count(t, adminApp.Server, `SELECT count(*) FROM users WHERE email = 'second@example.com'`); n != 0 {
+			t.Fatalf("second users = %d, want 0", n)
+		}
+		if n := count(t, adminApp.Server, `SELECT count(*) FROM one_time_tokens WHERE token_hash = $1 AND used_at IS NULL`, hash); n != 1 {
+			t.Fatal("the token must stay unused")
+		}
+		if n := count(t, adminApp.Server, `SELECT count(*) FROM user_roles WHERE app = 'identity' AND role = 'admin'`); n != 1 {
+			t.Fatalf("admin role rows = %d, want 1", n)
+		}
+	})
+
+	// I10h (R8): CreateInvite and AcceptInvite for one user, in parallel, use
+	// one lock order and cannot deadlock.
+	t.Run("I10h_invite_lock_order", func(t *testing.T) {
+		const workers, rounds = 8, 30
+		var wg sync.WaitGroup
+		var failures atomic.Int64
+		for w := range workers {
+			wg.Go(func() {
+				for r := range rounds {
+					email := fmt.Sprintf("lock-%d-%d@example.com", w, r)
+					res, err := uc.create.Execute(ctx, commands.CreateUser{Email: email, Name: "Lock"})
+					if err != nil {
+						t.Errorf("create user: %v", err)
+						failures.Add(1)
+						return
+					}
+					adminApp.ledger.add(&adminApp.ledger.invites, testserver.TokenOf(t, res.Invite.URL))
+					var inner sync.WaitGroup
+					inner.Go(func() {
+						if _, err := uc.invite.Execute(ctx, commands.CreateInvite{UserID: res.User.ID}); err != nil && !errors.Is(err, commands.ErrUserNotInvited) {
+							t.Errorf("create invite: %v", err)
+							failures.Add(1)
+						}
+					})
+					inner.Go(func() {
+						web := adminApp.NewWeb()
+						adminApp.ledger.add(&adminApp.ledger.passwords, userPassword)
+						resp, _ := web.PostForm(t, "/invite", url.Values{
+							"token": {testserver.TokenOf(t, res.Invite.URL)}, "password": {userPassword}, "password2": {userPassword},
+						})
+						adminApp.trackSession(web)
+						if resp.StatusCode != http.StatusSeeOther && resp.StatusCode != http.StatusBadRequest {
+							t.Errorf("accept invite: status = %d, want 303 or 400", resp.StatusCode)
+							failures.Add(1)
+						}
+					})
+					inner.Wait()
+				}
+			})
+		}
+		wg.Wait()
+		if failures.Load() != 0 {
+			t.Fatalf("%d failures", failures.Load())
 		}
 	})
 
@@ -747,17 +932,8 @@ func TestUsersIntegration(t *testing.T) {
 
 	// I10b: Valkey stopped during a login gives 503 and no session.
 	t.Run("I10b_valkey_down", func(t *testing.T) {
-		vk := containers.Valkey(t, containers.WithValkeyImage(testserver.ValkeyImage))
-		env := &testserver.Env{PG: h.env.PG, VK: vk}
-		logs := testserver.NewLogCapture()
-		h.ledger.mu.Lock()
-		h.ledger.logs = append(h.ledger.logs, logs)
-		h.ledger.mu.Unlock()
-		s := env.Start(t, testserver.WithLogger(logs.Logger()), testserver.WithMasterKey(h.masterKey, "test"))
-		for _, l := range logs.SetupLinks(t) {
-			h.ledger.add(&h.ledger.setups, testserver.TokenOf(t, l))
-		}
-		a := &app{Server: s, logs: logs, ledger: h.ledger}
+		vk, a := h.startOwnValkey(t)
+		s := a.Server
 		_, resp := a.completeSetup(t, a.setupLink(t), "admin@example.com", "Admin", adminPassword)
 		status(t, resp, http.StatusSeeOther, "setup")
 		before := sessionCount(t, s)
@@ -825,8 +1001,8 @@ func TestUsersIntegration(t *testing.T) {
 			for _, text := range texts {
 				total += strings.Count(text, secret)
 			}
-			if total != 1 {
-				t.Fatalf("a setup token is in %d log records, want 1", total)
+			if total != 0 {
+				t.Fatalf("a setup token is in %d log records, want 0", total)
 			}
 		}
 	})

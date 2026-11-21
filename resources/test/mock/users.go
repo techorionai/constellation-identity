@@ -212,6 +212,17 @@ func (r *OneTimeTokens) IsValid(_ context.Context, hash string, purpose domain.T
 	return ok && t.Purpose == purpose && t.UsedAt == nil && t.ExpiresAt.After(now), nil
 }
 
+// FindValid reads a token that can be used.
+func (r *OneTimeTokens) FindValid(_ context.Context, hash string, purpose domain.TokenPurpose, now time.Time) (string, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.Rows[hash]
+	if !ok || t.Purpose != purpose || t.UsedAt != nil || !t.ExpiresAt.After(now) {
+		return "", false, nil
+	}
+	return t.UserID, true, nil
+}
+
 // HasValidSetup reports whether a setup token can be used.
 func (r *OneTimeTokens) HasValidSetup(_ context.Context, now time.Time) (bool, error) {
 	r.mu.Lock()
@@ -358,26 +369,19 @@ type Limiter struct {
 	Err error
 }
 
-// NewLimiter makes a limiter with no failures.
+// NewLimiter makes a limiter with no attempts.
 func NewLimiter() *Limiter { return &Limiter{Emails: map[string]int64{}, IPs: map[string]int64{}} }
 
-// Counts returns the failures.
-func (l *Limiter) Counts(_ context.Context, email, ip string) (int64, int64, error) {
+// Reserve adds an attempt and returns the new counts.
+func (l *Limiter) Reserve(_ context.Context, email, ip string) (int64, int64, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.Err != nil {
 		return 0, 0, fmt.Errorf("limiter: %w", l.Err)
 	}
-	return l.Emails[email], l.IPs[ip], nil
-}
-
-// RecordFailure adds a failure.
-func (l *Limiter) RecordFailure(_ context.Context, email, ip string) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.Emails[email]++
 	l.IPs[ip]++
-	return nil
+	return l.Emails[email], l.IPs[ip], nil
 }
 
 // ResetEmail deletes the counter of the email.
