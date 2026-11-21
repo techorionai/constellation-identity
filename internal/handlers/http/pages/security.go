@@ -13,10 +13,23 @@ import (
 // JavaScript and no inline style.
 const contentSecurityPolicy = "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 
-// SecurityHeaders adds the security headers of the pages to each response.
-func SecurityHeaders(next http.Handler) http.Handler {
+// strictTransportSecurity is the HSTS value. It has no includeSubDomains and no
+// preload, so it affects this host only.
+const strictTransportSecurity = "max-age=31536000"
+
+// SecurityHeaders adds the security headers of the pages to each response. The
+// header Strict-Transport-Security is set only if the request has TLS or the
+// issuer URL has the scheme https. A local http use gets no HSTS header.
+func SecurityHeaders(issuer string, next http.Handler) http.Handler {
+	issuerHTTPS := false
+	if u, err := url.Parse(issuer); err == nil {
+		issuerHTTPS = strings.EqualFold(u.Scheme, "https")
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
+		if r.TLS != nil || issuerHTTPS {
+			h.Set("Strict-Transport-Security", strictTransportSecurity)
+		}
 		h.Set("Content-Security-Policy", contentSecurityPolicy)
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Content-Type-Options", "nosniff")

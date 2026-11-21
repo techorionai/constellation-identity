@@ -47,6 +47,9 @@ type Deps struct {
 	Session    executor.ExecutorWithReturn[queries.SessionFromCookie, queries.SessionResult]
 	Touch      executor.Executor[commands.TouchSession]
 	CheckToken executor.ExecutorWithReturn[queries.CheckOneTimeToken, bool]
+	// Issuer is the issuer URL of the service. An https issuer turns on the
+	// Strict-Transport-Security header.
+	Issuer string
 	// TrustedProxies are the ranges whose X-Forwarded-For header the pages use.
 	TrustedProxies []netip.Prefix
 	Log            *slog.Logger
@@ -96,7 +99,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /invite", h.inviteForm)
 	mux.HandleFunc("POST /invite", h.invite)
 	mux.HandleFunc("GET /assets/pages.css", h.stylesheet)
-	return SecurityHeaders(http.NewCrossOriginProtection().Handler(mux))
+	return SecurityHeaders(h.d.Issuer, http.NewCrossOriginProtection().Handler(mux))
 }
 
 // view is the data of a template.
