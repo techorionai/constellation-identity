@@ -127,6 +127,23 @@ func createUserErr(err error) error {
 	return err
 }
 
+// checkTokenValid reads a token before the password work. A token that is not
+// valid gives ErrTokenInvalid, and no hash runs. The use of the token later is
+// still one atomic statement.
+func checkTokenValid(ctx context.Context, repo onetimetokens.Repository, value string, purpose domain.TokenPurpose, now time.Time) error {
+	if value == "" || len(value) > domain.MaxTokenValueLength {
+		return ErrTokenInvalid
+	}
+	ok, err := repo.IsValid(ctx, domain.HashSecret(value), purpose, now)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrTokenInvalid
+	}
+	return nil
+}
+
 // useToken uses a token in the transaction of ctx. A token that cannot be used
 // gives ErrTokenInvalid.
 func useToken(ctx context.Context, repo onetimetokens.Repository, value string, purpose domain.TokenPurpose, now time.Time) (string, error) {

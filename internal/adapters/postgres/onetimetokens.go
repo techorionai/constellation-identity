@@ -71,6 +71,26 @@ func (r *OneTimeTokens) IsValid(ctx context.Context, hash string, purpose domain
 	return ok, nil
 }
 
+// FindValid reads a token that can still be used and returns its user ID. The
+// read takes no row lock.
+func (r *OneTimeTokens) FindValid(ctx context.Context, hash string, purpose domain.TokenPurpose, now time.Time) (string, bool, error) {
+	var userID *string
+	err := clientspg.Conn(ctx, r.pool).QueryRow(ctx, `
+		SELECT user_id::text FROM one_time_tokens
+		WHERE token_hash = $1 AND purpose = $2 AND used_at IS NULL AND expires_at > $3`,
+		hash, string(purpose), now).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("find %s token: %w", purpose, err)
+	}
+	if userID == nil {
+		return "", true, nil
+	}
+	return *userID, true, nil
+}
+
 // HasValidSetup reports whether a setup token can still be used.
 func (r *OneTimeTokens) HasValidSetup(ctx context.Context, now time.Time) (bool, error) {
 	var ok bool

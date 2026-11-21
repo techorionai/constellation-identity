@@ -162,10 +162,16 @@ func NewCompleteSetup(d SetupDeps) *CompleteSetupCommand {
 	return &CompleteSetupCommand{d: d}
 }
 
-// Execute checks the input, hashes the password, and then uses the token, makes
-// the admin, and makes the session in one transaction. A check error leaves
-// the token unused.
+// Execute reads the token, checks the input, and hashes the password. Then, in
+// one transaction, it uses the token, checks that no active admin exists, makes
+// the admin, and makes the session. A token that is not valid gives
+// ErrTokenInvalid before any hash runs. An existing admin gives ErrTokenInvalid
+// and the transaction rolls back, so the token stays unused. A check error
+// leaves the token unused.
 func (c *CompleteSetupCommand) Execute(ctx context.Context, in CompleteSetup) (IssuedSession, error) {
+	if err := checkTokenValid(ctx, c.d.Tokens, in.Token, domain.PurposeSetup, c.d.Now().UTC()); err != nil {
+		return IssuedSession{}, wrapUserErr("complete the setup", err)
+	}
 	email, err := domain.NormalizeEmail(in.Email)
 	if err != nil {
 		return IssuedSession{}, err
@@ -183,6 +189,13 @@ func (c *CompleteSetupCommand) Execute(ctx context.Context, in CompleteSetup) (I
 		now := c.d.Now().UTC()
 		if _, err := useToken(ctx, c.d.Tokens, in.Token, domain.PurposeSetup, now); err != nil {
 			return err
+		}
+		admin, err := c.d.Roles.ActiveUserHasRole(ctx, domain.AdminRole)
+		if err != nil {
+			return err
+		}
+		if admin {
+			return ErrTokenInvalid
 		}
 		user := domain.User{
 			ID: newUUID(), Email: email, Name: name, Status: domain.UserActive,

@@ -171,11 +171,17 @@ func NewAcceptInvite(d InviteDeps) *AcceptInviteCommand {
 	return &AcceptInviteCommand{d: d}
 }
 
-// Execute checks the password and hashes it. Then, in one transaction, it uses
-// the token, locks the user, checks that the user is invited, sets the hash and
-// the status active, and makes a session. A user that is not invited gives
-// ErrTokenInvalid and the transaction rolls back, so the token stays unused.
+// Execute reads the token, checks the password, and hashes it. A token that is
+// not valid gives ErrTokenInvalid before any hash runs. Then, in one
+// transaction, it reads the user of the token, locks the user, checks that the
+// user is invited, uses the token, sets the hash and the status active, and
+// makes a session. The lock order is the same as in CreateInvite: the user
+// first, then the tokens. A user that is not invited gives ErrTokenInvalid and
+// the transaction rolls back, so the token stays unused.
 func (c *AcceptInviteCommand) Execute(ctx context.Context, in AcceptInvite) (IssuedSession, error) {
+	if err := checkTokenValid(ctx, c.d.Tokens, in.Token, domain.PurposeInvite, c.d.Now().UTC()); err != nil {
+		return IssuedSession{}, wrapUserErr("accept the invite", err)
+	}
 	hash, err := preparePassword(ctx, c.d.Hasher, in.Password)
 	if err != nil {
 		return IssuedSession{}, err
@@ -183,9 +189,12 @@ func (c *AcceptInviteCommand) Execute(ctx context.Context, in AcceptInvite) (Iss
 	var issued IssuedSession
 	err = c.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		now := c.d.Now().UTC()
-		userID, err := useToken(ctx, c.d.Tokens, in.Token, domain.PurposeInvite, now)
+		userID, ok, err := c.d.Tokens.FindValid(ctx, domain.HashSecret(in.Token), domain.PurposeInvite, now)
 		if err != nil {
 			return err
+		}
+		if !ok {
+			return ErrTokenInvalid
 		}
 		user, err := c.d.Users.LockByID(ctx, userID)
 		if errors.Is(err, users.ErrNotFound) {
@@ -196,6 +205,9 @@ func (c *AcceptInviteCommand) Execute(ctx context.Context, in AcceptInvite) (Iss
 		}
 		if user.Status != domain.UserInvited {
 			return ErrTokenInvalid
+		}
+		if _, err := useToken(ctx, c.d.Tokens, in.Token, domain.PurposeInvite, now); err != nil {
+			return err
 		}
 		if err := c.d.Users.Activate(ctx, user.ID, hash, now); err != nil {
 			return err
