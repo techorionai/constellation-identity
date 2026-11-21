@@ -27,8 +27,8 @@ The service reads its settings from environment variables with the prefix `IDENT
 | `IDENTITY_SESSION__ABSOLUTE_TIMEOUT` | `168h` (7 days) | 1 hour to 90 days | Absolute expiry of a browser session. |
 | `IDENTITY_PASSWORD__MAX_CONCURRENT` | `4` | 1 to 64 | Number of password hashes that run at the same time. Each hash uses 64 MiB of memory. |
 | `IDENTITY_PASSWORD__QUEUE_TIMEOUT` | `2s` | 100 ms to 30 s | Longest wait for a hash slot. After it, the page gives status 503. |
-| `IDENTITY_LOGIN__MAX_FAILURES_PER_EMAIL` | `5` | 1 to 100 | Failed logins for one email in the window. |
-| `IDENTITY_LOGIN__MAX_FAILURES_PER_IP` | `50` | 1 to 10000 | Failed logins from one client IP in the window. |
+| `IDENTITY_LOGIN__MAX_FAILURES_PER_EMAIL` | `5` | 1 to 100 | Login attempts for one email in the window. The attempt after the limit gets status 429. |
+| `IDENTITY_LOGIN__MAX_FAILURES_PER_IP` | `50` | 1 to 10000 | Login attempts from one client IP in the window. The attempt after the limit gets status 429. |
 | `IDENTITY_LOGIN__FAILURE_WINDOW` | `15m` | 1 minute to 24 hours | Life of the failure counters. |
 | `IDENTITY_RETENTION__TOKENS__PERIOD`, `IDENTITY_RETENTION__SESSIONS__PERIOD` | `168h` | | Age after which the service deletes ended tokens and sessions. Also `INTERVAL` and `BATCH_SIZE`. See `retention` in `constellation-platform-go`. |
 | `IDENTITY_CLIENTS_FILE` | empty | | Path of the clients file. Empty means no config clients. |

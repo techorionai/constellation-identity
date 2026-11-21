@@ -166,21 +166,21 @@ func (c *LogCapture) Records(t testing.TB) []map[string]any {
 	return out
 }
 
-// SetupLinkMessage is the message of the log record with the setup link.
-const SetupLinkMessage = "identity: first-admin setup link"
+// SetupPendingMessage is the message of the log record that says a setup link
+// exists. The record has the expiry and never the link.
+const SetupPendingMessage = "identity: first-admin setup link pending"
 
-// SetupLinks returns the setup links in the captured log, in order.
-func (c *LogCapture) SetupLinks(t testing.TB) []string {
+// SetupPendingRecords returns the records that say a setup link exists, in
+// order.
+func (c *LogCapture) SetupPendingRecords(t testing.TB) []map[string]any {
 	t.Helper()
-	var links []string
+	var out []map[string]any
 	for _, r := range c.Records(t) {
-		if r["msg"] == SetupLinkMessage {
-			if l, ok := r["link"].(string); ok {
-				links = append(links, l)
-			}
+		if r["msg"] == SetupPendingMessage {
+			out = append(out, r)
 		}
 	}
-	return links
+	return out
 }
 
 // TokenOf returns the token query value of a link.

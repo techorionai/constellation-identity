@@ -2,21 +2,21 @@
 
 A new install has no user. The service makes a one-time setup link at the first start. You use the link to make the first admin account.
 
-## Find the setup link
+## Get the setup link
 
-At the first start, the service writes one log record at the level `WARN` with the message `identity: first-admin setup link`. The attribute `link` holds the URL:
+The log never has the setup link or the token, because a person who can read the log could take over the install. At the first start, the service writes one log record at the level `WARN` with the message `identity: first-admin setup link pending`. The record says that a setup link exists. The attribute `expires_at` gives the time when the link ends.
+
+To get the link, run the subcommand `setup-link`. It needs the same database config as the server. It prints the link to standard output only:
+
+```sh
+docker compose exec identity identity setup-link
+```
 
 ```txt
 <IDENTITY_ISSUER>/setup?token=<value>
 ```
 
-The token value is in this log record only. The service writes it one time. A restart before the setup does not write a new link, because the first token is still valid.
-
-Search the log of the service, for example:
-
-```sh
-docker logs <identity container> 2>&1 | grep "first-admin setup link"
-```
+Each run of `setup-link` deletes the unused setup tokens and makes a new one. Thus only the link of the last run works.
 
 ## Make the first admin
 
@@ -26,20 +26,19 @@ docker logs <identity container> 2>&1 | grep "first-admin setup link"
 
 Do this at once. The link ends after `IDENTITY_SETUP__TTL` (24 hours by default). The link works one time. A link that was used or that has ended gives an error page.
 
-Anyone who has the link can make the first admin account. Treat the log as a secret until the setup is done. Logs can go to a log store, so complete the setup before other people can read the log.
+Anyone who has the link can make the first admin account. Do not put the output of `setup-link` in a log, a ticket, or a chat. Complete the setup at once.
 
 ## Get a new link
 
-If the link ended or you lost it, use one of these methods:
+If the link ended or you lost it, run the subcommand `setup-link` again:
 
-- Restart the service. If no admin exists and no valid link exists, the service writes a new link to the log.
-- Run the subcommand `setup-link`. It needs the same database config as the server. It deletes each unused setup token, makes a new one, and prints the link to standard output. It does not write the link to the log.
-
-  ```sh
-  identity setup-link
-  ```
+```sh
+identity setup-link
+```
 
 If an admin exists, `setup-link` prints an error and exits with code 1.
+
+A restart of the service after the link ended makes a new token and writes a new log record. The record does not have the link. Run `setup-link` to get it.
 
 ## Next step
 

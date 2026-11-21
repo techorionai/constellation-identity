@@ -74,7 +74,7 @@ The use cases of the users are in `internal/app/commands/` (`EnsureSetupToken`, 
 1. Load the clients file (an error stops the start).
 2. Connect to PostgreSQL and Valkey.
 3. Start the admin server. `/livez` is 200 and `/readyz` is 503.
-4. Run the migrations of `secrets/postgres`, then the migrations of the service. Then publish the own manifest of the service (the roles `identity:admin` and `identity:service`). Then, under a PostgreSQL advisory lock, make the first-admin setup token if no active user has the role `identity:admin` and no valid setup token exists. See [first-start.md](first-start.md).
+4. Run the migrations of `secrets/postgres`, then the migrations of the service. Then publish the own manifest of the service (the roles `identity:admin` and `identity:service`). Then, under a PostgreSQL advisory lock, make the first-admin setup token if no active user has the role `identity:admin` and no valid setup token exists, and write one log record with the expiry (the record has no link). See [first-start.md](first-start.md).
 5. Load the key cache. A key that does not decrypt stops the start. Then run the key manager one time and load the cache again. The first load comes before the manager, so the manager never makes a key after a master key change.
 6. Start the key manager loop (10 minutes) and the cache reload loop (1 minute).
 7. Sync the clients file.
