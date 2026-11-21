@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"time"
 
@@ -26,7 +25,7 @@ type KeyMaker interface {
 }
 
 // LoginLimiter is the adapter of the port loginlimiter. The counters are
-// plain Valkey keys. No script is necessary.
+// plain Valkey keys.
 type LoginLimiter struct {
 	client valkeygo.Client
 	keys   KeyMaker
@@ -36,7 +35,7 @@ type LoginLimiter struct {
 var _ loginlimiter.Limiter = (*LoginLimiter)(nil)
 
 // NewLoginLimiter makes the limiter. window is the life of a counter. It is
-// set at the first failure of the window.
+// set at the first attempt of the window.
 func NewLoginLimiter(client valkeygo.Client, keys KeyMaker, window time.Duration) *LoginLimiter {
 	return &LoginLimiter{client: client, keys: keys, window: window}
 }
@@ -54,50 +53,44 @@ func digest(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Counts returns the failures of the email and of the IP.
-func (l *LoginLimiter) Counts(ctx context.Context, email, ip string) (int64, int64, error) {
-	ctx, cancel := context.WithTimeout(ctx, callTimeout)
-	defer cancel()
-	res := l.client.DoMulti(ctx,
-		l.client.B().Get().Key(l.emailKey(email)).Build(),
-		l.client.B().Get().Key(l.ipKey(ip)).Build())
-	var out [2]int64
-	for i, r := range res {
-		n, err := r.AsInt64()
-		switch {
-		case err == nil:
-			out[i] = n
-		case valkeygo.IsValkeyNil(err):
-			out[i] = 0
-		default:
-			return 0, 0, fmt.Errorf("read login counters: %w", err)
-		}
-	}
-	return out[0], out[1], nil
-}
-
-// RecordFailure adds one failure to each counter. EXPIRE with NX sets the life
-// at the first failure of the window only.
-func (l *LoginLimiter) RecordFailure(ctx context.Context, email, ip string) error {
+// Reserve adds one attempt to each counter in one MULTI/EXEC transaction.
+// EXPIRE with NX sets the life at the first attempt of the window only, and it
+// runs in the same transaction as INCR. Thus a counter never exists without an
+// expiry, and parallel calls get different values. The server ACL denies
+// scripts, so the adapter does not use one.
+func (l *LoginLimiter) Reserve(ctx context.Context, email, ip string) (int64, int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	seconds := max(int64(l.window/time.Second), 1)
 	ek, ik := l.emailKey(email), l.ipKey(ip)
 	res := l.client.DoMulti(ctx,
+		l.client.B().Multi().Build(),
 		l.client.B().Incr().Key(ek).Build(),
 		l.client.B().Expire().Key(ek).Seconds(seconds).Nx().Build(),
 		l.client.B().Incr().Key(ik).Build(),
-		l.client.B().Expire().Key(ik).Seconds(seconds).Nx().Build())
-	var errs []error
+		l.client.B().Expire().Key(ik).Seconds(seconds).Nx().Build(),
+		l.client.B().Exec().Build())
 	for _, r := range res {
 		if err := r.Error(); err != nil {
-			errs = append(errs, err)
+			return 0, 0, fmt.Errorf("reserve login attempt: %w", err)
 		}
 	}
-	if err := errors.Join(errs...); err != nil {
-		return fmt.Errorf("record login failure: %w", err)
+	replies, err := res[len(res)-1].ToArray()
+	if err != nil {
+		return 0, 0, fmt.Errorf("reserve login attempt: %w", err)
 	}
-	return nil
+	if len(replies) != 4 {
+		return 0, 0, fmt.Errorf("reserve login attempt: %d replies, want 4", len(replies))
+	}
+	emailN, err := replies[0].AsInt64()
+	if err != nil {
+		return 0, 0, fmt.Errorf("reserve login attempt: %w", err)
+	}
+	ipN, err := replies[2].AsInt64()
+	if err != nil {
+		return 0, 0, fmt.Errorf("reserve login attempt: %w", err)
+	}
+	return emailN, ipN, nil
 }
 
 // ResetEmail deletes the counter of the email.

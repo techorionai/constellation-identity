@@ -1,16 +1,15 @@
-// Package loginlimiter is the port of the login failure counters.
+// Package loginlimiter is the port of the login attempt counters.
 package loginlimiter
 
 import "context"
 
-// Limiter counts the failed logins of an email and of a client IP.
+// Limiter counts the login attempts of an email and of a client IP.
 type Limiter interface {
-	// Counts returns the failures of the email and of the IP in the current
-	// window. An error means the counters are not available.
-	Counts(ctx context.Context, email, ip string) (emailFailures, ipFailures int64, err error)
-	// RecordFailure adds one failure to the counter of the email and to the
-	// counter of the IP.
-	RecordFailure(ctx context.Context, email, ip string) error
+	// Reserve adds one attempt to the counter of the email and to the counter
+	// of the IP in one atomic step, and returns the new values. A counter
+	// always has an expiry after this call. Parallel calls get different
+	// values. An error means the counters are not available.
+	Reserve(ctx context.Context, email, ip string) (emailAttempts, ipAttempts int64, err error)
 	// ResetEmail deletes the counter of the email.
 	ResetEmail(ctx context.Context, email string) error
 }

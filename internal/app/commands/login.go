@@ -95,7 +95,7 @@ func (c *LoginCommand) count(ctx context.Context, outcome string) {
 	c.logins.Add(context.WithoutCancel(ctx), 1, metric.WithAttributes(attribute.String("outcome", outcome)))
 }
 
-// Execute checks the failure limits, then checks the password. Every failure
+// Execute reserves an attempt in the failure counters, then checks the password. Every failure
 // that the user can cause gives ErrBadCredentials, ErrTooManyAttempts, or
 // ErrBusy. A limiter error gives ErrLimiterUnavailable and no hash runs.
 func (c *LoginCommand) Execute(ctx context.Context, in Login) (IssuedSession, error) {
@@ -104,12 +104,14 @@ func (c *LoginCommand) Execute(ctx context.Context, in Login) (IssuedSession, er
 		// The value cannot be an email of a user. It is still counted.
 		email = normalizeLoose(in.Email)
 	}
-	emailFails, ipFails, err := c.d.Limiter.Counts(ctx, email, in.IP)
+	// Reserve the attempt before the hash. The counters change in one atomic
+	// step, so parallel requests cannot all pass the limit.
+	emailAttempts, ipAttempts, err := c.d.Limiter.Reserve(ctx, email, in.IP)
 	if err != nil {
 		c.d.Log.ErrorContext(ctx, "identity.login.limiter_unavailable", "event", "identity.login.limiter_unavailable", "error", err)
 		return IssuedSession{}, ErrLimiterUnavailable
 	}
-	if emailFails >= c.d.Limits.MaxFailuresPerEmail || ipFails >= c.d.Limits.MaxFailuresPerIP {
+	if emailAttempts > c.d.Limits.MaxFailuresPerEmail || ipAttempts > c.d.Limits.MaxFailuresPerIP {
 		c.count(ctx, OutcomeLimited)
 		c.d.Log.InfoContext(ctx, "identity.login.limited", "event", "identity.login.limited")
 		return IssuedSession{}, ErrTooManyAttempts
@@ -133,7 +135,7 @@ func (c *LoginCommand) Execute(ctx context.Context, in Login) (IssuedSession, er
 		if found && user.Status == domain.UserDisabled {
 			outcome = OutcomeDisabled
 		}
-		c.fail(ctx, email, in.IP, outcome)
+		c.fail(ctx, outcome)
 		return IssuedSession{}, ErrBadCredentials
 	}
 
@@ -187,10 +189,7 @@ func (c *LoginCommand) checkPassword(ctx context.Context, password string, u dom
 	return false, false, err
 }
 
-func (c *LoginCommand) fail(ctx context.Context, email, ip, outcome string) {
-	if err := c.d.Limiter.RecordFailure(ctx, email, ip); err != nil {
-		c.d.Log.ErrorContext(ctx, "identity.login.record_failed", "event", "identity.login.record_failed", "error", err)
-	}
+func (c *LoginCommand) fail(ctx context.Context, outcome string) {
 	c.count(ctx, outcome)
 	c.d.Log.InfoContext(ctx, "identity.login.failed", "event", "identity.login.failed", "outcome", outcome)
 }
