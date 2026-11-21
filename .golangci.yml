@@ -78,6 +78,8 @@ linters:
               desc: An adapter must not import another adapter.
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/valkey
               desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/argon2
+              desc: An adapter must not import another adapter.
         adapter-secrets:
           files:
             - "**/internal/adapters/secrets/**"
@@ -94,6 +96,8 @@ linters:
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/jose
               desc: An adapter must not import another adapter.
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/valkey
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/argon2
               desc: An adapter must not import another adapter.
         adapter-jose:
           files:
@@ -112,6 +116,8 @@ linters:
               desc: An adapter must not import another adapter.
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/valkey
               desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/argon2
+              desc: An adapter must not import another adapter.
         adapter-valkey:
           files:
             - "**/internal/adapters/valkey/**"
@@ -128,6 +134,27 @@ linters:
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/secrets
               desc: An adapter must not import another adapter.
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/jose
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/argon2
+              desc: An adapter must not import another adapter.
+        adapter-argon2:
+          files:
+            - "**/internal/adapters/argon2/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/techorionai/constellation-identity/internal/app
+              desc: An adapter must not import the application layer.
+            - pkg: github.com/techorionai/constellation-identity/internal/handlers
+              desc: An adapter must not import a handler.
+            - pkg: github.com/techorionai/constellation-identity/internal/services
+              desc: An adapter must not import the composition root.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/postgres
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/secrets
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/jose
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/valkey
               desc: An adapter must not import another adapter.
         # A handler is a primary adapter. It calls the application layer only.
         handlers-app-only:

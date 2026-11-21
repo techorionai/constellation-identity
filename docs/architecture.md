@@ -5,16 +5,19 @@ The service follows the hexagonal architecture guide of the planner repository. 
 ## Layout
 
 ```txt
-cmd/identity/main.go            Starts the service. Subcommands "healthcheck" and "rotate-signing-keys".
+cmd/identity/main.go            Starts the service. Subcommands "healthcheck", "rotate-signing-keys", and "setup-link".
 api/openapi/                    Constellation.Identity.openapi.yaml, identity-manifest.json, CONTRACTS_VERSION
 internal/domain/                Pure types and rules (signing keys, clients, manifests, roles, assertions, scopes)
 internal/ports/<port>/          Interfaces
 internal/adapters/postgres/     Repositories and the "jtistore" adapter
 internal/adapters/secrets/      Adapter of the port "privatekeys" on platform-go secrets
 internal/adapters/jose/         Adapters of the ports "tokensigner" and "assertion" with go-jose
+internal/adapters/argon2/       Adapter of the port "passwordhasher" (argon2id, NFC, hash slots)
+internal/adapters/valkey/       Adapter of the port "loginlimiter" (login failure counters)
 internal/app/{commands,queries} Use cases with platform-go executors and decorators
 internal/app/keys/              Key manager and in-memory key cache
 internal/handlers/http/         Generated server (gen/), handlers
+internal/handlers/http/pages/   HTML pages: login, logout, setup, invite (templates, CSS, headers)
 internal/common/errors/         AppError
 internal/config/                Config struct and the clients file parser
 internal/services/              Composition root
@@ -36,6 +39,12 @@ The `.golangci.yml` file has `depguard` rules for the import table of the guide.
 | Client role repository | `internal/ports/clientroles` | `internal/adapters/postgres` |
 | Assertion parser | `internal/ports/assertion` | `internal/adapters/jose` |
 | Replay store (`jti`) | `internal/ports/jtistore` | `internal/adapters/postgres` |
+| User repository | `internal/ports/users` | `internal/adapters/postgres` |
+| User role repository | `internal/ports/userroles` | `internal/adapters/postgres` |
+| One-time token repository (setup, invite) | `internal/ports/onetimetokens` | `internal/adapters/postgres` |
+| Session repository | `internal/ports/sessions` | `internal/adapters/postgres` |
+| Password hasher | `internal/ports/passwordhasher` | `internal/adapters/argon2` |
+| Login failure limiter | `internal/ports/loginlimiter` | `internal/adapters/valkey` |
 
 ## Routes
 
@@ -53,18 +62,24 @@ The token endpoint is the use case `IssueServiceToken` in `internal/app/commands
 | `GET /.well-known/openid-configuration` | Implemented. `Cache-Control: public, max-age=3600`. |
 | `POST /oauth/token` | Grant `client_credentials`. Other grants give 400 `unsupported_grant_type` until issue 4. |
 | `PUT /v1/permission-manifests/{app}`, `GET /v1/permission-manifests`, `GET /v1/permission-manifests/{app}`, `GET /v1/roles`, `GET /v1/roles/{role}` | Implemented. |
+| `GET /login`, `POST /login`, `GET /login/done`, `POST /logout`, `GET /setup`, `POST /setup`, `GET /invite`, `POST /invite`, `GET /assets/pages.css` | HTML pages. They are not in the OpenAPI file. See [security.md](security.md). |
 | All other operations | 501 `Problem` with the code `not_implemented`. |
+
+The pages are on a router in front of the generated router. The chain is `RedactToken`, then `otelhttp`, then `requestid`, then the router of the pages or the generated router. `RedactToken` replaces the `token` query value with `REDACTED` in the URL, so no span and no log record holds a setup token or an invite token. The pages use `html/template` with embedded templates, one embedded CSS file, and no JavaScript.
+
+The use cases of the users are in `internal/app/commands/` (`EnsureSetupToken`, `ReplaceSetupToken`, `CompleteSetup`, `CreateUser`, `CreateInvite`, `AcceptInvite`, `Login`, `Logout`, `TouchSession`) and `internal/app/queries/` (`SessionFromCookie`, `CheckOneTimeToken`). The admin API of a later issue calls `CreateUser` and `CreateInvite`.
 
 ## Startup order
 
 1. Load the clients file (an error stops the start).
 2. Connect to PostgreSQL and Valkey.
 3. Start the admin server. `/livez` is 200 and `/readyz` is 503.
-4. Run the migrations of `secrets/postgres`, then the migrations of the service. Then publish the own manifest of the service (the roles `identity:admin` and `identity:service`).
+4. Run the migrations of `secrets/postgres`, then the migrations of the service. Then publish the own manifest of the service (the roles `identity:admin` and `identity:service`). Then, under a PostgreSQL advisory lock, make the first-admin setup token if no active user has the role `identity:admin` and no valid setup token exists, and write one log record with the expiry (the record has no link). See [first-start.md](first-start.md).
 5. Load the key cache. A key that does not decrypt stops the start. Then run the key manager one time and load the cache again. The first load comes before the manager, so the manager never makes a key after a master key change.
 6. Start the key manager loop (10 minutes) and the cache reload loop (1 minute).
 7. Sync the clients file.
-8. Start the public server and mark the service ready.
+8. Start the retention jobs and the gauge of active sessions.
+9. Start the public server and mark the service ready.
 
 The readiness checks are `postgres`, `valkey`, `migrations`, and `signing_key` (an active key is in the cache).
 
