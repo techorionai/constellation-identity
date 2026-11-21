@@ -367,6 +367,8 @@ type Limiter struct {
 	IPs    map[string]int64
 	// Err is returned by every call when it is set.
 	Err error
+	// SuccessErr is returned by RecordSuccess when it is set.
+	SuccessErr error
 }
 
 // NewLimiter makes a limiter with no attempts.
@@ -384,10 +386,17 @@ func (l *Limiter) Reserve(_ context.Context, email, ip string) (int64, int64, er
 	return l.Emails[email], l.IPs[ip], nil
 }
 
-// ResetEmail deletes the counter of the email.
-func (l *Limiter) ResetEmail(_ context.Context, email string) error {
+// RecordSuccess deletes the counter of the email and decreases the counter of
+// the IP, but not below 0.
+func (l *Limiter) RecordSuccess(_ context.Context, email, ip string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.SuccessErr != nil {
+		return fmt.Errorf("limiter: %w", l.SuccessErr)
+	}
 	delete(l.Emails, email)
+	if l.IPs[ip] > 0 {
+		l.IPs[ip]--
+	}
 	return nil
 }

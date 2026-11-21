@@ -10,6 +10,9 @@ type Limiter interface {
 	// always has an expiry after this call. Parallel calls get different
 	// values. An error means the counters are not available.
 	Reserve(ctx context.Context, email, ip string) (emailAttempts, ipAttempts int64, err error)
-	// ResetEmail deletes the counter of the email.
-	ResetEmail(ctx context.Context, email string) error
+	// RecordSuccess is for a good login. It deletes the counter of the email
+	// and decreases the counter of the IP by 1, so that the IP counter counts
+	// failures only. The IP counter never goes below 0, a missing counter stays
+	// missing, and an existing counter keeps its expiry.
+	RecordSuccess(ctx context.Context, email, ip string) error
 }

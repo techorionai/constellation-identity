@@ -159,8 +159,9 @@ func TestR11_WindowExpiresAndIsNotExtended(t *testing.T) {
 	}
 }
 
-// ResetEmail deletes the email counter and keeps the IP counter.
-func TestResetEmail(t *testing.T) {
+// I10j (R20): RecordSuccess deletes the email counter and decreases the IP
+// counter by 1. It keeps the TTL, never goes below 0, and never makes a key.
+func TestRecordSuccess(t *testing.T) {
 	c := limiterEnv(t)
 	l := NewLoginLimiter(c, testKeys{}, time.Minute)
 	ctx := context.Background()
@@ -169,11 +170,58 @@ func TestResetEmail(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := l.ResetEmail(ctx, "a@example.com"); err != nil {
+	ipKey := l.ipKey("1.2.3.4")
+	before := ttlMillis(t, c, ipKey)
+	if err := l.RecordSuccess(ctx, "a@example.com", "1.2.3.4"); err != nil {
 		t.Fatal(err)
 	}
+	if after := ttlMillis(t, c, ipKey); after <= 0 || after > before {
+		t.Fatalf("TTL after = %d, before = %d, want a TTL that is kept", after, before)
+	}
 	e, i, err := l.Reserve(ctx, "a@example.com", "1.2.3.4")
-	if err != nil || e != 1 || i != 4 {
-		t.Fatalf("after reset: email %d, ip %d, %v, want 1 and 4", e, i, err)
+	if err != nil || e != 1 || i != 3 {
+		t.Fatalf("after success: email %d, ip %d, %v, want 1 and 3", e, i, err)
+	}
+
+	// The counter goes to 0 and not below.
+	for range 4 {
+		if err := l.RecordSuccess(ctx, "a@example.com", "1.2.3.4"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := c.Do(ctx, c.B().Get().Key(ipKey).Build()).AsInt64(); err != nil || got != 0 {
+		t.Fatalf("IP counter = %d, %v, want 0", got, err)
+	}
+
+	// A missing counter stays missing.
+	if err := l.RecordSuccess(ctx, "b@example.com", "5.6.7.8"); err != nil {
+		t.Fatal(err)
+	}
+	if got := ttlMillis(t, c, l.ipKey("5.6.7.8")); got != -2 {
+		t.Fatalf("TTL of a missing counter = %d, want -2 (no key)", got)
+	}
+}
+
+// RecordSuccess in parallel with Reserve never makes the counter negative.
+func TestRecordSuccessParallel(t *testing.T) {
+	c := limiterEnv(t)
+	l := NewLoginLimiter(c, testKeys{}, time.Minute)
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for range 30 {
+		wg.Go(func() {
+			if _, _, err := l.Reserve(ctx, "a@example.com", "1.2.3.4"); err != nil {
+				t.Error(err)
+				return
+			}
+			if err := l.RecordSuccess(ctx, "a@example.com", "1.2.3.4"); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	got, err := c.Do(ctx, c.B().Get().Key(l.ipKey("1.2.3.4")).Build()).AsInt64()
+	if err != nil || got < 0 {
+		t.Fatalf("IP counter = %d, %v, want 0 or more", got, err)
 	}
 }

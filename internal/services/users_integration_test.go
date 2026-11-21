@@ -801,6 +801,28 @@ func TestUsersIntegration(t *testing.T) {
 		status(t, r, http.StatusTooManyRequests, "correct password after the burst")
 	})
 
+	// I10i (R20): good logins from one IP never reach the IP limit. Failures do.
+	t.Run("I10i_good_logins_do_not_fill_ip_limit", func(t *testing.T) {
+		_, a := h.startOwnValkey(t)
+		_, resp := a.completeSetup(t, a.setupLink(t), "admin@example.com", "Admin", adminPassword)
+		status(t, resp, http.StatusSeeOther, "setup")
+		for i := range 60 {
+			r, _ := a.NewWeb().PostForm(t, "/login", url.Values{"email": {"admin@example.com"}, "password": {adminPassword}})
+			if r.StatusCode != http.StatusSeeOther {
+				t.Fatalf("good login %d: status = %d, want 303", i+1, r.StatusCode)
+			}
+		}
+		// Each wrong login uses a new email, so only the IP limit of 50 can stop it.
+		for i := range 50 {
+			r, _ := a.NewWeb().PostForm(t, "/login", url.Values{"email": {fmt.Sprintf("nobody%d@example.com", i)}, "password": {"wrong password 123456"}})
+			if r.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("failure %d: status = %d, want 401", i+1, r.StatusCode)
+			}
+		}
+		r, _ := a.NewWeb().PostForm(t, "/login", url.Values{"email": {"admin@example.com"}, "password": {adminPassword}})
+		status(t, r, http.StatusTooManyRequests, "login 51 after 50 failures from one IP")
+	})
+
 	// I10f (R7): a bad token gives the error page and runs no hash.
 	t.Run("I10f_bad_token_no_hash", func(t *testing.T) {
 		runsBefore := passwordRuns(t)

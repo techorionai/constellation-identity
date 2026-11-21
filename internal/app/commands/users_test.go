@@ -125,7 +125,8 @@ func TestU6b_UnknownEmailCounts(t *testing.T) {
 	}
 }
 
-// U6c: a success deletes the email counter. The IP counter keeps the attempts.
+// U6c: a success deletes the email counter and takes back its own attempt from
+// the IP counter. The IP counter keeps the failures only.
 func TestU6c_SuccessResetsEmailCounter(t *testing.T) {
 	e := newEnv()
 	e.addUser("active", "active@example.com", domain.UserActive, "right password 1")
@@ -139,8 +140,28 @@ func TestU6c_SuccessResetsEmailCounter(t *testing.T) {
 	if _, ok := e.limiter.Emails["active@example.com"]; ok {
 		t.Fatal("the email counter must be deleted")
 	}
-	if e.limiter.IPs["1.1.1.1"] != 3 {
-		t.Fatalf("IP counter = %d, want 3 attempts", e.limiter.IPs["1.1.1.1"])
+	if e.limiter.IPs["1.1.1.1"] != 2 {
+		t.Fatalf("IP counter = %d, want 2 failures", e.limiter.IPs["1.1.1.1"])
+	}
+}
+
+// U6g (R20): good logins leave the IP counter at 0, and a failed decrease does
+// not stop the login.
+func TestU6g_GoodLoginsDoNotCountForIP(t *testing.T) {
+	e := newEnv()
+	e.addUser("active", "active@example.com", domain.UserActive, "right password 1")
+	cmd := e.login()
+	for range 5 {
+		if _, err := cmd.Execute(ctx, commands.Login{Email: "active@example.com", Password: "right password 1", IP: "1.1.1.1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := e.limiter.IPs["1.1.1.1"]; got != 0 {
+		t.Fatalf("IP counter = %d, want 0", got)
+	}
+	e.limiter.SuccessErr = errors.New("down")
+	if _, err := cmd.Execute(ctx, commands.Login{Email: "active@example.com", Password: "right password 1", IP: "1.1.1.1"}); err != nil {
+		t.Fatalf("login with a failed decrease = %v, want success", err)
 	}
 }
 

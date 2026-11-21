@@ -93,12 +93,49 @@ func (l *LoginLimiter) Reserve(ctx context.Context, email, ip string) (int64, in
 	return emailN, ipN, nil
 }
 
-// ResetEmail deletes the counter of the email.
-func (l *LoginLimiter) ResetEmail(ctx context.Context, email string) error {
+// successTries is the number of tries of RecordSuccess when WATCH shows a
+// change of the IP counter.
+const successTries = 64
+
+// RecordSuccess deletes the counter of the email and decreases the counter of
+// the IP by 1. It uses WATCH, so the decrease runs only if the IP counter
+// exists and is more than 0, and it never creates a key. DECR keeps the expiry
+// of the key. The server ACL denies scripts, so the adapter does not use one.
+func (l *LoginLimiter) RecordSuccess(ctx context.Context, email, ip string) error {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	if err := l.client.Do(ctx, l.client.B().Del().Key(l.emailKey(email)).Build()).Error(); err != nil {
-		return fmt.Errorf("reset login counter: %w", err)
+	ek, ik := l.emailKey(email), l.ipKey(ip)
+	err := l.client.Dedicated(func(c valkeygo.DedicatedClient) error {
+		for range successTries {
+			if err := c.Do(ctx, c.B().Watch().Key(ik).Build()).Error(); err != nil {
+				return err
+			}
+			n, err := c.Do(ctx, c.B().Get().Key(ik).Build()).AsInt64()
+			if err != nil && !valkeygo.IsValkeyNil(err) {
+				c.Do(ctx, c.B().Unwatch().Build())
+				return err
+			}
+			cmds := valkeygo.Commands{c.B().Multi().Build(), c.B().Del().Key(ek).Build()}
+			if err == nil && n > 0 {
+				cmds = append(cmds, c.B().Decr().Key(ik).Build())
+			}
+			cmds = append(cmds, c.B().Exec().Build())
+			res := c.DoMulti(ctx, cmds...)
+			for _, r := range res[:len(res)-1] {
+				if err := r.Error(); err != nil {
+					return err
+				}
+			}
+			exec := res[len(res)-1]
+			if valkeygo.IsValkeyNil(exec.Error()) {
+				continue // WATCH showed a change, so try again
+			}
+			return exec.Error()
+		}
+		return fmt.Errorf("the IP counter changed %d times", successTries)
+	})
+	if err != nil {
+		return fmt.Errorf("record login success: %w", err)
 	}
 	return nil
 }

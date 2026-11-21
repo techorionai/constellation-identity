@@ -142,7 +142,7 @@ func (c *LoginCommand) Execute(ctx context.Context, in Login) (IssuedSession, er
 	if needsRehash {
 		c.rehash(ctx, user.ID, password)
 	}
-	if err := c.d.Limiter.ResetEmail(ctx, email); err != nil {
+	if err := c.d.Limiter.RecordSuccess(ctx, email, in.IP); err != nil {
 		c.d.Log.WarnContext(ctx, "identity.login.reset_failed", "event", "identity.login.reset_failed", "error", err)
 	}
 	if in.PreviousToken != "" {
