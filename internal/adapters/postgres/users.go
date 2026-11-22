@@ -105,3 +105,40 @@ func (r *Users) update(ctx context.Context, query string, args ...any) error {
 	}
 	return nil
 }
+
+// List returns a page of users in the order of the creation time and the ID.
+func (r *Users) List(ctx context.Context, after *domain.PageCursor, limit int) ([]domain.User, error) {
+	query := `SELECT ` + userColumns + ` FROM users`
+	var args []any
+	if after != nil {
+		query += ` WHERE (created_at, id) > ($1, $2::uuid)`
+		args = append(args, after.CreatedAt, after.ID)
+	}
+	query += ` ORDER BY created_at, id LIMIT ` + fmt.Sprint(limit)
+	rows, err := clientspg.Conn(ctx, r.pool).Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.User
+	for rows.Next() {
+		var (
+			u      domain.User
+			status string
+		)
+		if err := rows.Scan(&u.ID, &u.Email, &u.Name, &status, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		u.Status = domain.UserStatus(status)
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	return out, nil
+}
+
+// SetName sets the name of a user.
+func (r *Users) SetName(ctx context.Context, id, name string, now time.Time) error {
+	return r.update(ctx, `UPDATE users SET name = $2, updated_at = $3 WHERE id = $1`, id, name, now)
+}
