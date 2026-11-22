@@ -270,11 +270,13 @@ type UserRoles struct {
 	Rows map[string][]domain.RoleRef
 	// Users is used to find the status of the holders.
 	Users *Users
+	// Perms gives the permissions of a role. A role with no entry is pending.
+	Perms map[domain.RoleRef][]string
 }
 
 // NewUserRoles makes an empty repository.
 func NewUserRoles(u *Users) *UserRoles {
-	return &UserRoles{Rows: map[string][]domain.RoleRef{}, Users: u}
+	return &UserRoles{Rows: map[string][]domain.RoleRef{}, Users: u, Perms: map[domain.RoleRef][]string{}}
 }
 
 // Assign gives a role.

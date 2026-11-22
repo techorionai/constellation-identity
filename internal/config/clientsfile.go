@@ -26,6 +26,9 @@ type rawClient struct {
 	Keys []rawKey `yaml:"keys"`
 	// Roles are role references <app>:<role>.
 	Roles []string `yaml:"roles"`
+	// RedirectURIs and PostLogoutRedirectURIs are for a public client.
+	RedirectURIs           []string `yaml:"redirect_uris"`
+	PostLogoutRedirectURIs []string `yaml:"post_logout_redirect_uris"`
 }
 
 type rawKey struct {
@@ -68,22 +71,25 @@ func ParseClientsFile(data []byte) ([]domain.ClientConfig, error) {
 		bad := func(field, format string, args ...any) {
 			errs = append(errs, fmt.Errorf("clients file: client %q: field %s: %s", label, field, fmt.Sprintf(format, args...)))
 		}
-		if !domain.ValidAppKey(rc.ID) {
-			bad("id", "must match ^[a-z][a-z0-9_]{0,31}$")
+		if !domain.ValidClientID(rc.ID) {
+			bad("id", "must match ^[a-z][a-z0-9_-]{0,31}$")
 		}
 		if ids[rc.ID] {
 			bad("id", "is used two times")
 		}
 		ids[rc.ID] = true
-		if !domain.ValidAppKey(rc.App) {
-			bad("app", "must match ^[a-z][a-z0-9_]{0,31}$")
-		} else if rc.App == domain.IdentityApp {
-			bad("app", "must not be %q for a service client", domain.IdentityApp)
-		}
+		clientType := domain.ClientTypeService
 		switch rc.Type {
 		case "", string(domain.ClientTypeService):
+		case string(domain.ClientTypePublic):
+			clientType = domain.ClientTypePublic
 		default:
-			bad("type", "must be %q", domain.ClientTypeService)
+			bad("type", "must be %q or %q", domain.ClientTypeService, domain.ClientTypePublic)
+		}
+		if !domain.ValidAppKey(rc.App) {
+			bad("app", "must match ^[a-z][a-z0-9_]{0,31}$")
+		} else if rc.App == domain.IdentityApp && clientType == domain.ClientTypeService {
+			bad("app", "must not be %q for a service client", domain.IdentityApp)
 		}
 		name := rc.Name
 		if name == "" {
@@ -91,8 +97,25 @@ func ParseClientsFile(data []byte) ([]domain.ClientConfig, error) {
 		}
 
 		cc := domain.ClientConfig{Client: domain.Client{
-			ID: rc.ID, Type: domain.ClientTypeService, App: rc.App, Name: name, Source: domain.SourceConfig,
+			ID: rc.ID, Type: clientType, App: rc.App, Name: name, Source: domain.SourceConfig,
 		}}
+		if clientType == domain.ClientTypePublic {
+			if len(rc.Keys) > 0 || len(rc.Roles) > 0 {
+				bad("keys", "a public client has no keys and no roles")
+			}
+			if len(rc.RedirectURIs) == 0 {
+				bad("redirect_uris", "a public client needs at least one redirect URI")
+			}
+			for _, fe := range domain.CheckRedirectURIs("redirect_uris", rc.RedirectURIs) {
+				bad(fe.Field, "%s", fe.Message)
+			}
+			for _, fe := range domain.CheckRedirectURIs("post_logout_redirect_uris", rc.PostLogoutRedirectURIs) {
+				bad(fe.Field, "%s", fe.Message)
+			}
+			cc.Client.RedirectURIs, cc.Client.PostLogoutRedirectURIs = rc.RedirectURIs, rc.PostLogoutRedirectURIs
+		} else if len(rc.RedirectURIs) > 0 || len(rc.PostLogoutRedirectURIs) > 0 {
+			bad("redirect_uris", "only a public client has redirect URIs")
+		}
 		kids := map[string]bool{}
 		for j, rk := range rc.Keys {
 			field := fmt.Sprintf("keys[%d]", j)

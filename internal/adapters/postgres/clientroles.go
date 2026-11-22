@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	clientspg "github.com/techorionai/constellation-platform-go/clients/postgres"
 
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/clientroles"
@@ -24,7 +25,7 @@ func NewClientRoles(pool *pgxpool.Pool) *ClientRoles { return &ClientRoles{pool:
 // Assignments returns the assignments of a client. The service calculates
 // pending in this query. No column stores it.
 func (r *ClientRoles) Assignments(ctx context.Context, clientID string) ([]domain.RoleAssignment, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := clientspg.Conn(ctx, r.pool).Query(ctx, `
 		SELECT cr.app, cr.role, cr.source, (ro.key IS NULL)
 		FROM client_roles cr
 		LEFT JOIN roles ro ON ro.app = cr.app AND ro.key = cr.role
@@ -62,7 +63,7 @@ func (r *ClientRoles) GrantedPermissions(ctx context.Context, clientID string, i
 		apps = append(apps, ref.App)
 		roles = append(roles, ref.Role)
 	}
-	rows, err := r.pool.Query(ctx, `
+	rows, err := clientspg.Conn(ctx, r.pool).Query(ctx, `
 		SELECT DISTINCT rp.permission
 		FROM role_permissions rp
 		WHERE EXISTS (SELECT 1 FROM client_roles cr
@@ -86,4 +87,29 @@ func (r *ClientRoles) GrantedPermissions(ctx context.Context, clientID string, i
 		return nil, fmt.Errorf("list granted permissions: %w", err)
 	}
 	return out, nil
+}
+
+// Page returns a page of the assignments of a client.
+func (r *ClientRoles) Page(ctx context.Context, clientID string, after *domain.RoleRef, limit int) ([]domain.RoleAssignment, error) {
+	return rolePage(ctx, clientspg.Conn(ctx, r.pool), `client_roles`, `client_id`, clientID, after, limit)
+}
+
+// Assign gives a role to a client.
+func (r *ClientRoles) Assign(ctx context.Context, clientID string, role domain.RoleRef, source domain.AssignmentSource) error {
+	if _, err := clientspg.Conn(ctx, r.pool).Exec(ctx, `
+		INSERT INTO client_roles (client_id, app, role, source) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (client_id, app, role) DO NOTHING`, clientID, role.App, role.Role, string(source)); err != nil {
+		return fmt.Errorf("assign client role %s: %w", role, err)
+	}
+	return nil
+}
+
+// Delete removes an assignment.
+func (r *ClientRoles) Delete(ctx context.Context, clientID string, role domain.RoleRef) (bool, error) {
+	tag, err := clientspg.Conn(ctx, r.pool).Exec(ctx,
+		`DELETE FROM client_roles WHERE client_id = $1 AND app = $2 AND role = $3`, clientID, role.App, role.Role)
+	if err != nil {
+		return false, fmt.Errorf("delete client role: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }

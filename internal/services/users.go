@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/techorionai/constellation-identity/internal/adapters/argon2"
+	adapterjose "github.com/techorionai/constellation-identity/internal/adapters/jose"
 	"github.com/techorionai/constellation-identity/internal/adapters/postgres"
 	adaptervalkey "github.com/techorionai/constellation-identity/internal/adapters/valkey"
 	"github.com/techorionai/constellation-identity/internal/app/commands"
@@ -66,6 +67,16 @@ type userStack struct {
 	ensure    executor.ExecutorWithReturn[commands.EnsureSetupToken, commands.EnsureSetupTokenResult]
 	retention *retention.Runner
 	sessions  *postgres.Sessions
+
+	oidc          *commands.OIDC
+	admin         *commands.Admin
+	cors          *queries.CORSOrigins
+	exchangeCode  executor.ExecutorWithReturn[commands.ExchangeCode, commands.UserTokenResult]
+	refreshTokens executor.ExecutorWithReturn[commands.RefreshTokens, commands.UserTokenResult]
+	revokeToken   executor.Executor[commands.RevokeToken]
+	userInfo      executor.ExecutorWithReturn[commands.UserInfo, commands.UserInfoResult]
+	createUser    executor.ExecutorWithReturn[commands.CreateUser, commands.CreateUserResult]
+	createInvite  executor.ExecutorWithReturn[commands.CreateInvite, commands.Link]
 }
 
 // buildUsers makes the adapters and the use cases of the users, and the page
@@ -92,21 +103,28 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	tx := transactionpg.NewTransactor(pool)
 	limiter := adaptervalkey.NewLoginLimiter(a.kv.Raw, a.kv.Keys, cfg.Login.FailureWindow)
 	policy := cfg.Session.Policy()
+	clock := o.clock
+	if clock == nil {
+		clock = time.Now
+	}
+	refreshRepo := postgres.NewRefreshTokens(pool)
+	clientRepo := postgres.NewClients(pool)
+	store := adaptervalkey.NewStore(a.kv.Raw, a.kv.Keys)
 
 	setupDeps := commands.SetupDeps{
 		Issuer: cfg.Issuer, TTL: cfg.Setup.TTL, Tokens: tokens, Roles: roles, Users: userRepo,
-		Session: sessionRepo, Hasher: hasher, Tx: tx, Policy: policy, Log: log,
+		Session: sessionRepo, Hasher: hasher, Tx: tx, Policy: policy, Log: log, Now: clock,
 	}
 	inviteDeps := commands.InviteDeps{
 		Issuer: cfg.Issuer, TTL: cfg.Invite.TTL, Tokens: tokens, Users: userRepo,
-		Session: sessionRepo, Hasher: hasher, Tx: tx, Policy: policy, Log: log,
+		Session: sessionRepo, Hasher: hasher, Tx: tx, Policy: policy, Log: log, Now: clock,
 	}
 	loginDeps := commands.LoginDeps{
 		Users: userRepo, Session: sessionRepo, Hasher: hasher, Limiter: limiter,
 		Limits: commands.LoginLimits{
 			MaxFailuresPerEmail: int64(cfg.Login.MaxFailuresPerEmail), MaxFailuresPerIP: int64(cfg.Login.MaxFailuresPerIP),
 		},
-		Policy: policy, Log: log,
+		Policy: policy, Log: log, Now: clock,
 	}
 	login, err := commands.NewLogin(loginDeps)
 	if err != nil {
@@ -114,6 +132,36 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	}
 
 	st := &userStack{sessions: sessionRepo}
+	oidc, err := commands.NewOIDC(commands.OIDCDeps{
+		Issuer: cfg.Issuer, Clients: clientRepo, Users: userRepo, UserRoles: roles, Sessions: sessionRepo,
+		Refresh: refreshRepo, AuthRequests: store, Codes: store.Codes(), Keys: a.cache, Signer: adapterjose.Signer{},
+		Verifier: adapterjose.Verifier{}, Tx: tx, Policy: policy,
+		AuthRequestTTL: cfg.OIDC.AuthRequestTTL, CodeTTL: cfg.OIDC.CodeTTL, UserTokenTTL: cfg.OIDC.UserTokenTTL,
+		Log: log, Now: clock,
+	})
+	if err != nil {
+		return nil, err
+	}
+	st.oidc = oidc
+	st.admin = commands.NewAdmin(commands.AdminDeps{
+		Users: userRepo, UserRoles: roles, Sessions: sessionRepo, Clients: clientRepo,
+		ClientRoles: postgres.NewClientRoles(pool), Manifests: postgres.NewManifests(pool), Tokens: tokens,
+		Refresh: refreshRepo, Lock: postgres.NewAdminLock(pool), Tx: tx, Log: log, Now: clock,
+	})
+	corsTTL := queries.DefaultCORSCacheTTL
+	if o.corsCacheTTL != nil {
+		corsTTL = *o.corsCacheTTL
+	}
+	st.cors = queries.NewCORSOrigins(clientRepo, corsTTL, clock, log)
+	st.exchangeCode = observe[commands.ExchangeCode, commands.UserTokenResult](executor.FuncWithReturn[commands.ExchangeCode, commands.UserTokenResult](oidc.ExchangeCode), "ExchangeCode", log)
+	st.refreshTokens = observe[commands.RefreshTokens, commands.UserTokenResult](executor.FuncWithReturn[commands.RefreshTokens, commands.UserTokenResult](oidc.RefreshTokens), "RefreshTokens", log)
+	st.revokeToken = decorators.ApplyTracingNoResult(executor.Func[commands.RevokeToken](oidc.RevokeToken), "RevokeToken")
+	st.userInfo = decorators.ApplyTracing(executor.FuncWithReturn[commands.UserInfo, commands.UserInfoResult](oidc.GetUserInfo), "GetUserInfo",
+		decorators.WithErrorClassifier(func(err error) bool {
+			return !errors.Is(err, commands.ErrInvalidToken) && !errors.Is(err, commands.ErrInsufficientScope)
+		}))
+	st.createUser = observe[commands.CreateUser, commands.CreateUserResult](commands.NewCreateUser(inviteDeps), "CreateUser", log)
+	st.createInvite = observe[commands.CreateInvite, commands.Link](commands.NewCreateInvite(inviteDeps), "CreateInvite", log)
 	st.ensure = observe[commands.EnsureSetupToken, commands.EnsureSetupTokenResult](
 		commands.NewEnsureSetupToken(setupDeps), "EnsureSetupToken", log)
 	h, err := pages.New(pages.Deps{
@@ -121,13 +169,19 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		Invite:  observe[commands.AcceptInvite, commands.IssuedSession](commands.NewAcceptInvite(inviteDeps), "AcceptInvite", log),
 		Login:   decorators.ApplyTracing(login, "Login", decorators.WithErrorClassifier(userErrorClassifier)),
 		Logout:  decorators.ApplyTracingNoResult(decorators.ApplyLoggingNoResult[commands.Logout](commands.NewLogout(loginDeps), "Logout", decorators.WithLogger(log), decorators.WithErrorLevel(userErrorLevel)), "Logout"),
-		Session: observe[queries.SessionFromCookie, queries.SessionResult](queries.NewSessionFromCookie(sessionRepo, userRepo, nil), "SessionFromCookie", log),
+		Session: observe[queries.SessionFromCookie, queries.SessionResult](queries.NewSessionFromCookie(sessionRepo, userRepo, clock), "SessionFromCookie", log),
 		Touch: decorators.ApplyTracingNoResult(decorators.ApplyLoggingNoResult[commands.TouchSession](
 			commands.NewTouchSession(loginDeps), "TouchSession", decorators.WithLogger(log), decorators.WithErrorLevel(userErrorLevel)), "TouchSession"),
-		CheckToken:     observe[queries.CheckOneTimeToken, bool](queries.NewCheckOneTimeToken(tokens, nil), "CheckOneTimeToken", log),
-		Issuer:         cfg.Issuer,
-		TrustedProxies: trusted,
-		Log:            log,
+		CheckToken:        observe[queries.CheckOneTimeToken, bool](queries.NewCheckOneTimeToken(tokens, clock), "CheckOneTimeToken", log),
+		Authorize:         observe[commands.Authorize, commands.AuthorizeOutcome](executor.FuncWithReturn[commands.Authorize, commands.AuthorizeOutcome](oidc.StartAuthorization), "StartAuthorization", log),
+		Continue:          observe[commands.Continue, commands.AuthorizeOutcome](executor.FuncWithReturn[commands.Continue, commands.AuthorizeOutcome](oidc.CompleteAuthorization), "CompleteAuthorization", log),
+		LookupAuthRequest: observe[string, commands.AuthRequestInfo](executor.FuncWithReturn[string, commands.AuthRequestInfo](oidc.LookupAuthRequest), "LookupAuthRequest", log),
+		EndSession:        observe[commands.EndSession, commands.EndSessionOutcome](executor.FuncWithReturn[commands.EndSession, commands.EndSessionOutcome](oidc.StartEndSession), "EndSession", log),
+		ConfirmEndSession: decorators.ApplyTracingNoResult(decorators.ApplyLoggingNoResult[string](executor.Func[string](oidc.ConfirmEndSession), "ConfirmEndSession", decorators.WithLogger(log), decorators.WithErrorLevel(userErrorLevel)), "ConfirmEndSession"),
+		Now:               clock,
+		Issuer:            cfg.Issuer,
+		TrustedProxies:    trusted,
+		Log:               log,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("make the pages: %w", err)
@@ -141,6 +195,8 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	st.retention, err = retention.NewRunner(locker, []retention.Job{
 		{Name: "one_time_tokens", Config: cfg.Retention.Tokens, DefaultPeriod: config.DefaultRetentionPeriod, Purger: postgres.NewTokenPurger(pool)},
 		{Name: "sessions", Config: cfg.Retention.Sessions, DefaultPeriod: config.DefaultRetentionPeriod, Purger: postgres.NewSessionPurger(pool)},
+		{Name: "refresh_tokens", Config: cfg.Retention.RefreshTokens, DefaultPeriod: config.DefaultRetentionPeriod, Purger: postgres.NewRefreshTokenPurger(pool)},
+		{Name: "refresh_token_families", Config: cfg.Retention.RefreshTokenFamilies, DefaultPeriod: config.DefaultRetentionPeriod, Purger: postgres.NewRefreshFamilyPurger(pool)},
 	}, retention.RunnerOptions{After: o.retentionAfter})
 	if err != nil {
 		return nil, fmt.Errorf("make the retention runner: %w", err)

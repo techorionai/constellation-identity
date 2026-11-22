@@ -89,7 +89,6 @@ func TestU10_Discovery(t *testing.T) {
 		}
 	}
 	for k, want := range map[string]string{ //nolint:gosec // Not credentials.
-		"token_endpoint_auth_methods_supported":            "private_key_jwt",
 		"token_endpoint_auth_signing_alg_values_supported": "ES256",
 		"id_token_signing_alg_values_supported":            "ES256",
 		"code_challenge_methods_supported":                 "S256",
@@ -101,7 +100,13 @@ func TestU10_Discovery(t *testing.T) {
 			t.Errorf("%s = %v, want [%s]", k, l, want)
 		}
 	}
-	if l, ok := doc["grant_types_supported"].([]any); !ok || len(l) != 1 || l[0] != "client_credentials" {
+	if l := list("token_endpoint_auth_methods_supported"); len(l) != 2 || l[0] != "private_key_jwt" || l[1] != "none" {
+		t.Errorf("token_endpoint_auth_methods_supported = %v", l)
+	}
+	if l := list("scopes_supported"); len(l) != 4 {
+		t.Errorf("scopes_supported = %v", l)
+	}
+	if l, ok := doc["grant_types_supported"].([]any); !ok || len(l) != 3 || l[0] != "client_credentials" || l[1] != "authorization_code" || l[2] != "refresh_token" {
 		t.Errorf("grant_types_supported = %v", doc["grant_types_supported"])
 	}
 }

@@ -160,63 +160,12 @@ func (c *IssueServiceTokenCommand) issue(ctx context.Context, in IssueServiceTok
 		return IssueServiceTokenResult{}, fail(apperrors.OAuthInvalidRequest, "The client_assertion_type and the client_assertion are required.", nil)
 	}
 
-	// 2. The assertion header.
-	a, err := c.d.Parser.Parse(in.Assertion)
+	// 2 to 6. The client authentication.
+	client, err := c.authenticate(ctx, in.AssertionType, in.Assertion, in.ClientID, st)
 	if err != nil {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("the assertion cannot be parsed"))
+		return IssueServiceTokenResult{}, err
 	}
-	if a.Algorithm() != domain.AlgES256 || a.KeyID() == "" {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("the alg or the kid is not valid"))
-	}
-
-	// 3. The client.
-	st.clientID = a.Subject()
-	client, err := c.d.Clients.Get(ctx, a.Subject())
-	if errors.Is(err, clients.ErrNotFound) {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("unknown client"))
-	}
-	if err != nil {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthServerError, "The server has an internal error.", err)
-	}
-	if client.Disabled {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("the client is disabled"))
-	}
-	if client.Type != domain.ClientTypeService {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthUnauthorizedClient, "The client must not use this grant.", nil)
-	}
-
-	// 4. The key and the signature.
-	keys, err := c.d.Clients.Keys(ctx, client.ID)
-	if err != nil {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthServerError, "The server has an internal error.", err)
-	}
-	i := slices.IndexFunc(keys, func(k domain.ClientKey) bool { return k.KID == a.KeyID() })
-	if i < 0 {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("unknown kid"))
-	}
-	claims, err := a.Verify(keys[i].PublicJWK)
-	if err != nil {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("the signature is not valid"))
-	}
-	st.verified = true
-
-	// 5. The claims.
 	now := c.d.Now()
-	if err := claims.Check(c.d.Issuer, now); err != nil {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthInvalidClient, authFailed, err)
-	}
-	if in.ClientID != "" && in.ClientID != claims.Subject {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("client_id is not equal to sub"))
-	}
-
-	// 6. Replay protection. A store error means no token (fail closed).
-	first, err := c.d.JTI.Claim(ctx, client.ID, claims.JTI, domain.ReplayTTL(*claims.ExpiresAt, now))
-	if err != nil {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthTemporarilyUnavailable, "The service is not available. Try again.", err)
-	}
-	if !first {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("the jti was used"))
-	}
 
 	// 7. The audience.
 	if !domain.ValidAppKey(in.Audience) {
@@ -257,6 +206,87 @@ func (c *IssueServiceTokenCommand) issue(ctx context.Context, in IssueServiceTok
 		Scope:       strings.Join(scopes, " "),
 	}
 	return res, nil
+}
+
+// AuthenticateService checks the client authentication of a service client with
+// private_key_jwt. It is steps 2 to 6 of the token request: the assertion, the
+// client, the key, the signature, the claims, and the one-time jti. The
+// revoke endpoint uses it too. Each failure is an *apperrors.OAuthError.
+func (c *IssueServiceTokenCommand) AuthenticateService(ctx context.Context, assertionType, assertionValue, formClientID string) (domain.Client, error) {
+	var st requestState
+	if assertionType != domain.AssertionType || assertionValue == "" {
+		return domain.Client{}, fail(apperrors.OAuthInvalidRequest, "The client_assertion_type and the client_assertion are required.", nil)
+	}
+	client, err := c.authenticate(ctx, assertionType, assertionValue, formClientID, &st)
+	if err != nil {
+		code := apperrors.OAuthServerError
+		if oe, ok := apperrors.AsOAuthError(err); ok {
+			code = oe.Code
+		}
+		c.d.Log.WarnContext(ctx, "client authentication failed", "error_code", code, "client.id_unverified", truncate(st.clientID, 64))
+	}
+	return client, err
+}
+
+func (c *IssueServiceTokenCommand) authenticate(ctx context.Context, assertionType, assertionValue, formClientID string, st *requestState) (domain.Client, error) {
+	// 2. The assertion header.
+	a, err := c.d.Parser.Parse(assertionValue)
+	if err != nil {
+		return domain.Client{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("the assertion cannot be parsed"))
+	}
+	if a.Algorithm() != domain.AlgES256 || a.KeyID() == "" {
+		return domain.Client{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("the alg or the kid is not valid"))
+	}
+
+	// 3. The client.
+	st.clientID = a.Subject()
+	client, err := c.d.Clients.Get(ctx, a.Subject())
+	if errors.Is(err, clients.ErrNotFound) {
+		return domain.Client{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("unknown client"))
+	}
+	if err != nil {
+		return domain.Client{}, fail(apperrors.OAuthServerError, "The server has an internal error.", err)
+	}
+	if client.Disabled {
+		return domain.Client{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("the client is disabled"))
+	}
+	if client.Type != domain.ClientTypeService {
+		return domain.Client{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("the client is not a service client"))
+	}
+
+	// 4. The key and the signature.
+	keys, err := c.d.Clients.Keys(ctx, client.ID)
+	if err != nil {
+		return domain.Client{}, fail(apperrors.OAuthServerError, "The server has an internal error.", err)
+	}
+	i := slices.IndexFunc(keys, func(k domain.ClientKey) bool { return k.KID == a.KeyID() })
+	if i < 0 {
+		return domain.Client{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("unknown kid"))
+	}
+	claims, err := a.Verify(keys[i].PublicJWK)
+	if err != nil {
+		return domain.Client{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("the signature is not valid"))
+	}
+	st.verified = true
+
+	// 5. The claims.
+	now := c.d.Now()
+	if err := claims.Check(c.d.Issuer, now); err != nil {
+		return domain.Client{}, fail(apperrors.OAuthInvalidClient, authFailed, err)
+	}
+	if formClientID != "" && formClientID != claims.Subject {
+		return domain.Client{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("client_id is not equal to sub"))
+	}
+
+	// 6. Replay protection. A store error means no token (fail closed).
+	first, err := c.d.JTI.Claim(ctx, client.ID, claims.JTI, domain.ReplayTTL(*claims.ExpiresAt, now))
+	if err != nil {
+		return domain.Client{}, fail(apperrors.OAuthTemporarilyUnavailable, "The service is not available. Try again.", err)
+	}
+	if !first {
+		return domain.Client{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("the jti was used"))
+	}
+	return client, nil
 }
 
 // truncate cuts s to at most n bytes at a character boundary. The result is

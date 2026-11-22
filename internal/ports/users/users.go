@@ -29,10 +29,15 @@ type Repository interface {
 	// LockByID returns a user and locks its row until the end of the
 	// transaction (SELECT ... FOR UPDATE). Call it in a transaction.
 	LockByID(ctx context.Context, id string) (domain.User, error)
+	// List returns up to limit users in order of the creation time and the ID,
+	// after the cursor. A nil cursor means the start.
+	List(ctx context.Context, after *domain.PageCursor, limit int) ([]domain.User, error)
 	// Activate sets the password hash and the status active.
 	Activate(ctx context.Context, id, passwordHash string, now time.Time) error
 	// SetPasswordHash replaces the password hash. The status does not change.
 	SetPasswordHash(ctx context.Context, id, passwordHash string, now time.Time) error
 	// SetStatus sets the status of a user.
 	SetStatus(ctx context.Context, id string, status domain.UserStatus, now time.Time) error
+	// SetName sets the name of a user.
+	SetName(ctx context.Context, id, name string, now time.Time) error
 }

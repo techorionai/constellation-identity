@@ -65,6 +65,10 @@ type options struct {
 	hashMemoryKiB  uint32
 	hashTime       uint32
 	retentionAfter func(time.Duration) <-chan time.Time
+	// clock is the clock of the use cases. Nil means time.Now.
+	clock func() time.Time
+	// corsCacheTTL is the time of the CORS origin cache. Nil means the default.
+	corsCacheTTL *time.Duration
 }
 
 // Option changes the composition. The options are for tests. Production code
@@ -95,6 +99,14 @@ func WithPasswordCost(memoryKiB, passes uint32) Option {
 func WithRetentionAfter(after func(time.Duration) <-chan time.Time) Option {
 	return func(o *options) { o.retentionAfter = after }
 }
+
+// WithClock sets the clock of the use cases of the users, the sessions, the
+// code flow, and the admin API. A test moves the clock to test the expiry.
+func WithClock(now func() time.Time) Option { return func(o *options) { o.clock = now } }
+
+// WithCORSCacheTTL sets the time that an instance keeps the set of the CORS
+// origins. A test sets 0 to read the database for each request.
+func WithCORSCacheTTL(ttl time.Duration) Option { return func(o *options) { o.corsCacheTTL = &ttl } }
 
 func newOptions(opts []Option) options {
 	o := options{managerInterval: defaultKeyManagerInterval, cacheInterval: defaultCacheInterval, log: slog.Default()}
@@ -320,14 +332,19 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	getManifest := withObservability(queries.NewGetManifest(manifestRepo), "GetManifest", log)
 	listRoles := withObservability(queries.NewListRoles(manifestRepo), "ListRoles", log)
 	getRole := withObservability(queries.NewGetRole(manifestRepo), "GetRole", log)
+	// The revoke endpoint authenticates a service client with the same checks.
+	users.oidc.SetServiceAuthenticator(issueCmd)
 	api := httpapi.New(httpapi.Deps{
 		JWKS: jwks, Discovery: discovery, IssueToken: issue, PublishManifest: publish,
 		ListManifests: listManifests, GetManifest: getManifest, ListRoles: listRoles, GetRole: getRole,
+		ExchangeCode: users.exchangeCode, RefreshTokens: users.refreshTokens, RevokeToken: users.revokeToken, UserInfo: users.userInfo,
+		Admin: users.admin, CreateUser: users.createUser, CreateInvite: users.createInvite, CORSOrigins: users.cors,
 		Verifier: a.verify, Scopes: scopes, Log: log,
 	})
-	// RedactToken is outside the tracing handler, so no span has a token.
+	// RedactToken is outside the tracing handler, so no span has a secret value
+	// of the query. RestoreQuery puts the real query back for the router.
 	handler := pages.RedactToken(otelhttp.NewHandler(
-		requestid.Middleware()(publicHandler(api.Handler(), users.pages.Routes())), "identity"))
+		requestid.Middleware()(pages.LogRedirects(log)(pages.RestoreQuery(publicHandler(api.Handler(), users.pages.Routes())))), "identity"))
 	if a.pubL, err = (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.HTTP.Addr); err != nil {
 		return nil, fmt.Errorf("listen on the public address: %w", err)
 	}

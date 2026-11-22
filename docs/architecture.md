@@ -11,9 +11,9 @@ internal/domain/                Pure types and rules (signing keys, clients, man
 internal/ports/<port>/          Interfaces
 internal/adapters/postgres/     Repositories and the "jtistore" adapter
 internal/adapters/secrets/      Adapter of the port "privatekeys" on platform-go secrets
-internal/adapters/jose/         Adapters of the ports "tokensigner" and "assertion" with go-jose
+internal/adapters/jose/         Adapters of the ports "tokensigner", "tokenverifier", and "assertion" with go-jose
 internal/adapters/argon2/       Adapter of the port "passwordhasher" (argon2id, NFC, hash slots)
-internal/adapters/valkey/       Adapter of the port "loginlimiter" (login failure counters)
+internal/adapters/valkey/       Adapters of the ports "loginlimiter" (login failure counters) and "authflow" (auth requests, codes, used-code markers)
 internal/app/{commands,queries} Use cases with platform-go executors and decorators
 internal/app/keys/              Key manager and in-memory key cache
 internal/handlers/http/         Generated server (gen/), handlers
@@ -45,6 +45,12 @@ The `.golangci.yml` file has `depguard` rules for the import table of the guide.
 | Session repository | `internal/ports/sessions` | `internal/adapters/postgres` |
 | Password hasher | `internal/ports/passwordhasher` | `internal/adapters/argon2` |
 | Login failure limiter | `internal/ports/loginlimiter` | `internal/adapters/valkey` |
+| Auth request store and code store | `internal/ports/authflow` | `internal/adapters/valkey` (`SET`, `GET`, `GETDEL`) |
+| Refresh token families and tokens | `internal/ports/refreshtokens` | `internal/adapters/postgres` |
+| Token verifier (own tokens) | `internal/ports/tokenverifier` | `internal/adapters/jose` |
+| Admin change lock | `internal/ports/adminlock` | `internal/adapters/postgres` (`pg_advisory_xact_lock`) |
+
+The ports of the sessions, users, user roles, clients, and client roles have the methods that the code flow and the admin API need: the session `Reauthenticate` and `RevokeCascade`, the lists with a cursor, the role `Page`, and the client create, update, and key methods.
 
 ## Routes
 
@@ -60,14 +66,21 @@ The token endpoint is the use case `IssueServiceToken` in `internal/app/commands
 | ----- | ----- |
 | `GET /.well-known/jwks.json` | Implemented. `Cache-Control: public, max-age=300`. |
 | `GET /.well-known/openid-configuration` | Implemented. `Cache-Control: public, max-age=3600`. |
-| `POST /oauth/token` | Grant `client_credentials`. Other grants give 400 `unsupported_grant_type` until issue 4. |
+| `POST /oauth/token` | The grants `client_credentials`, `authorization_code`, and `refresh_token`. Another grant gives 400 `unsupported_grant_type`. |
+| `GET /oauth/authorize`, `GET /oauth/end_session` | HTML pages on the pages router, because they need the raw query, the cookie, and pages. The generated operations answer 501 if a request ever reaches them. |
+| `GET /oauth/authorize/continue`, `POST /oauth/end_session` | Page routes that are not in the OpenAPI file. |
+| `GET /oauth/userinfo`, `POST /oauth/revoke` | Implemented. CORS for registered origins. |
+| All `/v1` operations | Implemented. See [admin-api.md](admin-api.md). |
 | `PUT /v1/permission-manifests/{app}`, `GET /v1/permission-manifests`, `GET /v1/permission-manifests/{app}`, `GET /v1/roles`, `GET /v1/roles/{role}` | Implemented. |
 | `GET /login`, `POST /login`, `GET /login/done`, `POST /logout`, `GET /setup`, `POST /setup`, `GET /invite`, `POST /invite`, `GET /assets/pages.css` | HTML pages. They are not in the OpenAPI file. See [security.md](security.md). |
-| All other operations | 501 `Problem` with the code `not_implemented`. |
 
-The pages are on a router in front of the generated router. The chain is `RedactToken`, then `otelhttp`, then `requestid`, then the router of the pages or the generated router. `RedactToken` replaces the `token` query value with `REDACTED` in the URL, so no span and no log record holds a setup token or an invite token. The pages use `html/template` with embedded templates, one embedded CSS file, and no JavaScript.
+The pages are on a router in front of the generated router. The chain is `RedactToken`, then `otelhttp`, then `requestid`, then `RestoreQuery`, then the router of the pages or the generated router. `RedactToken` replaces the values of `token`, `code`, `code_verifier`, `refresh_token`, `id_token_hint`, `authRequest`, `state`, and `nonce` with `REDACTED` in the URL, so no span and no log record holds a secret. It keeps the real query in the request context, and `RestoreQuery` puts it back for the handlers. The pages use `html/template` with embedded templates, one embedded CSS file, and no JavaScript.
 
-The use cases of the users are in `internal/app/commands/` (`EnsureSetupToken`, `ReplaceSetupToken`, `CompleteSetup`, `CreateUser`, `CreateInvite`, `AcceptInvite`, `Login`, `Logout`, `TouchSession`) and `internal/app/queries/` (`SessionFromCookie`, `CheckOneTimeToken`). The admin API of a later issue calls `CreateUser` and `CreateInvite`.
+The use cases of the users are in `internal/app/commands/` (`EnsureSetupToken`, `ReplaceSetupToken`, `CompleteSetup`, `CreateUser`, `CreateInvite`, `AcceptInvite`, `Login`, `Logout`, `TouchSession`) and `internal/app/queries/` (`SessionFromCookie`, `CheckOneTimeToken`). The code flow is in `internal/app/commands/oidc.go` (`OIDC`: `StartAuthorization`, `CompleteAuthorization`, `ExchangeCode`, `RefreshTokens`, `RevokeToken`, `StartEndSession`, `ConfirmEndSession`, `GetUserInfo`). The admin API is in `internal/app/commands/admin.go` (`Admin`) and calls `CreateUser` and `CreateInvite`. The CORS origin query is in `internal/app/queries/cors.go`. The `Login` command keeps the session at a re-login of the same user.
+
+### Lock order
+
+All paths that touch a session and its refresh token families lock in one order: the advisory lock of the admin change (only for admin changes that can remove the last admin), then the session row, then the family rows in ascending ID order. The paths are: rotation, reuse revoke, logout, end session, session revoke, user disable, client disable, and the revoke endpoint.
 
 ## Startup order
 
@@ -111,4 +124,4 @@ The environment-only rule of `constellation-platform-go` says "no config files".
 
 ## Telemetry
 
-The service name is `identity`. Metrics: `identity.signing_keys` (gauge, attribute `state`) and `identity.key_rotation` (counter, attribute `outcome` with `ok` or `error`). Token metrics: `identity.tokens.issued` (counter, attributes `grant_type` and `principal_type`) and `identity.token.errors` (counter, attribute `error`). See [tokens.md](tokens.md) for the log rule. Each key state change writes one `info` log record with `kid`, `old_state`, and `new_state`. No log record has a private key.
+The service name is `identity`. Metrics: `identity.signing_keys` (gauge, attribute `state`) and `identity.key_rotation` (counter, attribute `outcome` with `ok` or `error`). Token metrics: `identity.tokens.issued` (counter, attributes `grant_type` and `principal_type`), `identity.token.errors` (counter, attribute `error`), `identity.code.reuse`, and `identity.refresh_token.reuse`. See [tokens.md](tokens.md) for the log rule. Each key state change writes one `info` log record with `kid`, `old_state`, and `new_state`. No log record has a private key.

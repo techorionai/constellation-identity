@@ -8,10 +8,13 @@ const TouchInterval = time.Minute
 
 // Session is a browser session of a user.
 type Session struct {
-	ID            string
-	UserID        string
-	TokenHash     string
-	CreatedAt     time.Time
+	ID        string
+	UserID    string
+	TokenHash string
+	CreatedAt time.Time
+	// AuthTime is the time of the last login of the session. A login of the same
+	// user changes it. CreatedAt does not change.
+	AuthTime      time.Time
 	LastSeenAt    time.Time
 	IdleExpiresAt time.Time
 	ExpiresAt     time.Time
@@ -32,6 +35,7 @@ func (p SessionPolicy) NewSession(userID string, now time.Time) Session {
 	return Session{
 		UserID:        userID,
 		CreatedAt:     now,
+		AuthTime:      now,
 		LastSeenAt:    now,
 		IdleExpiresAt: now.Add(min(p.IdleTimeout, p.AbsoluteTimeout)),
 		ExpiresAt:     now.Add(p.AbsoluteTimeout),
@@ -56,4 +60,11 @@ func (p SessionPolicy) IdleExpiry(s Session, now time.Time) time.Time {
 		return s.ExpiresAt
 	}
 	return e
+}
+
+// KeepOnRelogin reports whether a good login keeps the previous session. The
+// previous session must be valid (not revoked and not expired) and must belong
+// to the user that logs in.
+func (s Session) KeepOnRelogin(userID string, now time.Time) bool {
+	return s.UserID == userID && s.Valid(now)
 }

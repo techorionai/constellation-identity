@@ -86,6 +86,8 @@ type settings struct {
 	passwordMemory  uint32
 	passwordPasses  uint32
 	retentionAfter  func(time.Duration) <-chan time.Time
+	clock           *Clock
+	corsCacheTTL    *time.Duration
 }
 
 // Option changes a test server.
@@ -130,6 +132,14 @@ func WithRetentionAfter(after func(time.Duration) <-chan time.Time) Option {
 	return func(s *settings) { s.retentionAfter = after }
 }
 
+// WithClock gives the server a clock that the test moves. The clock is for the
+// users, the sessions, the code flow, and the admin API.
+func WithClock(c *Clock) Option { return func(s *settings) { s.clock = c } }
+
+// WithCORSCacheTTL sets the time of the CORS origin cache. 0 reads the database
+// for each request.
+func WithCORSCacheTTL(ttl time.Duration) Option { return func(s *settings) { s.corsCacheTTL = &ttl } }
+
 // Server is a running service.
 type Server struct {
 	App       *services.App
@@ -167,6 +177,12 @@ func (e *Env) TryStart(t testing.TB, opts ...Option) (*Server, error) {
 	}
 	if s.policy != nil {
 		svcOpts = append(svcOpts, services.WithKeyPolicy(*s.policy))
+	}
+	if s.clock != nil {
+		svcOpts = append(svcOpts, services.WithClock(s.clock.Now))
+	}
+	if s.corsCacheTTL != nil {
+		svcOpts = append(svcOpts, services.WithCORSCacheTTL(*s.corsCacheTTL))
 	}
 	if s.managerInterval > 0 {
 		svcOpts = append(svcOpts, services.WithKeyIntervals(s.managerInterval, s.cacheInterval))
@@ -284,7 +300,11 @@ func (e *Env) buildConfig(t testing.TB, opts []Option) (config.Config, *settings
 		Retention: config.Retention{
 			Tokens:   retention.Config{Interval: time.Hour, BatchSize: 1000},
 			Sessions: retention.Config{Interval: time.Hour, BatchSize: 1000},
+
+			RefreshTokens:        retention.Config{Interval: time.Hour, BatchSize: 1000},
+			RefreshTokenFamilies: retention.Config{Interval: time.Hour, BatchSize: 1000},
 		},
+		OIDC:        config.OIDC{AuthRequestTTL: 10 * time.Minute, CodeTTL: time.Minute, UserTokenTTL: 15 * time.Minute},
 		ClientsFile: s.clientsFile,
 	}
 	for _, f := range s.configure {

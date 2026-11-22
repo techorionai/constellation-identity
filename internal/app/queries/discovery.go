@@ -43,8 +43,7 @@ func NewGetDiscovery(issuer string) *GetDiscoveryQuery {
 	return &GetDiscoveryQuery{issuer: issuer}
 }
 
-// Execute returns the discovery document. Later issues add the grant types, the
-// method none, and the scopes.
+// Execute returns the discovery document.
 func (q *GetDiscoveryQuery) Execute(context.Context, GetDiscovery) (DiscoveryResult, error) {
 	base := strings.TrimSuffix(q.issuer, "/")
 	return DiscoveryResult{
@@ -55,13 +54,13 @@ func (q *GetDiscoveryQuery) Execute(context.Context, GetDiscovery) (DiscoveryRes
 		EndSessionEndpoint:                         base + "/oauth/end_session",
 		RevocationEndpoint:                         base + "/oauth/revoke",
 		JWKSURI:                                    base + "/.well-known/jwks.json",
-		ScopesSupported:                            []string{},
+		ScopesSupported:                            append([]string{}, domain.OIDCScopes...),
 		ResponseTypesSupported:                     []string{"code"},
 		SubjectTypesSupported:                      []string{"public"},
-		GrantTypesSupported:                        []string{"client_credentials"},
+		GrantTypesSupported:                        []string{"client_credentials", "authorization_code", "refresh_token"},
 		CodeChallengeMethodsSupported:              []string{"S256"},
 		IDTokenSigningAlgValuesSupported:           []string{domain.AlgES256},
-		TokenEndpointAuthMethodsSupported:          []string{"private_key_jwt"},
+		TokenEndpointAuthMethodsSupported:          []string{"private_key_jwt", "none"},
 		TokenEndpointAuthSigningAlgValuesSupported: []string{domain.AlgES256},
 	}, nil
 }

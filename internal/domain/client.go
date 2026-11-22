@@ -33,6 +33,10 @@ type Client struct {
 	Source    ClientSource
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// RedirectURIs and PostLogoutRedirectURIs are the registered URIs of a public
+	// client.
+	RedirectURIs           []string
+	PostLogoutRedirectURIs []string
 }
 
 // ClientKey is a public key of a client.
@@ -55,6 +59,12 @@ type ClientConfig struct {
 const IdentityApp = "identity"
 
 var appKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+
+var clientIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+
+// ValidClientID reports whether s is a client ID. It is an app key that can also
+// have hyphens, for example admin-ui.
+func ValidClientID(s string) bool { return clientIDPattern.MatchString(s) }
 
 // ValidAppKey reports whether s is an application key.
 func ValidAppKey(s string) bool { return appKeyPattern.MatchString(s) }

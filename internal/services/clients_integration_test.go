@@ -657,7 +657,7 @@ func TestIssue2Integration(t *testing.T) {
 		form.Set("client_secret", "x")
 		oauthError(t, s, form, 400, "invalid_request")
 		form = testserver.TokenForm(s.Assertion(t, demo, nil), "identity", "identity:manifest:publish")
-		form.Set("grant_type", "authorization_code")
+		form.Set("grant_type", "implicit")
 		oauthError(t, s, form, 400, "unsupported_grant_type")
 
 		// R9: a Basic header is a second authentication method. A header with

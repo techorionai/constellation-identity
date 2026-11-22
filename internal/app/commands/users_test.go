@@ -186,12 +186,13 @@ func TestLoginRehashAndPreviousSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Token == first.Token {
-		t.Fatal("a login must make a new session")
+	// Issue 4: a login of the same user keeps the session. The cookie value
+	// changes and the old value stops.
+	if second.Token == first.Token || second.SessionID != first.SessionID {
+		t.Fatal("a same-user login keeps the session and changes the cookie value")
 	}
-	old, _ := e.sessions.GetByTokenHash(ctx, domain.HashSecret(first.Token))
-	if old.RevokedAt == nil {
-		t.Fatal("the previous session must be revoked")
+	if _, err := e.sessions.GetByTokenHash(ctx, domain.HashSecret(first.Token)); err == nil {
+		t.Fatal("the old cookie value must stop")
 	}
 	if e.hasher.Hashes == 0 {
 		t.Fatal("a hash with old parameters must be replaced")

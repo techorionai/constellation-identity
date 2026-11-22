@@ -17,6 +17,8 @@ import (
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	httpapi "github.com/techorionai/constellation-identity/internal/handlers/http"
+	"github.com/techorionai/constellation-identity/internal/ports/clients"
+	"github.com/techorionai/constellation-identity/internal/ports/users"
 )
 
 func withAuth(h http.Handler, method, path, token string) *httptest.ResponseRecorder {
@@ -36,7 +38,22 @@ func protectedServer(t *testing.T, scopes ...string) http.Handler {
 		Discovery: queries.NewGetDiscovery("https://id.example.com"),
 		Verifier:  allScopes{scopes: scopes},
 		Scopes:    realScopes(t),
+		Admin:     commands.NewAdmin(commands.AdminDeps{Clients: noClients{}, Users: noUsers{}}),
 	}).Handler()
+}
+
+// noClients is a client repository with no client.
+type noClients struct{ clients.Repository }
+
+func (noClients) Get(context.Context, string) (domain.Client, error) {
+	return domain.Client{}, clients.ErrNotFound
+}
+
+// noUsers is a user repository with no user.
+type noUsers struct{ users.Repository }
+
+func (noUsers) GetByID(context.Context, string) (domain.User, error) {
+	return domain.User{}, users.ErrNotFound
 }
 
 // Issue2_U12: an operation with no x-required-scopes stops the start. The error
@@ -116,7 +133,8 @@ func TestIssue2_U12b_BothScopes(t *testing.T) {
 		t.Fatalf("missingScopes = %v", p.MissingScopes)
 	}
 	h = protectedServer(t, "identity:client:write", "identity:admin")
-	if rec := withAuth(h, http.MethodDelete, path, "ok"); rec.Code != http.StatusNotImplemented {
+	// The scope check passes. The client does not exist.
+	if rec := withAuth(h, http.MethodDelete, path, "ok"); rec.Code != http.StatusNotFound {
 		t.Fatalf("with both scopes: status = %d", rec.Code)
 	}
 }
@@ -129,8 +147,9 @@ func TestIssue2_ProtectedRoutes(t *testing.T) {
 	if rec := withAuth(h, http.MethodGet, "/v1/roles", "bad"); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("bad token: status = %d", rec.Code)
 	}
-	// Me_get needs a token and no scope.
-	if rec := withAuth(h, http.MethodGet, "/v1/me", "ok"); rec.Code != http.StatusNotImplemented {
+	// Me_get needs a token and no scope. The token of the test is the token of
+	// a service, so the answer is 403.
+	if rec := withAuth(h, http.MethodGet, "/v1/me", "ok"); rec.Code != http.StatusForbidden {
 		t.Fatalf("/v1/me: status = %d", rec.Code)
 	}
 	// The public routes need no token.
@@ -152,28 +171,22 @@ func TestIssue2_NoTableEntryFailsClosed(t *testing.T) {
 	}
 }
 
-// The operations of later issues answer 501 with a Problem body.
+// The two operations that the pages router serves answer 501 with a Problem
+// body, if a request reaches the generated server.
 func TestNotImplementedOperations(t *testing.T) {
-	h := protectedServer(t, "identity:user:read", "identity:session:read")
-	for _, path := range []string{"/v1/me", "/v1/users"} {
-		rec := withAuth(h, http.MethodGet, path, "ok")
-		if rec.Code != http.StatusNotImplemented {
-			t.Fatalf("%s: status = %d", path, rec.Code)
-		}
-		if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
-			t.Fatalf("%s: Content-Type = %q", path, ct)
-		}
-		var p map[string]any
-		if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
-			t.Fatal(err)
-		}
-		if p["code"] != "not_implemented" || p["status"] != float64(501) {
-			t.Fatalf("%s: problem = %v", path, p)
-		}
-	}
-	rec := get(newServer("https://id.example.com"), http.MethodGet, "/oauth/userinfo", "")
+	rec := get(newServer("https://id.example.com"), http.MethodGet, "/oauth/end_session", "")
 	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("userinfo: status = %d", rec.Code)
+		t.Fatalf("end_session: status = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	var p map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p["code"] != "not_implemented" || p["status"] != float64(501) {
+		t.Fatalf("problem = %v", p)
 	}
 }
 
