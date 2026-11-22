@@ -26,7 +26,7 @@ The client IP is the remote address of the connection. If the remote address is 
 
 - The cookie is `__Host-constellation_session` with the flags `Secure`, `HttpOnly`, `SameSite=Lax`, and `Path=/`. It has no `Domain`.
 - The cookie holds 32 random bytes in base64url. The database stores only the SHA-256 hash.
-- A session ends at the idle expiry or at the absolute expiry. A logout revokes the session. A login always makes a new session and revokes the session of the old cookie, so there is no session fixation.
+- A session ends at the idle expiry or at the absolute expiry. A logout revokes the session. A login of the same user keeps a valid session, sets a new `auth_time`, and keeps its refresh tokens. The cookie value always changes at a login, and the old value stops in the same statement, so there is no session fixation. A login of a different user revokes the old session and its refresh tokens, and makes a new session. A re-login does not stop a stolen refresh token. A user who suspects a theft must log out, or an admin must revoke the sessions. A re-login near the absolute expiry gives a session that ends soon, because the absolute expiry does not move.
 - A session of a user that is not `active` is not valid.
 - The service updates the last seen time at most one time each minute.
 
@@ -48,6 +48,16 @@ The client IP is the remote address of the connection. If the remote address is 
 - An invite is only for a user with the status `invited`. An invite for an `active` user gives `user_not_invited`. An invite for a `disabled` user gives `user_disabled`. Slice 1 has no password reset. A new invite deletes the older unused invites of the user.
 - The service deletes ended tokens and sessions 7 days after they ended (`IDENTITY_RETENTION__*`).
 
+## Code flow
+
+- The service stores the auth request, the code, and the used-code marker in Valkey with `SET`, `GET`, and `GETDEL` only. The ACL of the service denies scripts.
+- A code is claimed with `GETDEL`, so two parallel requests cannot both get tokens. A used code with the matching `client_id` and `code_verifier` is a reuse. It revokes the session. A person who knows only a used code cannot end the session.
+- A refresh token is a secret, and a used token that comes back shows a copy or a theft. The service revokes the family and the session. All paths lock the session row first, then the family rows in ascending ID order, so a revoke and a refresh cannot deadlock.
+- The values `code`, `code_verifier`, `refresh_token`, `id_token_hint`, `authRequest`, `state`, `nonce`, and `token` are `REDACTED` in the query that logs and traces see. The handlers read the real query. The service never logs the form body of an `/oauth/*` request.
+- The login page of an auth request adds the origin of the redirect URI to the CSP `form-action`. The service checks the host of each redirect URI, so the origin cannot add a directive. No other page has an extra origin.
+- `POST /oauth/end_session` takes the session from the cookie only and ignores the body. A valid `id_token_hint` with another `sid` does not log out the cookie session without the confirmation form.
+- The endpoints `/oauth/*` have no IP rate limit in this version. The login failure limit still applies to the login form.
+
 ## Not in this version
 
-General rate limits on other endpoints, MFA, passkeys, and upstream OIDC come with R07. Password reset by email needs R12. Audit entries for logins come with R08 and R09. Until then the structured log records (`identity.login.ok`, `identity.login.failed`, and others) are the only record.
+General rate limits on other endpoints, MFA, passkeys, and upstream OIDC come with R07. Password reset by email needs R12. Audit entries for logins, for admin changes, and for token issue come with R08 and R09. Rate limits for the public endpoints `/oauth/*` come with milestone M2. Until then the structured log records (`identity.login.ok`, `identity.login.failed`, and others) are the only record.

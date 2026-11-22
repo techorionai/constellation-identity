@@ -30,7 +30,10 @@ The service reads its settings from environment variables with the prefix `IDENT
 | `IDENTITY_LOGIN__MAX_FAILURES_PER_EMAIL` | `5` | 1 to 100 | Login attempts for one email in the window. The attempt after the limit gets status 429. |
 | `IDENTITY_LOGIN__MAX_FAILURES_PER_IP` | `50` | 1 to 10000 | Failed login attempts from one client IP in the window. A good login takes back its attempt. The attempt after the limit gets status 429. |
 | `IDENTITY_LOGIN__FAILURE_WINDOW` | `15m` | 1 minute to 24 hours | Life of the failure counters. |
-| `IDENTITY_RETENTION__TOKENS__PERIOD`, `IDENTITY_RETENTION__SESSIONS__PERIOD` | `168h` | | Age after which the service deletes ended tokens and sessions. Also `INTERVAL` and `BATCH_SIZE`. See `retention` in `constellation-platform-go`. |
+| `IDENTITY_RETENTION__TOKENS__PERIOD`, `IDENTITY_RETENTION__SESSIONS__PERIOD`, `IDENTITY_RETENTION__REFRESH_TOKENS__PERIOD`, `IDENTITY_RETENTION__REFRESH_TOKEN_FAMILIES__PERIOD` | `168h` | | Age after which the service deletes ended tokens, sessions, refresh tokens, and refresh token families. Also `INTERVAL` and `BATCH_SIZE`. See `retention` in `constellation-platform-go`. |
+| `IDENTITY_OIDC__AUTH_REQUEST_TTL` | `10m` | 1 to 60 minutes | Life of an auth request. |
+| `IDENTITY_OIDC__CODE_TTL` | `60s` | 10 seconds to 10 minutes | Life of an authorization code. |
+| `IDENTITY_OIDC__USER_TOKEN_TTL` | `15m` | 1 to 60 minutes | Life of the access tokens and the ID tokens of users. |
 | `IDENTITY_CLIENTS_FILE` | empty | | Path of the clients file. Empty means no config clients. |
 
 Telemetry uses the standard `OTEL_*` variables. See the `telemetry` package of `constellation-platform-go`.
@@ -53,19 +56,43 @@ clients:
         jwk: { kty: EC, crv: P-256, x: "...", y: "..." }
     roles:
       - demo:agent
+  - id: admin-ui
+    app: identity
+    type: public
+    name: Admin UI
+    redirect_uris:
+      - https://admin.example.com/cb
+    post_logout_redirect_uris:
+      - https://admin.example.com/bye
 ```
 
 Rules:
 
-- `id` and `app` match `^[a-z][a-z0-9_]{0,31}$`.
-- A service client must not have `app: identity`.
-- `type` is `service` or missing. A missing `type` means `service`.
+- `app` matches `^[a-z][a-z0-9_]{0,31}$`. `id` has the same form, and it can also have hyphens.
+- A service client must not have `app: identity`. A public client can have it. An admin UI is a public client with `app: identity`.
+- `type` is `service`, `public`, or missing. A missing `type` means `service`.
+- A public client has no `keys` and no `roles`. It must have at least one `redirect_uris` value. The `app` of a public client is the audience of its access tokens.
+- A service client must not have `redirect_uris` or `post_logout_redirect_uris`.
 - Each key is a public EC P-256 JWK. A private member (`d`, `p`, `q`, `dp`, `dq`, `qi`, `k`) is an error. `kid` values are unique in a client.
 - `roles` is a list of role references `<app>:<role>`. A value that does not match the form, or that occurs two times, is an error. The error names the client and the value.
 - `clients: []` is valid.
 - An error stops the start. The message names the client and the field.
 
 At each start the service replaces the assignments with the source `config` of each client with the `roles` of the file. An assignment with the source `api` stays. A role that does not exist yet, because its app did not publish the manifest, is a pending assignment. It applies when the manifest arrives, so services can start in any order. Every service client also has the implicit role `identity:service`. See [manifests.md](manifests.md).
+
+### Redirect URIs
+
+The rules for `redirect_uris` and `post_logout_redirect_uris`, in the file and in the API:
+
+1. The URI is absolute. The scheme is `https`, or `http` with the host `localhost`, `127.0.0.1`, or `[::1]`.
+2. No fragment, no user information, and no `*`.
+3. The host has only letters, digits, dots, and hyphens, or it is an IPv6 literal in brackets. The service puts the origin of the URI into the CSP header of the login page, so a character such as a semicolon, a space, or a comma is not valid.
+4. At run time, the scheme, the host, the port, the path, and the query of the request must be equal to a registered URI. The host comparison ignores the case. A trailing slash is a difference.
+5. Loopback exception (RFC 8252 section 7.3): a registered `http://127.0.0.1/<path>` or `http://[::1]/<path>` with no port matches any port. A registered URI with a port matches only that port. `localhost` always needs an exact port.
+
+### CORS
+
+The endpoints `/oauth/token`, `/oauth/revoke`, and `/oauth/userinfo` answer CORS requests from the origins of the login redirect URIs of the public clients that are not disabled. For a loopback IP URI with no port, the scheme and the host must be equal, with any port. The service reads the set from the database, with a cache of 5 seconds in each process. A change of a public client by the API is thus active on all instances in 5 seconds or less. The response has `Access-Control-Allow-Methods: GET, POST`, `Access-Control-Allow-Headers: Authorization, Content-Type`, `Access-Control-Max-Age: 600`, and `Vary: Origin`. It never has `Access-Control-Allow-Credentials`. Another origin gets no CORS header.
 
 The only accepted audience of a client assertion is the value of `IDENTITY_ISSUER`. See [tokens.md](tokens.md).
 
