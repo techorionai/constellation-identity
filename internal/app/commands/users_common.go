@@ -58,6 +58,10 @@ type IssuedSession struct {
 	UserID    string
 	Token     string
 	ExpiresAt time.Time
+	// SessionID is the ID of the session. A login of the same user keeps it.
+	SessionID string
+	// AuthTime is the time of the last login of the session.
+	AuthTime time.Time
 }
 
 // tokenLink makes a one-time link on the issuer.
@@ -96,7 +100,7 @@ func (s sessionIssuer) issue(ctx context.Context, userID, userAgent, ip string) 
 	if err := s.repo.Create(ctx, sess); err != nil {
 		return IssuedSession{}, err
 	}
-	return IssuedSession{UserID: userID, Token: value, ExpiresAt: sess.ExpiresAt}, nil
+	return IssuedSession{UserID: userID, Token: value, ExpiresAt: sess.ExpiresAt, SessionID: id, AuthTime: sess.AuthTime}, nil
 }
 
 func clip(s string, n int) string {

@@ -67,8 +67,10 @@ type Login struct {
 	// IP is the client IP address.
 	IP        string
 	UserAgent string
-	// PreviousToken is the session cookie value of the request. The login
-	// revokes that session, so a login always gives a new session ID.
+	// PreviousToken is the session cookie value of the request. A login of the
+	// same user keeps a valid previous session and gives it a new cookie value
+	// and a new auth time. In all other cases the login revokes that session
+	// and makes a new one.
 	PreviousToken string
 }
 
@@ -145,10 +147,12 @@ func (c *LoginCommand) Execute(ctx context.Context, in Login) (IssuedSession, er
 	if err := c.d.Limiter.RecordSuccess(ctx, email, in.IP); err != nil {
 		c.d.Log.WarnContext(ctx, "identity.login.reset_failed", "event", "identity.login.reset_failed", "error", err)
 	}
-	if in.PreviousToken != "" {
-		if err := c.d.Session.RevokeByTokenHash(ctx, domain.HashSecret(in.PreviousToken), c.d.Now().UTC()); err != nil {
-			return IssuedSession{}, fmt.Errorf("revoke the previous session: %w", err)
-		}
+	if kept, ok, err := c.reauthenticate(ctx, user.ID, in); err != nil {
+		return IssuedSession{}, err
+	} else if ok {
+		c.count(ctx, OutcomeOK)
+		c.d.Log.InfoContext(ctx, "identity.login.ok", "event", "identity.login.ok", "user_id", user.ID)
+		return kept, nil
 	}
 	issued, err := sessionIssuer{repo: c.d.Session, policy: c.d.Policy, now: c.d.Now}.issue(ctx, user.ID, in.UserAgent, in.IP)
 	if err != nil {
@@ -157,6 +161,44 @@ func (c *LoginCommand) Execute(ctx context.Context, in Login) (IssuedSession, er
 	c.count(ctx, OutcomeOK)
 	c.d.Log.InfoContext(ctx, "identity.login.ok", "event", "identity.login.ok", "user_id", user.ID)
 	return issued, nil
+}
+
+// reauthenticate applies the re-login rule. The previous session is kept if it
+// is valid and belongs to the user. The cookie value always changes, and the
+// old value stops in the same statement. If the statement changes no row (a
+// parallel logout), or in any other case, the command revokes the previous
+// session and the caller makes a new one.
+func (c *LoginCommand) reauthenticate(ctx context.Context, userID string, in Login) (IssuedSession, bool, error) {
+	if in.PreviousToken == "" {
+		return IssuedSession{}, false, nil
+	}
+	now := c.d.Now().UTC()
+	oldHash := domain.HashSecret(in.PreviousToken)
+	prev, err := c.d.Session.GetByTokenHash(ctx, oldHash)
+	if err != nil && !errors.Is(err, sessions.ErrNotFound) {
+		return IssuedSession{}, false, fmt.Errorf("get the previous session: %w", err)
+	}
+	if err == nil && prev.KeepOnRelogin(userID, now) {
+		value, hash, err := domain.NewSecret()
+		if err != nil {
+			return IssuedSession{}, false, err
+		}
+		id, ok, err := c.d.Session.Reauthenticate(ctx, sessions.Reauth{
+			OldHash: oldHash, NewHash: hash, UserID: userID, Now: now,
+			IdleExpires: c.d.Policy.IdleExpiry(prev, now),
+			UserAgent:   clip(in.UserAgent, 512), IPAddress: clip(in.IP, 64),
+		})
+		if err != nil {
+			return IssuedSession{}, false, fmt.Errorf("keep the session: %w", err)
+		}
+		if ok {
+			return IssuedSession{UserID: userID, Token: value, ExpiresAt: prev.ExpiresAt, SessionID: id, AuthTime: now}, true, nil
+		}
+	}
+	if err := c.d.Session.RevokeByTokenHash(ctx, oldHash, now); err != nil {
+		return IssuedSession{}, false, fmt.Errorf("revoke the previous session: %w", err)
+	}
+	return IssuedSession{}, false, nil
 }
 
 // normalizeLoose is the key of the failure counter for a value that is not an

@@ -23,6 +23,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
 	"github.com/techorionai/constellation-identity/internal/domain"
+	"github.com/techorionai/constellation-identity/internal/ports/clientroles"
 	"github.com/techorionai/constellation-identity/internal/ports/clients"
 	"github.com/techorionai/constellation-identity/internal/ports/tokensigner"
 )
@@ -33,8 +34,9 @@ var now = time.Unix(1_800_000_000, 0)
 
 // fakeClients is an in-memory client repository.
 type fakeClients struct {
-	clients map[string]domain.Client
-	keys    map[string][]domain.ClientKey
+	clients.Repository // The test uses only the methods that the struct defines.
+	clients            map[string]domain.Client
+	keys               map[string][]domain.ClientKey
 }
 
 func (f *fakeClients) UpsertConfig(context.Context, domain.ClientConfig) (bool, error) {
@@ -59,8 +61,9 @@ func (f *fakeClients) WithLock(ctx context.Context, fn func(context.Context) err
 
 // fakeRoles returns the permissions of the roles that the test sets.
 type fakeRoles struct {
-	assigned []string
-	implicit map[domain.RoleRef][]string
+	clientroles.Repository // The test uses only the methods that the struct defines.
+	assigned               []string
+	implicit               map[domain.RoleRef][]string
 }
 
 func (f *fakeRoles) Assignments(context.Context, string) ([]domain.RoleAssignment, error) {
@@ -454,13 +457,13 @@ func TestIssue2_U10e_KeyID(t *testing.T) {
 	}
 }
 
-// Issue2_U10k: a public client gets unauthorized_client.
+// Issue4_I23f: a public client gets invalid_client.
 func TestIssue2_U10k_PublicClient(t *testing.T) {
 	f := newFixture(t)
 	_, err := f.cmd.Execute(context.Background(), request(f.assertion(t, func(c map[string]any) {
 		c["sub"], c["iss"] = "web", "web"
 	})))
-	if got := oauthCode(t, err); got != "unauthorized_client" {
+	if got := oauthCode(t, err); got != "invalid_client" {
 		t.Fatalf("code = %s", got)
 	}
 }
