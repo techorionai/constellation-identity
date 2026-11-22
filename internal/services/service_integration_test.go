@@ -378,18 +378,14 @@ func TestIntegration(t *testing.T) {
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("/v1/users = %d", resp.StatusCode)
 		}
-		resp, body := s.Get(t, "/oauth/userinfo")
-		if resp.StatusCode != http.StatusNotImplemented {
+		resp, _ = s.Get(t, "/oauth/userinfo")
+		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("/oauth/userinfo = %d", resp.StatusCode)
-		}
-		var p map[string]any
-		if err := json.Unmarshal(body, &p); err != nil || p["code"] != "not_implemented" {
-			t.Fatalf("problem = %s", body)
 		}
 		if resp.Header.Get("X-Request-ID") == "" {
 			t.Fatal("the response has no request ID")
 		}
-		resp, body = s.Post(t, "/oauth/token", "grant_type=client_credentials")
+		resp, body := s.Post(t, "/oauth/token", "grant_type=client_credentials")
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("/oauth/token = %d", resp.StatusCode)
 		}

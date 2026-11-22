@@ -112,6 +112,9 @@ type secretLedger struct {
 	invites   []string
 	setups    []string
 	printed   []string
+	// flow has the values of the code flow: codes, verifiers, refresh tokens,
+	// ID tokens, and auth request IDs.
+	flow []string
 }
 
 func (l *secretLedger) add(dst *[]string, v string) {
@@ -663,7 +666,8 @@ func TestUsersIntegration(t *testing.T) {
 		resp, _ = web.Get(t, "/login/done")
 		status(t, resp, http.StatusOK, "done")
 
-		// I9: a login with a session cookie gives a new session ID.
+		// I9 (issue 4): a login of the same user with a session cookie keeps the
+		// session and gives a new cookie value. The old value stops.
 		resp, _ = web.PostForm(t, "/login", url.Values{"email": {"admin@example.com"}, "password": {adminPassword}})
 		adminApp.trackSession(web)
 		status(t, resp, http.StatusSeeOther, "second login")
@@ -685,7 +689,7 @@ func TestUsersIntegration(t *testing.T) {
 		again.SetCookie(pages.CookieName, second)
 		resp, _ = again.Get(t, "/login/done")
 		status(t, resp, http.StatusSeeOther, "revoked session")
-		if n := count(t, adminApp.Server, `SELECT count(*) FROM sessions WHERE revoked_at IS NOT NULL`); n < 2 {
+		if n := count(t, adminApp.Server, `SELECT count(*) FROM sessions WHERE revoked_at IS NOT NULL`); n < 1 {
 			t.Fatalf("revoked sessions = %d", n)
 		}
 	})

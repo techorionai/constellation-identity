@@ -74,10 +74,28 @@ type clientsFile struct {
 }
 
 type clientEntry struct {
-	ID    string     `yaml:"id"`
-	App   string     `yaml:"app"`
-	Keys  []keyEntry `yaml:"keys"`
-	Roles []string   `yaml:"roles,omitempty"`
+	ID                     string     `yaml:"id"`
+	App                    string     `yaml:"app"`
+	Name                   string     `yaml:"name,omitempty"`
+	Type                   string     `yaml:"type,omitempty"`
+	Keys                   []keyEntry `yaml:"keys,omitempty"`
+	Roles                  []string   `yaml:"roles,omitempty"`
+	RedirectURIs           []string   `yaml:"redirect_uris,omitempty"`
+	PostLogoutRedirectURIs []string   `yaml:"post_logout_redirect_uris,omitempty"`
+}
+
+// PublicClient is a public client of the clients file.
+type PublicClient struct {
+	ID                     string
+	App                    string
+	RedirectURIs           []string
+	PostLogoutRedirectURIs []string
+}
+
+// AdminUI is the public client with the app identity of the test servers.
+var AdminUI = PublicClient{
+	ID: "admin-ui", App: "identity",
+	RedirectURIs: []string{"https://admin.example.com/cb"},
 }
 
 type keyEntry struct {
@@ -89,7 +107,19 @@ type keyEntry struct {
 // path.
 func WriteClientsFile(t testing.TB, clients ...ServiceClient) string {
 	t.Helper()
+	return WriteClientsFileWith(t, nil, clients...)
+}
+
+// WriteClientsFileWith writes a clients file with public clients and service
+// clients.
+func WriteClientsFileWith(t testing.TB, publics []PublicClient, clients ...ServiceClient) string {
+	t.Helper()
 	var f clientsFile
+	for _, p := range publics {
+		f.Clients = append(f.Clients, clientEntry{
+			ID: p.ID, App: p.App, Type: "public", RedirectURIs: p.RedirectURIs, PostLogoutRedirectURIs: p.PostLogoutRedirectURIs,
+		})
+	}
 	for _, c := range clients {
 		f.Clients = append(f.Clients, clientEntry{
 			ID: c.ID, App: c.App, Roles: c.Roles,
@@ -111,6 +141,13 @@ func WriteClientsFile(t testing.TB, clients ...ServiceClient) string {
 func WithClients(t testing.TB, clients ...ServiceClient) Option {
 	t.Helper()
 	return WithClientsFile(WriteClientsFile(t, clients...))
+}
+
+// WithPublicClients writes a clients file for the public clients and the
+// service clients and uses it.
+func WithPublicClients(t testing.TB, publics []PublicClient, clients ...ServiceClient) Option {
+	t.Helper()
+	return WithClientsFile(WriteClientsFileWith(t, publics, clients...))
 }
 
 // TokenSource returns an auth/clientcred token source for the client. The
