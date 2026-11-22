@@ -93,7 +93,7 @@ func TestU8_ClientsFileErrors(t *testing.T) {
 		{"alg HS256", clientYAML("svc", "svc", "", keyYAML("k", jwkYAML(good, ", alg: HS256"))), "keys[0].jwk"},
 		{"use enc", clientYAML("svc", "svc", "", keyYAML("k", jwkYAML(good, ", use: enc"))), "keys[0].jwk"},
 		{"bad id", clientYAML("Bad Id", "svc", "", keyYAML("k", jwkYAML(good, ""))), "field id"},
-		{"public type", clientYAML("svc", "svc", "public", keyYAML("k", jwkYAML(good, ""))), "field type"},
+		{"other type", clientYAML("svc", "svc", "other", keyYAML("k", jwkYAML(good, ""))), "field type"},
 		{"point not on curve", clientYAML("svc", "svc", "", keyYAML("k", "{ kty: EC, crv: P-256, x: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, y: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA }")), "keys[0].jwk"},
 	}
 	for _, tt := range tests {

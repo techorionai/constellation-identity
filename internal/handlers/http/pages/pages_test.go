@@ -151,3 +151,36 @@ func TestRedactTokenMiddleware(t *testing.T) {
 		t.Fatal("the middleware must not change the original request")
 	}
 }
+
+// Issue4_U10: the scrubbing of the query.
+func TestIssue4_U10_Scrubbing(t *testing.T) {
+	got := pages.RedactQuery("code=abc&state=s1&nonce=n&code_verifier=v&refresh_token=r&id_token_hint=h&authRequest=a&token=t&client_id=demo-ui&scope=openid")
+	for _, secret := range []string{"abc", "s1", "=n&", "=v&", "=r&", "=h&", "=a&", "=t&"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("the query still has %q: %s", secret, got)
+		}
+	}
+	if !strings.Contains(got, "client_id=demo-ui") || !strings.Contains(got, "scope=openid") {
+		t.Errorf("the other values must stay: %s", got)
+	}
+	if loc := pages.RedactURL("https://demo.example.com/cb?code=abc&state=s1"); loc != "https://demo.example.com/cb?code=REDACTED&state=REDACTED" {
+		t.Errorf("Location = %s", loc)
+	}
+	// The handler behind the middleware that restores the query gets the real values.
+	var seen string
+	h := pages.RedactToken(pages.RestoreQuery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.URL.Query().Get("state") + "|" + r.URL.Query().Get("nonce")
+	})))
+	var tracing string
+	outer := pages.RedactToken(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tracing = r.URL.RawQuery
+		pages.RestoreQuery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen = r.URL.Query().Get("state") + "|" + r.URL.Query().Get("nonce")
+		})).ServeHTTP(w, r)
+	}))
+	outer.ServeHTTP(httptest.NewRecorder(), newRequest(http.MethodGet, "/oauth/authorize?state=real-state&nonce=real-nonce", nil))
+	if seen != "real-state|real-nonce" || strings.Contains(tracing, "real-") {
+		t.Fatalf("handler saw %q, tracing saw %q", seen, tracing)
+	}
+	_ = h
+}

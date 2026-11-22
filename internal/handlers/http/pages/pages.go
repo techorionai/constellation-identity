@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"time"
 
 	"github.com/techorionai/constellation-platform-go/executor"
@@ -36,7 +37,8 @@ const maxFormBytes = 64 << 10
 
 // Paths are the URL patterns that the handler of the pages serves. Register
 // them on the router of the public server.
-var Paths = []string{"/login", "/login/done", "/logout", "/setup", "/invite", "/assets/pages.css"}
+var Paths = []string{"/login", "/login/done", "/logout", "/setup", "/invite", "/assets/pages.css",
+	"/oauth/authorize", "/oauth/authorize/continue", "/oauth/end_session"}
 
 // Deps are the use cases and the settings of the pages.
 type Deps struct {
@@ -47,6 +49,12 @@ type Deps struct {
 	Session    executor.ExecutorWithReturn[queries.SessionFromCookie, queries.SessionResult]
 	Touch      executor.Executor[commands.TouchSession]
 	CheckToken executor.ExecutorWithReturn[queries.CheckOneTimeToken, bool]
+	// The use cases of the authorization code flow and of the end session.
+	Authorize         executor.ExecutorWithReturn[commands.Authorize, commands.AuthorizeOutcome]
+	Continue          executor.ExecutorWithReturn[commands.Continue, commands.AuthorizeOutcome]
+	LookupAuthRequest executor.ExecutorWithReturn[string, commands.AuthRequestInfo]
+	EndSession        executor.ExecutorWithReturn[commands.EndSession, commands.EndSessionOutcome]
+	ConfirmEndSession executor.Executor[string]
 	// Issuer is the issuer URL of the service. An https issuer turns on the
 	// Strict-Transport-Security header.
 	Issuer string
@@ -99,6 +107,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /invite", h.inviteForm)
 	mux.HandleFunc("POST /invite", h.invite)
 	mux.HandleFunc("GET /assets/pages.css", h.stylesheet)
+	mux.HandleFunc("GET /oauth/authorize", h.authorize)
+	mux.HandleFunc("GET /oauth/authorize/continue", h.authorizeContinue)
+	mux.HandleFunc("GET /oauth/end_session", h.endSession)
+	mux.HandleFunc("POST /oauth/end_session", h.endSessionConfirm)
 	return SecurityHeaders(h.d.Issuer, http.NewCrossOriginProtection().Handler(mux))
 }
 
@@ -111,6 +123,8 @@ type view struct {
 	Name     string
 	ReturnTo string
 	UserName string
+	// AuthRequest is the ID of the auth request of a login in a code flow.
+	AuthRequest string
 }
 
 func (h *Handler) render(w http.ResponseWriter, r *http.Request, status int, name string, v view) {
@@ -209,8 +223,34 @@ const mismatchText = "The passwords are not the same."
 // --- login ---
 
 func (h *Handler) loginForm(w http.ResponseWriter, r *http.Request) {
-	rt, _ := domain.SafeReturnTo(r.URL.Query().Get("return_to"))
-	h.render(w, r, http.StatusOK, "login", view{Title: "Log in", ReturnTo: rt})
+	v := view{Title: "Log in"}
+	if id := r.URL.Query().Get("authRequest"); id != "" {
+		if !h.authRequestView(w, r, id, &v) {
+			return
+		}
+	} else {
+		v.ReturnTo, _ = domain.SafeReturnTo(r.URL.Query().Get("return_to"))
+	}
+	h.render(w, r, http.StatusOK, "login", v)
+}
+
+// authRequestView sets the auth request of a login page and the CSP form-action
+// of the response. It returns false after it wrote an error page. The login
+// page of an auth request must let the browser follow the redirect to the
+// redirect URI after the form, so its CSP form-action has the origin of that URI.
+func (h *Handler) authRequestView(w http.ResponseWriter, r *http.Request, id string, v *view) bool {
+	info, err := h.d.LookupAuthRequest.Execute(r.Context(), id)
+	if errors.Is(err, commands.ErrAuthRequestGone) {
+		h.message(w, r, http.StatusBadRequest, "Cannot log in", "This login request is not valid or it has expired. Go back to the application and start again.")
+		return false
+	}
+	if err != nil {
+		h.serverError(w, r, err)
+		return false
+	}
+	v.AuthRequest = id
+	w.Header().Set("Content-Security-Policy", ContentSecurityPolicyWithFormAction(info.FormActionOrigin))
+	return true
 }
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
@@ -218,21 +258,34 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rt, _ := domain.SafeReturnTo(r.PostForm.Get("return_to"))
+	authRequest := r.PostForm.Get("authRequest")
 	email := r.PostForm.Get("email")
 	issued, err := h.d.Login.Execute(r.Context(), commands.Login{
 		Email: email, Password: r.PostForm.Get("password"),
 		IP: h.clientIP(r), UserAgent: r.UserAgent(), PreviousToken: cookieValue(r),
 	})
 	v := view{Title: "Log in", Email: email, ReturnTo: rt}
-	switch {
-	case err == nil:
+	if err == nil {
 		h.setCookie(w, issued)
 		target := "/login/done"
-		if rt != "" {
+		switch {
+		case authRequest != "":
+			target = "/oauth/authorize/continue?authRequest=" + url.QueryEscape(authRequest)
+		case rt != "":
 			target = rt
 		}
-		// target is /login/done or a path that domain.SafeReturnTo accepted.
+		// target is a fixed path, or a path that domain.SafeReturnTo accepted.
 		http.Redirect(w, r, target, http.StatusSeeOther) //nolint:gosec // G710: see the line above.
+		return
+	}
+	if authRequest != "" {
+		// The failed login shows the page again with the same auth request and
+		// the same CSP form-action.
+		if !h.authRequestView(w, r, authRequest, &v) {
+			return
+		}
+	}
+	switch {
 	case errors.Is(err, commands.ErrBadCredentials):
 		v.Error = "Email or password is not correct"
 		h.render(w, r, http.StatusUnauthorized, "login", v)
@@ -248,6 +301,81 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.serverError(w, r, err)
 	}
+}
+
+// --- OAuth pages ---
+
+func (h *Handler) authorize(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	out, err := h.d.Authorize.Execute(r.Context(), commands.Authorize{
+		ResponseType: q.Get("response_type"), ClientID: q.Get("client_id"), RedirectURI: q.Get("redirect_uri"),
+		Scope: q.Get("scope"), State: q.Get("state"), Nonce: q.Get("nonce"),
+		CodeChallenge: q.Get("code_challenge"), CodeChallengeMethod: q.Get("code_challenge_method"),
+		Prompt: q.Get("prompt"), MaxAge: q.Get("max_age"), HasMaxAge: q.Has("max_age"),
+		SessionToken: cookieValue(r),
+	})
+	h.authorizeOutcome(w, r, out, err)
+}
+
+func (h *Handler) authorizeContinue(w http.ResponseWriter, r *http.Request) {
+	out, err := h.d.Continue.Execute(r.Context(), commands.Continue{
+		AuthRequestID: r.URL.Query().Get("authRequest"), SessionToken: cookieValue(r),
+	})
+	h.authorizeOutcome(w, r, out, err)
+}
+
+func (h *Handler) authorizeOutcome(w http.ResponseWriter, r *http.Request, out commands.AuthorizeOutcome, err error) {
+	if err != nil {
+		h.serverError(w, r, err)
+		return
+	}
+	switch out.Kind {
+	case commands.AuthorizeRedirect:
+		// The use case built the location from a registered redirect URI.
+		http.Redirect(w, r, out.Location, http.StatusFound) //nolint:gosec // G710: see the line above.
+	case commands.AuthorizeLogin:
+		http.Redirect(w, r, "/login?authRequest="+url.QueryEscape(out.AuthRequestID), http.StatusFound)
+	default:
+		h.message(w, r, http.StatusBadRequest, "Cannot continue", out.Message)
+	}
+}
+
+func (h *Handler) endSession(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	out, err := h.d.EndSession.Execute(r.Context(), commands.EndSession{
+		IDTokenHint: q.Get("id_token_hint"), PostLogoutRedirectURI: q.Get("post_logout_redirect_uri"),
+		State: q.Get("state"), SessionToken: cookieValue(r),
+	})
+	if err != nil {
+		h.serverError(w, r, err)
+		return
+	}
+	if out.ClearCookie {
+		clearCookie(w)
+	}
+	switch out.Kind {
+	case commands.EndSessionRedirect:
+		// The use case built the location from a registered post-logout URI.
+		http.Redirect(w, r, out.Location, http.StatusFound) //nolint:gosec // G710: see the line above.
+	case commands.EndSessionConfirm:
+		h.render(w, r, http.StatusOK, "logout_confirm", view{Title: "Log out"})
+	case commands.EndSessionLoggedOut:
+		h.message(w, r, http.StatusOK, "You are logged out", "")
+	default:
+		h.message(w, r, http.StatusBadRequest, "Cannot log out", "The id_token_hint is not valid.")
+	}
+}
+
+// endSessionConfirm does the logout of the confirmation form. The form has no
+// field. The request body is ignored. The use case revokes the session of the
+// cookie only.
+func (h *Handler) endSessionConfirm(w http.ResponseWriter, r *http.Request) {
+	if err := h.d.ConfirmEndSession.Execute(r.Context(), cookieValue(r)); err != nil {
+		h.serverError(w, r, err)
+		return
+	}
+	clearCookie(w)
+	h.message(w, r, http.StatusOK, "You are logged out", "")
 }
 
 func (h *Handler) loginDone(w http.ResponseWriter, r *http.Request) {

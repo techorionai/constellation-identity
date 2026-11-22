@@ -109,8 +109,27 @@ type Login struct {
 // Retention is the config of the retention jobs. A job deletes the rows 7 days
 // after the end of the token or session, unless Period says otherwise.
 type Retention struct {
-	Tokens   retention.Config `envPrefix:"TOKENS__"`
-	Sessions retention.Config `envPrefix:"SESSIONS__"`
+	Tokens               retention.Config `envPrefix:"TOKENS__"`
+	Sessions             retention.Config `envPrefix:"SESSIONS__"`
+	RefreshTokens        retention.Config `envPrefix:"REFRESH_TOKENS__"`
+	RefreshTokenFamilies retention.Config `envPrefix:"REFRESH_TOKEN_FAMILIES__"`
+}
+
+// Limits of the OIDC settings.
+const (
+	MinAuthRequestTTL = time.Minute
+	MaxAuthRequestTTL = time.Hour
+	MinCodeTTL        = 10 * time.Second
+	MaxCodeTTL        = 10 * time.Minute
+	MinUserTokenTTL   = time.Minute
+	MaxUserTokenTTL   = time.Hour
+)
+
+// OIDC is the config of the authorization code flow.
+type OIDC struct {
+	AuthRequestTTL time.Duration `env:"AUTH_REQUEST_TTL" envDefault:"10m"`
+	CodeTTL        time.Duration `env:"CODE_TTL" envDefault:"60s"`
+	UserTokenTTL   time.Duration `env:"USER_TOKEN_TTL" envDefault:"15m"`
 }
 
 // DefaultRetentionPeriod is the default age after which the retention jobs
@@ -140,6 +159,7 @@ type Config struct {
 	Password    Password        `envPrefix:"PASSWORD__"`
 	Login       Login           `envPrefix:"LOGIN__"`
 	Retention   Retention       `envPrefix:"RETENTION__"`
+	OIDC        OIDC            `envPrefix:"OIDC__"`
 	ClientsFile string          `env:"CLIENTS_FILE"`
 }
 
@@ -206,6 +226,21 @@ func (c Config) validateUsers() []error {
 	}
 	if err := c.Retention.Sessions.Validate(); err != nil {
 		bad("RETENTION__SESSIONS__*", err.Error())
+	}
+	if err := c.Retention.RefreshTokens.Validate(); err != nil {
+		bad("RETENTION__REFRESH_TOKENS__*", err.Error())
+	}
+	if err := c.Retention.RefreshTokenFamilies.Validate(); err != nil {
+		bad("RETENTION__REFRESH_TOKEN_FAMILIES__*", err.Error())
+	}
+	if c.OIDC.AuthRequestTTL < MinAuthRequestTTL || c.OIDC.AuthRequestTTL > MaxAuthRequestTTL {
+		bad("OIDC__AUTH_REQUEST_TTL", fmt.Sprintf("must be from %s to %s", MinAuthRequestTTL, MaxAuthRequestTTL))
+	}
+	if c.OIDC.CodeTTL < MinCodeTTL || c.OIDC.CodeTTL > MaxCodeTTL {
+		bad("OIDC__CODE_TTL", fmt.Sprintf("must be from %s to %s", MinCodeTTL, MaxCodeTTL))
+	}
+	if c.OIDC.UserTokenTTL < MinUserTokenTTL || c.OIDC.UserTokenTTL > MaxUserTokenTTL {
+		bad("OIDC__USER_TOKEN_TTL", fmt.Sprintf("must be from %s to %s", MinUserTokenTTL, MaxUserTokenTTL))
 	}
 	return errs
 }

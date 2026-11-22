@@ -55,6 +55,18 @@ type Deps struct {
 	GetManifest     executor.ExecutorWithReturn[queries.GetManifest, domain.PublishedManifest]
 	ListRoles       executor.ExecutorWithReturn[queries.ListRoles, queries.ListRolesResult]
 	GetRole         executor.ExecutorWithReturn[queries.GetRole, domain.Role]
+	// The use cases of the code flow, userinfo, and revoke.
+	ExchangeCode  executor.ExecutorWithReturn[commands.ExchangeCode, commands.UserTokenResult]
+	RefreshTokens executor.ExecutorWithReturn[commands.RefreshTokens, commands.UserTokenResult]
+	RevokeToken   executor.Executor[commands.RevokeToken]
+	UserInfo      executor.ExecutorWithReturn[commands.UserInfo, commands.UserInfoResult]
+	// The use cases of the admin API.
+	Admin        *commands.Admin
+	CreateUser   executor.ExecutorWithReturn[commands.CreateUser, commands.CreateUserResult]
+	CreateInvite executor.ExecutorWithReturn[commands.CreateInvite, commands.Link]
+	// CORSOrigins gives the login redirect URIs of the public clients that are
+	// not disabled. The CORS middleware answers for these origins only.
+	CORSOrigins CORSOrigins
 	// Verifier checks the bearer token of each /v1 request. Scopes gives the
 	// scopes of each /v1 operation. Without them, each /v1 request fails with
 	// a 500 Problem, because the service fails closed.
@@ -89,7 +101,8 @@ func (s *Server) Handler() http.Handler {
 		ErrorHandlerFunc: s.requestError,
 		Middlewares:      []gen.MiddlewareFunc{s.protect},
 	})
-	return http.MaxBytesHandler(router, maxBodyBytes)
+	h := cors(s.d.CORSOrigins, router)
+	return http.MaxBytesHandler(h, maxBodyBytes)
 }
 
 // protect runs the token check on the /v1 routes. The route pattern gives the
@@ -107,7 +120,7 @@ func (s *Server) protect(next http.Handler) http.Handler {
 			s.writeProblem(w, r, http.StatusInternalServerError, "auth_not_configured", "Authentication not configured", "The server has an internal error.")
 			return
 		}
-		s.authMW(auth.RequireScopes(scopes...)(next)).ServeHTTP(w, r)
+		s.authMW(auth.RequireScopes(scopes...)(s.rejectUnknownClientFields(next))).ServeHTTP(w, r)
 	})
 }
 
@@ -119,19 +132,22 @@ type tokenRequest struct {
 	post                 url.Values
 	repeated             bool
 	secondAuthentication bool
+	authorization        string
 }
 
 // captureTokenRequest puts the form of the token request in the context.
 func captureTokenRequest(f gen.StrictHandlerFunc, operation string) gen.StrictHandlerFunc {
-	if operation != "OAuthToken" {
+	if operation != "OAuthToken" && operation != "OAuthRevoke" && operation != "OAuthUserinfo" {
 		return f
 	}
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error) {
 		tr := tokenRequest{
 			post:                 r.PostForm,
 			secondAuthentication: r.Form.Has("client_secret") || hasBasicAuthorization(r),
+			authorization:        r.Header.Get("Authorization"),
 		}
-		for _, name := range []string{"grant_type", "client_assertion_type", "client_assertion", "client_id", "audience", "scope"} {
+		for _, name := range []string{"grant_type", "client_assertion_type", "client_assertion", "client_id", "audience", "scope",
+			"code", "code_verifier", "redirect_uri", "refresh_token", "token", "token_type_hint"} {
 			if len(r.Form[name]) > 1 {
 				tr.repeated = true
 			}
@@ -223,11 +239,34 @@ func (s *Server) DiscoveryOpenidConfiguration(ctx context.Context, _ gen.Discove
 	return discoveryResponse{body: gen.DiscoveryOpenidConfiguration200JSONResponse(doc)}, nil
 }
 
-// OAuthToken handles the client credentials grant. Another grant answers
-// unsupported_grant_type until issue 4 adds the grants.
+// OAuthToken dispatches by grant_type. The grants authorization_code and
+// refresh_token are for public clients. Any other value goes to the client
+// credentials use case, which answers unsupported_grant_type for an unknown
+// grant. The rule for a client secret or a Basic header is the same for all
+// grants.
 func (s *Server) OAuthToken(ctx context.Context, _ gen.OAuthTokenRequestObject) (gen.OAuthTokenResponseObject, error) {
 	tr, _ := ctx.Value(tokenRequestKey{}).(tokenRequest)
 	field := func(name string) string { return tr.post.Get(name) }
+	switch field("grant_type") {
+	case "authorization_code":
+		res, err := s.d.ExchangeCode.Execute(ctx, commands.ExchangeCode{
+			ClientID: field("client_id"), Code: field("code"), RedirectURI: field("redirect_uri"),
+			CodeVerifier: field("code_verifier"), SecondAuthentication: tr.secondAuthentication, RepeatedParameter: tr.repeated,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return userTokenResponse(res), nil
+	case "refresh_token":
+		res, err := s.d.RefreshTokens.Execute(ctx, commands.RefreshTokens{
+			ClientID: field("client_id"), RefreshToken: field("refresh_token"), Scope: field("scope"),
+			SecondAuthentication: tr.secondAuthentication, RepeatedParameter: tr.repeated,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return userTokenResponse(res), nil
+	}
 	res, err := s.d.IssueToken.Execute(ctx, commands.IssueServiceToken{
 		GrantType:            field("grant_type"),
 		AssertionType:        field("client_assertion_type"),
@@ -250,6 +289,85 @@ func (s *Server) OAuthToken(ctx context.Context, _ gen.OAuthTokenRequestObject) 
 		},
 		Headers: gen.OAuthToken200ResponseHeaders{CacheControl: "no-store", Pragma: "no-cache"},
 	}, nil
+}
+
+func userTokenResponse(res commands.UserTokenResult) gen.OAuthTokenResponseObject {
+	body := gen.TokenResponse{
+		AccessToken: res.AccessToken,
+		ExpiresIn:   int32(res.ExpiresIn), //nolint:gosec // The lifetime is a small value.
+		Scope:       res.Scope,
+		TokenType:   gen.Bearer,
+	}
+	if res.IDToken != "" {
+		body.IdToken = &res.IDToken
+	}
+	if res.RefreshToken != "" {
+		body.RefreshToken = &res.RefreshToken
+	}
+	return gen.OAuthToken200JSONResponse{
+		Body:    body,
+		Headers: gen.OAuthToken200ResponseHeaders{CacheControl: "no-store", Pragma: "no-cache"},
+	}
+}
+
+// OAuthRevoke revokes a refresh token (RFC 7009).
+func (s *Server) OAuthRevoke(ctx context.Context, _ gen.OAuthRevokeRequestObject) (gen.OAuthRevokeResponseObject, error) {
+	tr, _ := ctx.Value(tokenRequestKey{}).(tokenRequest)
+	field := func(name string) string { return tr.post.Get(name) }
+	err := s.d.RevokeToken.Execute(ctx, commands.RevokeToken{
+		Token: field("token"), TokenTypeHint: field("token_type_hint"), ClientID: field("client_id"),
+		AssertionType: field("client_assertion_type"), Assertion: field("client_assertion"),
+		SecondAuthentication: tr.secondAuthentication, RepeatedParameter: tr.repeated,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return gen.OAuthRevoke200Response{}, nil
+}
+
+// OAuthUserinfo returns the claims of the user of an access token.
+func (s *Server) OAuthUserinfo(ctx context.Context, _ gen.OAuthUserinfoRequestObject) (gen.OAuthUserinfoResponseObject, error) {
+	tr, _ := ctx.Value(tokenRequestKey{}).(tokenRequest)
+	scheme, token, _ := strings.Cut(strings.TrimSpace(tr.authorization), " ")
+	if !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
+		return gen.OAuthUserinfo401Response{Headers: gen.OAuthUserinfo401ResponseHeaders{WWWAuthenticate: `Bearer`}}, nil
+	}
+	res, err := s.d.UserInfo.Execute(ctx, commands.UserInfo{AccessToken: strings.TrimSpace(token)})
+	switch {
+	case errors.Is(err, commands.ErrInvalidToken):
+		return gen.OAuthUserinfo401Response{Headers: gen.OAuthUserinfo401ResponseHeaders{WWWAuthenticate: `Bearer error="invalid_token"`}}, nil
+	case errors.Is(err, commands.ErrInsufficientScope):
+		return gen.OAuthUserinfo403Response{Headers: gen.OAuthUserinfo403ResponseHeaders{WWWAuthenticate: `Bearer error="insufficient_scope"`}}, nil
+	case err != nil:
+		return nil, err
+	}
+	email, name, verified := res.Email, res.Name, true
+	return gen.OAuthUserinfo200JSONResponse{
+		Body:    gen.UserInfo{Sub: res.Subject, Email: &email, EmailVerified: &verified, Name: &name},
+		Headers: gen.OAuthUserinfo200ResponseHeaders{CacheControl: "no-store", Pragma: "no-cache"},
+	}, nil
+}
+
+// OAuthAuthorize and OAuthEndSession are served by the pages router, because
+// they need the raw query, the cookie, and HTML pages. See the package pages.
+// The generated operations stay for the contract. The router of the public
+// server never calls them.
+
+// userProblem maps the errors of the user use cases to a Problem.
+func userProblem(err error) (status int, code, detail string, ok bool) {
+	switch {
+	case errors.Is(err, commands.ErrEmailTaken):
+		return http.StatusConflict, "email_taken", "A user with this email exists.", true
+	case errors.Is(err, commands.ErrUserNotFound):
+		return http.StatusNotFound, "not_found", "The user does not exist.", true
+	case errors.Is(err, commands.ErrUserDisabled):
+		return http.StatusConflict, "user_disabled", "The user is disabled.", true
+	case errors.Is(err, commands.ErrUserNotInvited):
+		return http.StatusConflict, "user_not_invited", "The user is not in the status invited.", true
+	case errors.Is(err, domain.ErrInvalidEmail), errors.Is(err, domain.ErrInvalidName):
+		return http.StatusUnprocessableEntity, "invalid_user", "The email or the name breaks the rules of the identity service.", true
+	}
+	return 0, "", "", false
 }
 
 func (s *Server) requestError(w http.ResponseWriter, r *http.Request, _ error) {
@@ -277,11 +395,21 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 		s.writeValidation(w, r, ve)
 		return
 	}
+	if pe, ok := apperrors.AsProblem(err); ok {
+		s.writeProblem(w, r, pe.Status, pe.Code, http.StatusText(pe.Status), pe.Detail)
+		return
+	}
+	if status, code, detail, ok := userProblem(err); ok {
+		s.writeProblem(w, r, status, code, http.StatusText(status), detail)
+		return
+	}
 	switch apperrors.CodeOf(err) {
 	case apperrors.InvalidInput:
 		s.writeProblem(w, r, http.StatusBadRequest, "invalid_request", "Invalid request", "The request is not valid.")
 	case apperrors.NotFound:
 		s.writeProblem(w, r, http.StatusNotFound, "not_found", "Not found", "The resource does not exist.")
+	case apperrors.Forbidden:
+		s.writeProblem(w, r, http.StatusForbidden, "forbidden", "Forbidden", "The request is not allowed.")
 	case apperrors.Unavailable:
 		s.writeProblem(w, r, http.StatusServiceUnavailable, "unavailable", "Service unavailable", "The service is not available.")
 	default:
