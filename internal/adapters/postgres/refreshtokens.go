@@ -27,8 +27,9 @@ var _ refreshtokens.Repository = (*RefreshTokens)(nil)
 func NewRefreshTokens(pool *pgxpool.Pool) *RefreshTokens { return &RefreshTokens{pool: pool} }
 
 // InsertFamilyIfSessionValid adds the family and the first token in one
-// statement. The INSERT ... SELECT checks the session, so no row exists for a
-// session that ended.
+// statement. The INSERT ... SELECT checks the session and locks its row, so no
+// row exists for a session that ended, and a parallel revoke of the session
+// waits until the insert commits.
 func (r *RefreshTokens) InsertFamilyIfSessionValid(ctx context.Context, f domain.RefreshFamily, t domain.RefreshToken, now time.Time) (bool, error) {
 	var id string
 	err := clientspg.Conn(ctx, r.pool).QueryRow(ctx, `
@@ -36,6 +37,7 @@ func (r *RefreshTokens) InsertFamilyIfSessionValid(ctx context.Context, f domain
 			INSERT INTO refresh_token_families (id, session_id, client_id, user_id, scope, oidc_scopes, created_at)
 			SELECT $1, s.id, $3, $4, $5, $6, $7 FROM sessions s
 			WHERE s.id = $2 AND s.revoked_at IS NULL AND s.expires_at > $8 AND s.idle_expires_at > $8
+			FOR UPDATE OF s
 			RETURNING id
 		), tok AS (
 			INSERT INTO refresh_tokens (token_hash, family_id, created_at, expires_at)
@@ -141,6 +143,10 @@ func (r *RefreshTokens) RevokeFamily(ctx context.Context, familyID string, now t
 // RevokeSessionFamilies locks and revokes the families of a session.
 func (r *RefreshTokens) RevokeSessionFamilies(ctx context.Context, sessionID string, now time.Time) error {
 	return inTx(ctx, r.pool, func(ctx context.Context, q clientspg.Querier) error {
+		// Lock the session row first. This is the lock order of all paths.
+		if _, err := q.Exec(ctx, `SELECT id FROM sessions WHERE id = $1::uuid FOR UPDATE`, sessionID); err != nil {
+			return fmt.Errorf("lock session: %w", err)
+		}
 		return revokeFamilies(ctx, q, `session_id = $1::uuid`, sessionID, now)
 	})
 }

@@ -316,6 +316,39 @@ func TestIssue4CodeFlowIntegration(t *testing.T) {
 		}
 	})
 
+	// I14: a Valkey data loss during a login. The auth request is lost.
+	t.Run("I14_valkey_flush_during_login", func(t *testing.T) {
+		web := f.a.NewWeb()
+		p := testserver.NewPKCE(t)
+		resp := web.Authorize(t, testserver.AuthorizeQuery("demo-ui", demoRedirect, demoScope, p, nil))
+		id := testserver.Location(t, resp).Query().Get("authRequest")
+		if id == "" {
+			t.Fatal("no auth request")
+		}
+		resp, _ = web.Get(t, "/login?authRequest="+id)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("login page: %d", resp.StatusCode)
+		}
+		admin := h.env.VK.Admin(t)
+		if err := admin.Do(ctx, admin.B().Flushall().Build()).Error(); err != nil {
+			t.Fatalf("flushall: %v", err)
+		}
+		f.a.ledger.add(&f.a.ledger.passwords, userPass2)
+		resp, _ = web.PostForm(t, "/login", url.Values{"email": {"agent@example.com"}, "password": {userPass2}, "authRequest": {id}})
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("login after the flush: %d", resp.StatusCode)
+		}
+		// The continue step shows an error page and gives no code.
+		resp, body := web.Get(t, resp.Header.Get("Location"))
+		if resp.StatusCode != http.StatusBadRequest || strings.Contains(resp.Header.Get("Location"), "code=") || len(body) == 0 {
+			t.Fatalf("continue after the flush: %d", resp.StatusCode)
+		}
+		// The user can start again. The session of the login is valid.
+		p2 := testserver.NewPKCE(t)
+		resp = web.Authorize(t, testserver.AuthorizeQuery("demo-ui", demoRedirect, demoScope, p2, nil))
+		codeOf(t, testserver.Location(t, resp))
+	})
+
 	// I19, I19a, I19b: the continue step.
 	t.Run("I19_continue", func(t *testing.T) {
 		web := f.a.NewWeb()
@@ -337,10 +370,28 @@ func TestIssue4CodeFlowIntegration(t *testing.T) {
 		f.advance(time.Second)
 		loc := web.CodeFlow(t, testserver.AuthorizeQuery("demo-ui", demoRedirect, demoScope, p, map[string]string{"prompt": "login"}), "agent@example.com", userPass2)
 		codeOf(t, loc)
+		// An auth_time equal to the time of the auth request passes the continue
+		// step. The clock does not move between the request and the login.
+		loc = web.CodeFlow(t, testserver.AuthorizeQuery("demo-ui", demoRedirect, demoScope, p, map[string]string{"prompt": "login"}), "agent@example.com", userPass2)
+		codeOf(t, loc)
 		// max_age=1 with a clock that moved 2 seconds.
 		f.advance(2 * time.Second)
+		before := f.sessionRow(web).AuthTime
 		loc = web.CodeFlow(t, testserver.AuthorizeQuery("demo-ui", demoRedirect, demoScope, p, map[string]string{"max_age": "1"}), "agent@example.com", userPass2)
-		codeOf(t, loc)
+		// I4f: the new login gives a new auth_time in the sessions row and in the ID token.
+		maxAgeCode := codeOf(t, loc)
+		after := f.sessionRow(web).AuthTime
+		if !after.After(before) {
+			t.Fatalf("auth_time of the session = %s, want later than %s", after, before)
+		}
+		resp, tr := f.a.TokenRequest(t, testserver.CodeForm("demo-ui", maxAgeCode, demoRedirect, p.Verifier))
+		if resp.StatusCode != http.StatusOK || tr.IDToken == "" {
+			t.Fatalf("token request after max_age: %d %s", resp.StatusCode, tr.Error)
+		}
+		_, idClaims := testserver.JWTClaims(t, tr.IDToken)
+		if got, _ := idClaims["auth_time"].(float64); int64(got) != after.Unix() || int64(got) <= before.Unix() {
+			t.Fatalf("auth_time of the ID token = %d, session = %d, before = %d", int64(got), after.Unix(), before.Unix())
+		}
 		// I23: prompt=none with a session that does not meet max_age.
 		f.advance(2 * time.Second)
 		redirectError(t, web.Authorize(t, testserver.AuthorizeQuery("demo-ui", demoRedirect, demoScope, p, map[string]string{"prompt": "none", "max_age": "1"})), "login_required")

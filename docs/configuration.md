@@ -30,7 +30,7 @@ The service reads its settings from environment variables with the prefix `IDENT
 | `IDENTITY_LOGIN__MAX_FAILURES_PER_EMAIL` | `5` | 1 to 100 | Login attempts for one email in the window. The attempt after the limit gets status 429. |
 | `IDENTITY_LOGIN__MAX_FAILURES_PER_IP` | `50` | 1 to 10000 | Failed login attempts from one client IP in the window. A good login takes back its attempt. The attempt after the limit gets status 429. |
 | `IDENTITY_LOGIN__FAILURE_WINDOW` | `15m` | 1 minute to 24 hours | Life of the failure counters. |
-| `IDENTITY_RETENTION__TOKENS__PERIOD`, `IDENTITY_RETENTION__SESSIONS__PERIOD`, `IDENTITY_RETENTION__REFRESH_TOKENS__PERIOD`, `IDENTITY_RETENTION__REFRESH_TOKEN_FAMILIES__PERIOD` | `168h` | | Age after which the service deletes ended tokens, sessions, refresh tokens, and refresh token families. Also `INTERVAL` and `BATCH_SIZE`. See `retention` in `constellation-platform-go`. |
+| `IDENTITY_RETENTION__TOKENS__PERIOD`, `IDENTITY_RETENTION__SESSIONS__PERIOD`, `IDENTITY_RETENTION__REFRESH_TOKENS__PERIOD`, `IDENTITY_RETENTION__REFRESH_TOKEN_FAMILIES__PERIOD` | `168h` | | Age after which the service deletes ended tokens, sessions, refresh tokens, and refresh token families. Also `INTERVAL` and `BATCH_SIZE`. The refresh token job deletes a token only after it expired, so a used token stays until its session expires and a replay still starts the reuse detection. See `retention` in `constellation-platform-go`. |
 | `IDENTITY_OIDC__AUTH_REQUEST_TTL` | `10m` | 1 to 60 minutes | Life of an auth request. |
 | `IDENTITY_OIDC__CODE_TTL` | `60s` | 10 seconds to 10 minutes | Life of an authorization code. |
 | `IDENTITY_OIDC__USER_TOKEN_TTL` | `15m` | 1 to 60 minutes | Life of the access tokens and the ID tokens of users. |

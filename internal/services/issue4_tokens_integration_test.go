@@ -358,6 +358,23 @@ func TestIssue4RefreshIntegration(t *testing.T) {
 		}
 	})
 	// The test moves the clock far ahead, so it is the last one.
+	// R13: a refresh with the OIDC scopes of the original grant is not an error.
+	t.Run("refresh_with_oidc_scopes", func(t *testing.T) {
+		tr, _ := f.login("agent@example.com", userPass2, "demo-ui", demoRedirect, demoScope)
+		form := testserver.RefreshForm("demo-ui", tr.RefreshToken)
+		form.Set("scope", "openid offline_access demo:ticket:read")
+		resp, r := f.a.TokenRequest(t, form)
+		if resp.StatusCode != http.StatusOK || r.Scope != "demo:ticket:read" || r.RefreshToken == "" {
+			t.Fatalf("refresh with OIDC scopes: %d %+v", resp.StatusCode, r)
+		}
+		// A scope that the grant did not have still gives invalid_scope.
+		form = testserver.RefreshForm("demo-ui", r.RefreshToken)
+		form.Set("scope", "profile")
+		if _, r2 := f.a.TokenRequest(t, form); r2.Error != "invalid_scope" {
+			t.Fatalf("refresh with profile: %+v", r2)
+		}
+	})
+
 	t.Run("I5e_expiry", func(t *testing.T) {
 		tr, _ := f.login("agent@example.com", userPass2, "demo-ui", demoRedirect, demoScope)
 		f.advance(11 * time.Hour)
@@ -398,4 +415,64 @@ func TestIssue4RefreshIntegration(t *testing.T) {
 	})
 
 	_ = pages.CookieName
+}
+
+// signingKeys makes the active signing key unavailable or available again. The
+// key cache reloads every 100 ms, so the helper waits for 1 second.
+func (f *fixture) signingKeys(available bool) {
+	f.t.Helper()
+	q := `UPDATE signing_keys SET state = 'retired', retired_at = now() WHERE state = 'active'`
+	if available {
+		q = `UPDATE signing_keys SET state = 'active', retired_at = NULL WHERE state = 'retired'`
+	}
+	if _, err := f.a.Pool(f.t).Exec(ctx, q); err != nil {
+		f.t.Fatal(err)
+	}
+	time.Sleep(time.Second)
+}
+
+// R10: a signing fault must not use the refresh token or the code. The client
+// can try again with the same value.
+func TestIssue4SigningFaultIntegration(t *testing.T) {
+	observability()
+	h := &harness{env: testserver.NewEnv(t), ledger: &secretLedger{}, masterKey: testserver.MasterKey(t)}
+	f := newFixture(t, h, testserver.WithKeyIntervals(time.Hour, 100*time.Millisecond))
+	admin := f.adminToken(adminScopes)
+	f.newUser(admin, "agent@example.com", userPass2, "demo:agent")
+
+	t.Run("refresh", func(t *testing.T) {
+		tr, web := f.login("agent@example.com", userPass2, "demo-ui", demoRedirect, demoScope)
+		f.signingKeys(false)
+		resp, r := f.refresh("demo-ui", tr.RefreshToken)
+		f.signingKeys(true)
+		if resp.StatusCode != http.StatusServiceUnavailable || r.Error != "temporarily_unavailable" || r.RefreshToken != "" {
+			t.Fatalf("refresh with no signing key: %d %+v", resp.StatusCode, r)
+		}
+		resp, r = f.refresh("demo-ui", tr.RefreshToken)
+		if resp.StatusCode != http.StatusOK || r.RefreshToken == "" {
+			t.Fatalf("retry with the same token: %d %+v", resp.StatusCode, r)
+		}
+		if rev, total := f.familyRevoked(f.sessionID(web)); rev != 0 || total != 1 {
+			t.Fatalf("families revoked = %d of %d", rev, total)
+		}
+	})
+
+	t.Run("code", func(t *testing.T) {
+		web := f.a.NewWeb()
+		p := testserver.NewPKCE(t)
+		code := codeOf(t, web.CodeFlow(t, testserver.AuthorizeQuery("demo-ui", demoRedirect, demoScope, p, nil), "agent@example.com", userPass2))
+		f.signingKeys(false)
+		resp, r := f.a.TokenRequest(t, testserver.CodeForm("demo-ui", code, demoRedirect, p.Verifier))
+		f.signingKeys(true)
+		if resp.StatusCode != http.StatusServiceUnavailable || r.Error != "temporarily_unavailable" {
+			t.Fatalf("code with no signing key: %d %+v", resp.StatusCode, r)
+		}
+		if f.countWhere(`SELECT count(*) FROM refresh_token_families WHERE session_id = $1`, f.sessionID(web)) != 0 {
+			t.Fatal("no family may exist after the fault")
+		}
+		resp, r = f.a.TokenRequest(t, testserver.CodeForm("demo-ui", code, demoRedirect, p.Verifier))
+		if resp.StatusCode != http.StatusOK || r.RefreshToken == "" {
+			t.Fatalf("retry with the same code: %d %+v", resp.StatusCode, r)
+		}
+	})
 }

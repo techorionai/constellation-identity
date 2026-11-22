@@ -124,14 +124,25 @@ func TestIssue4_U3_Scopes(t *testing.T) {
 // Issue4_U4: refresh scope.
 func TestIssue4_U4_RefreshScope(t *testing.T) {
 	stored := []string{"demo:a:read", "demo:b:read"}
-	if got, err := domain.NarrowScope(stored, ""); err != nil || !slices.Equal(got, stored) {
+	if got, err := domain.NarrowScope(stored, nil, ""); err != nil || !slices.Equal(got, stored) {
 		t.Fatalf("no scope: %v %v", got, err)
 	}
-	if got, err := domain.NarrowScope(stored, "demo:a:read"); err != nil || !slices.Equal(got, []string{"demo:a:read"}) {
+	if got, err := domain.NarrowScope(stored, nil, "demo:a:read"); err != nil || !slices.Equal(got, []string{"demo:a:read"}) {
 		t.Fatalf("narrow: %v %v", got, err)
 	}
-	if _, err := domain.NarrowScope(stored, "demo:a:read demo:c:read"); err == nil {
+	if _, err := domain.NarrowScope(stored, nil, "demo:a:read demo:c:read"); err == nil {
 		t.Fatal("a wider scope must fail")
+	}
+	// An OIDC scope of the original grant is accepted. It does not widen the result.
+	oidc := []string{"openid", "offline_access"}
+	if got, err := domain.NarrowScope(stored, oidc, "openid offline_access demo:a:read"); err != nil || !slices.Equal(got, []string{"demo:a:read"}) {
+		t.Fatalf("oidc scopes with a permission: %v %v", got, err)
+	}
+	if got, err := domain.NarrowScope(stored, oidc, "openid"); err != nil || !slices.Equal(got, stored) {
+		t.Fatalf("oidc scope only: %v %v", got, err)
+	}
+	if _, err := domain.NarrowScope(stored, oidc, "email"); err == nil {
+		t.Fatal("an OIDC scope that the grant did not have must fail")
 	}
 	if got := domain.IntersectScopes(stored, []string{"demo:a:read"}); !slices.Equal(got, []string{"demo:a:read"}) {
 		t.Fatalf("after a role change: %v", got)

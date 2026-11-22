@@ -16,6 +16,7 @@ import (
 	"github.com/techorionai/constellation-platform-go/retention"
 
 	"github.com/techorionai/constellation-identity/internal/adapters/postgres"
+	"github.com/techorionai/constellation-identity/internal/config"
 	"github.com/techorionai/constellation-identity/migrations"
 	"github.com/techorionai/constellation-identity/resources/test/testserver"
 )
@@ -126,11 +127,11 @@ func TestIssue4RetentionIntegration(t *testing.T) {
 	}
 	params := retention.PurgeParams{Before: time.Now().Add(-7 * 24 * time.Hour), Limit: 100}
 	n, err := postgres.NewRefreshTokenPurger(pool).Purge(ctx, params)
-	if err != nil || n != 2 {
+	if err != nil || n != 1 {
 		t.Fatalf("token purge: %d %v", n, err)
 	}
-	if f.countWhere(`SELECT count(*) FROM refresh_tokens WHERE token_hash IN ('t-young', 't-of-old-family')`) != 2 {
-		t.Fatal("young tokens must stay")
+	if f.countWhere(`SELECT count(*) FROM refresh_tokens WHERE token_hash IN ('t-young', 't-of-old-family', 't-old-used')`) != 3 {
+		t.Fatal("young tokens and a used token that has not expired must stay")
 	}
 	n, err = postgres.NewRefreshFamilyPurger(pool).Purge(ctx, params)
 	if err != nil || n != 2 {
@@ -253,5 +254,126 @@ func TestIssue4ValkeyDownIntegration(t *testing.T) {
 	resp = f.admin.Authorize(t, testserver.AuthorizeQuery("admin-ui", adminRedirect, "openid identity:user:read", p, map[string]string{"prompt": "login"}))
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("authorize with Valkey down: %d", resp.StatusCode)
+	}
+}
+
+// denyValkeySet removes the SET command from the ACL users of the service. The
+// GETDEL of the code still works, so a write of the used-code marker fails
+// after the code is claimed.
+func denyValkeySet(t *testing.T, vk *containers.ValkeyInstance, allow bool) {
+	t.Helper()
+	admin := vk.Admin(t)
+	users, err := admin.Do(ctx, admin.B().Arbitrary("ACL", "USERS").Build()).AsStrSlice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := "-set"
+	if allow {
+		rule = "+set"
+	}
+	var changed int
+	for _, u := range users {
+		if !strings.HasPrefix(u, "identity_") {
+			continue
+		}
+		if err := admin.Do(ctx, admin.B().Arbitrary("ACL", "SETUSER", u, rule).Build()).Error(); err != nil {
+			t.Fatal(err)
+		}
+		changed++
+	}
+	if changed == 0 {
+		t.Fatal("no ACL user of the service")
+	}
+}
+
+// I3h: the write of the used-code marker at step 7 fails after the GETDEL. The
+// service gives 503 and no token and makes no family. The code is used.
+func TestIssue4UsedCodeMarkerFaultIntegration(t *testing.T) {
+	observability()
+	base := testserver.NewEnv(t)
+	vk := containers.Valkey(t, containers.WithValkeyImage(testserver.ValkeyImage))
+	h := &harness{env: &testserver.Env{PG: base.PG, VK: vk}, ledger: &secretLedger{}, masterKey: testserver.MasterKey(t)}
+	f := newFixture(t, h)
+	p := testserver.NewPKCE(t)
+	code := codeOf(t, f.admin.CodeFlow(t, testserver.AuthorizeQuery("admin-ui", adminRedirect, "openid offline_access identity:user:read", p, nil), "admin@example.com", adminPassword))
+	sid := f.sessionID(f.admin)
+	denyValkeySet(t, vk, false)
+	resp, tr := f.a.TokenRequest(t, testserver.CodeForm("admin-ui", code, adminRedirect, p.Verifier))
+	if resp.StatusCode != http.StatusServiceUnavailable || tr.Error != "temporarily_unavailable" || tr.AccessToken != "" || tr.RefreshToken != "" {
+		t.Fatalf("token request with a marker fault: %d %+v", resp.StatusCode, tr)
+	}
+	if f.countWhere(`SELECT count(*) FROM refresh_token_families`) != 0 {
+		t.Fatal("no family may exist")
+	}
+	if f.countWhere(`SELECT count(*) FROM sessions WHERE id = $1 AND revoked_at IS NULL`, sid) != 1 {
+		t.Fatal("the session must stay valid")
+	}
+	// The code is used. A second request does not get a token.
+	denyValkeySet(t, vk, true)
+	resp, tr = f.a.TokenRequest(t, testserver.CodeForm("admin-ui", code, adminRedirect, p.Verifier))
+	if resp.StatusCode != http.StatusBadRequest || tr.Error != "invalid_grant" || tr.AccessToken != "" {
+		t.Fatalf("second token request: %d %+v", resp.StatusCode, tr)
+	}
+}
+
+// I21b: the start with a refresh token retention value outside the limits
+// stops with an error. A value at the limit starts the service.
+func TestIssue4RetentionConfigStartIntegration(t *testing.T) {
+	env := testserver.NewEnv(t)
+	bad := map[string]func(*config.Config){
+		"refresh_tokens interval":         func(c *config.Config) { c.Retention.RefreshTokens.Interval = 30 * time.Second },
+		"refresh_tokens batch":            func(c *config.Config) { c.Retention.RefreshTokens.BatchSize = 100001 },
+		"refresh_token_families interval": func(c *config.Config) { c.Retention.RefreshTokenFamilies.Interval = 30 * time.Second },
+		"refresh_token_families batch":    func(c *config.Config) { c.Retention.RefreshTokenFamilies.BatchSize = 0 },
+	}
+	for name, change := range bad {
+		t.Run(name, func(t *testing.T) {
+			if _, err := env.TryStart(t, testserver.WithConfigure(change)); err == nil {
+				t.Fatal("the start must fail")
+			} else if !strings.Contains(strings.ToLower(err.Error()), "retention") {
+				t.Fatalf("the error must name the retention config: %v", err)
+			}
+		})
+	}
+	t.Run("limits", func(t *testing.T) {
+		env.Start(t, testserver.WithConfigure(func(c *config.Config) {
+			c.Retention.RefreshTokens.Interval = time.Minute
+			c.Retention.RefreshTokens.BatchSize = 100000
+			c.Retention.RefreshTokenFamilies.Interval = time.Minute
+			c.Retention.RefreshTokenFamilies.BatchSize = 1
+		}))
+	})
+}
+
+// R18: the purger keeps a used token of a valid family until it expires. A
+// replay of that token after a purge still revokes the family and the session.
+func TestIssue4PurgeKeepsUsedRefreshTokenIntegration(t *testing.T) {
+	observability()
+	h := &harness{env: testserver.NewEnv(t), ledger: &secretLedger{}, masterKey: testserver.MasterKey(t)}
+	f := newFixture(t, h)
+	admin := f.adminToken(adminScopes)
+	f.newUser(admin, "agent@example.com", userPass2, "demo:agent")
+	first, web := f.login("agent@example.com", userPass2, "demo-ui", demoRedirect, demoScope)
+	resp, second := f.refresh("demo-ui", first.RefreshToken)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("refresh: %d %+v", resp.StatusCode, second)
+	}
+	pool := f.a.Pool(t)
+	// The cutoff is later than used_at and earlier than expires_at.
+	params := retention.PurgeParams{Before: time.Now().Add(time.Hour), Limit: 100}
+	if n, err := postgres.NewRefreshTokenPurger(pool).Purge(ctx, params); err != nil || n != 0 {
+		t.Fatalf("token purge: %d %v", n, err)
+	}
+	if n, err := postgres.NewRefreshFamilyPurger(pool).Purge(ctx, params); err != nil || n != 0 {
+		t.Fatalf("family purge: %d %v", n, err)
+	}
+	if _, r := f.refresh("demo-ui", first.RefreshToken); r.Error != "invalid_grant" {
+		t.Fatalf("replay: %+v", r)
+	}
+	if rev, total := f.familyRevoked(f.sessionID(web)); rev != 1 || total != 1 {
+		t.Fatalf("families revoked = %d of %d", rev, total)
+	}
+	if _, r := f.refresh("demo-ui", second.RefreshToken); r.Error != "invalid_grant" {
+		t.Fatalf("the newest token must stop: %+v", r)
 	}
 }

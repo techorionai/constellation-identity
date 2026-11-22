@@ -93,6 +93,12 @@ func TestIssue4_U14_OIDCSettings(t *testing.T) {
 		{"IDENTITY_OIDC__USER_TOKEN_TTL", "59s", false}, {"IDENTITY_OIDC__USER_TOKEN_TTL", "61m", false},
 		{"IDENTITY_RETENTION__REFRESH_TOKENS__BATCH_SIZE", "1", true}, {"IDENTITY_RETENTION__REFRESH_TOKENS__BATCH_SIZE", "0", false},
 		{"IDENTITY_RETENTION__REFRESH_TOKEN_FAMILIES__BATCH_SIZE", "100000", true}, {"IDENTITY_RETENTION__REFRESH_TOKEN_FAMILIES__BATCH_SIZE", "100001", false},
+		{"IDENTITY_RETENTION__REFRESH_TOKENS__INTERVAL", "1m", true}, {"IDENTITY_RETENTION__REFRESH_TOKENS__INTERVAL", "59s", false},
+		{"IDENTITY_RETENTION__REFRESH_TOKENS__PERIOD", "0s", true}, {"IDENTITY_RETENTION__REFRESH_TOKENS__PERIOD", "-1h", false},
+		{"IDENTITY_RETENTION__REFRESH_TOKEN_FAMILIES__INTERVAL", "1m", true}, {"IDENTITY_RETENTION__REFRESH_TOKEN_FAMILIES__INTERVAL", "59s", false},
+		{"IDENTITY_RETENTION__REFRESH_TOKEN_FAMILIES__PERIOD", "0s", true}, {"IDENTITY_RETENTION__REFRESH_TOKEN_FAMILIES__PERIOD", "-1h", false},
+		{"IDENTITY_RETENTION__REFRESH_TOKEN_FAMILIES__BATCH_SIZE", "0", false},
+		{"IDENTITY_RETENTION__REFRESH_TOKENS__BATCH_SIZE", "100000", true}, {"IDENTITY_RETENTION__REFRESH_TOKENS__BATCH_SIZE", "100001", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name+"="+tt.value, func(t *testing.T) {
@@ -104,7 +110,7 @@ func TestIssue4_U14_OIDCSettings(t *testing.T) {
 				t.Fatalf("err = %v", err)
 			case !tt.ok && err == nil:
 				t.Fatal("want an error")
-			case !tt.ok && !strings.Contains(err.Error(), strings.TrimPrefix(strings.Split(tt.name, "__BATCH")[0], "IDENTITY_")):
+			case !tt.ok && !strings.Contains(err.Error(), strings.TrimPrefix(tt.name[:strings.LastIndex(tt.name, "__")], "IDENTITY_")):
 				t.Fatalf("the error must name the variable: %v", err)
 			}
 		})

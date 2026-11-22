@@ -74,21 +74,31 @@ func IntersectScopes(wanted, granted []string) []string {
 }
 
 // NarrowScope applies the scope parameter of a refresh request (RFC 6749
-// section 6). An empty value gives the stored scope. A token that is not in the
-// stored scope gives ErrInvalidScope. The result is never wider than stored.
-func NarrowScope(stored []string, requested string) ([]string, error) {
+// section 6). An empty value gives the stored scope. A token that is in neither
+// the stored scope nor the stored OIDC scopes gives ErrInvalidScope. An OIDC
+// scope (openid, offline_access, email, profile) of the original grant is
+// accepted and does not change the result, because a refresh makes no ID token.
+// If the request has OIDC scopes only, the result is the stored scope. The
+// result is never wider than stored.
+func NarrowScope(stored, storedOIDC []string, requested string) ([]string, error) {
 	fields := strings.Fields(requested)
 	if len(fields) == 0 {
 		return stored, nil
 	}
 	var out []string
 	for _, s := range fields {
+		if slices.Contains(storedOIDC, s) {
+			continue
+		}
 		if !slices.Contains(stored, s) {
 			return nil, ErrInvalidScope
 		}
 		if !slices.Contains(out, s) {
 			out = append(out, s)
 		}
+	}
+	if len(out) == 0 {
+		return stored, nil
 	}
 	return out, nil
 }

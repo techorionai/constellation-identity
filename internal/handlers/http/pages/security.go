@@ -2,6 +2,7 @@ package pages
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -85,6 +86,37 @@ func RedactURL(raw string) string {
 	}
 	return base + "?" + RedactQuery(query)
 }
+
+// LogRedirects logs each redirect of a response at the level debug. The record
+// has the status and the Location header with the secret query values replaced
+// by REDACTED (see [RedactURL]). The code flow redirects carry a code and a
+// state, so no log record may hold the raw Location header.
+func LogRedirects(log *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(&redirectLogger{ResponseWriter: w, req: r, log: log}, r)
+		})
+	}
+}
+
+type redirectLogger struct {
+	http.ResponseWriter
+	req *http.Request
+	log *slog.Logger
+}
+
+// WriteHeader logs a redirect and passes the status on.
+func (w *redirectLogger) WriteHeader(status int) {
+	if status >= 300 && status < 400 {
+		if loc := w.Header().Get("Location"); loc != "" {
+			w.log.DebugContext(w.req.Context(), "redirect", "status", status, "location", RedactURL(loc))
+		}
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+// Unwrap gives access to the writer below, for http.ResponseController.
+func (w *redirectLogger) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // RedactToken hides the secret query parameters from everything behind it that
 // logs or traces the URL. The setup link and the invite link carry a secret in

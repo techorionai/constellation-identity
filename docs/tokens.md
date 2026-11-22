@@ -58,8 +58,7 @@ Each error has the body `{"error": "<code>", "error_description": "<text>"}` and
 | ---- | ------ | ----- |
 | `invalid_request` | 400 | A field is missing or repeated. A client secret is present. |
 | `unsupported_grant_type` | 400 | The grant type is not `client_credentials`. |
-| `invalid_client` | 401 | The assertion is not valid, the client is unknown or disabled, or the `jti` was used. |
-| `unauthorized_client` | 400 | The client is not a service client. |
+| `invalid_client` | 401 | The assertion is not valid, the client is unknown or disabled, the client is not a service client, or the `jti` was used. |
 | `invalid_target` | 400 | The audience is missing, is not an app key, or has no published manifest. |
 | `invalid_scope` | 400 | No scope, a scope of another app, or a scope that the client does not have. |
 | `temporarily_unavailable` | 503 | The `jti` store (PostgreSQL) or the signing key is not available. |
@@ -114,10 +113,10 @@ Reuse of a code: the service keeps a marker for 10 minutes. A request for a used
 ### Refresh tokens
 
 - A refresh rotates the token. The response has an access token and a new refresh token. It has no ID token. There is no grace period. A used token that comes back is a reuse, also for two browser tabs at the same time. UI authors must share one refresh in the browser.
-- The checks run inside the lock of the family, before the token is marked as used. The client must be the client of the family and not disabled. The user must be `active`. The session must be valid. A failed check changes nothing, so a request with a wrong `client_id` does not harm the real client.
+- The checks run inside the lock of the family, before the token is marked as used. The client must be the client of the family and not disabled. The user must be `active`. The session must be valid. A failed check changes nothing, so a request with a wrong `client_id` for an unused token does not harm the real client. A used token that comes back is a reuse, also if the `client_id` is wrong, because a used refresh token is secret and shows a copy or a theft. The reuse revokes as in the next item.
 - A reuse revokes the family, the session, and all other families of the session. The revoke is committed before the error returns. The counter is `identity.refresh_token.reuse`. A `warn` record has the session ID, the family ID, and the client ID.
 - The new access token has the stored scope intersected with the current permissions of the user. A role that an admin takes away has an effect at the next refresh. If no scope remains, `invalid_grant`.
-- The optional `scope` can only narrow the stored scope. A token that is not in the stored scope gives `invalid_scope`. The narrower scope applies to that access token only.
+- The optional `scope` can only narrow the stored scope. A token that is not in the stored scope gives `invalid_scope`. The OIDC scopes of the original grant (`openid`, `offline_access`, `email`, and `profile`) are accepted and do not change the access token. The narrower scope applies to that access token only.
 - A refresh moves the idle expiry of the session. The new token expires at the absolute expiry of the session.
 - A re-login of the same user does not stop a stolen refresh token. A user who suspects a theft must log out, or an admin must revoke the sessions.
 

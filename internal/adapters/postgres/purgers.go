@@ -24,7 +24,7 @@ func (p *TokenPurger) Purge(ctx context.Context, params retention.PurgeParams) (
 	tag, err := p.pool.Exec(ctx, `
 		DELETE FROM one_time_tokens WHERE token_hash IN (
 			SELECT token_hash FROM one_time_tokens
-			WHERE LEAST(expires_at, COALESCE(used_at, expires_at)) < $1
+			WHERE expires_at < $1
 			LIMIT $2 FOR UPDATE SKIP LOCKED)`, params.Before, params.Limit)
 	if err != nil {
 		return 0, fmt.Errorf("purge tokens: %w", err)
@@ -56,9 +56,10 @@ func (p *SessionPurger) Purge(ctx context.Context, params retention.PurgeParams)
 	return int(tag.RowsAffected()), nil
 }
 
-// RefreshTokenPurger deletes the refresh tokens that ended before the expiry
-// time. A token ended when it expired or when it was used, whichever came
-// first.
+// RefreshTokenPurger deletes the refresh tokens that expired before the expiry
+// time. It keeps a used token until it expires, which is when its session
+// expires. A replay of a used token then still starts the reuse detection. The
+// tokens of a revoked family go when the family purger deletes the family.
 type RefreshTokenPurger struct {
 	pool *pgxpool.Pool
 }
@@ -75,7 +76,7 @@ func (p *RefreshTokenPurger) Purge(ctx context.Context, params retention.PurgePa
 	tag, err := p.pool.Exec(ctx, `
 		DELETE FROM refresh_tokens WHERE token_hash IN (
 			SELECT token_hash FROM refresh_tokens
-			WHERE LEAST(expires_at, COALESCE(used_at, expires_at)) < $1
+			WHERE expires_at < $1
 			LIMIT $2 FOR UPDATE SKIP LOCKED)`, params.Before, params.Limit)
 	if err != nil {
 		return 0, fmt.Errorf("purge refresh tokens: %w", err)

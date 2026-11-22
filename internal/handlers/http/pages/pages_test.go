@@ -1,9 +1,11 @@
 package pages_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -165,6 +167,20 @@ func TestIssue4_U10_Scrubbing(t *testing.T) {
 	}
 	if loc := pages.RedactURL("https://demo.example.com/cb?code=abc&state=s1"); loc != "https://demo.example.com/cb?code=REDACTED&state=REDACTED" {
 		t.Errorf("Location = %s", loc)
+	}
+	// A redirect Location is logged with REDACTED values.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	redirect := pages.LogRedirects(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://demo.example.com/cb?code=abc123&state=s1", http.StatusFound)
+	}))
+	rec := httptest.NewRecorder()
+	redirect.ServeHTTP(rec, newRequest(http.MethodGet, "/oauth/authorize/continue", nil))
+	if rec.Header().Get("Location") != "https://demo.example.com/cb?code=abc123&state=s1" {
+		t.Fatalf("the response must keep the real Location: %s", rec.Header().Get("Location"))
+	}
+	if out := buf.String(); strings.Contains(out, "abc123") || strings.Contains(out, "state=s1") || !strings.Contains(out, "code=REDACTED") {
+		t.Fatalf("log = %s", out)
 	}
 	// The handler behind the middleware that restores the query gets the real values.
 	var seen string

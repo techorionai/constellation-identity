@@ -344,7 +344,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	// RedactToken is outside the tracing handler, so no span has a secret value
 	// of the query. RestoreQuery puts the real query back for the router.
 	handler := pages.RedactToken(otelhttp.NewHandler(
-		requestid.Middleware()(pages.RestoreQuery(publicHandler(api.Handler(), users.pages.Routes()))), "identity"))
+		requestid.Middleware()(pages.LogRedirects(log)(pages.RestoreQuery(publicHandler(api.Handler(), users.pages.Routes())))), "identity"))
 	if a.pubL, err = (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.HTTP.Addr); err != nil {
 		return nil, fmt.Errorf("listen on the public address: %w", err)
 	}

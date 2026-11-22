@@ -512,7 +512,15 @@ func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode) (UserTokenResu
 	if !sess.Valid(now) || user.Status != domain.UserActive {
 		return UserTokenResult{}, grantErr("The session has ended.")
 	}
-	// 7. Claim the code. The first request that claims it wins.
+	// 7. The tokens are signed before the code is claimed. If the key or the
+	// signer fails, the code stays valid and the client can try again.
+	access, idToken, err := o.mint(client, user, rec.Scope, rec.OIDCScopes, &idTokenInput{
+		Nonce: rec.Nonce, AuthTime: rec.AuthTime, SessionID: sess.ID,
+	})
+	if err != nil {
+		return UserTokenResult{}, err
+	}
+	// 8. Claim the code. The first request that claims it wins.
 	if _, err := o.d.Codes.Claim(ctx, hash); errors.Is(err, authflow.ErrNotFound) {
 		return UserTokenResult{}, grantErr("The code is not valid.")
 	} else if err != nil {
@@ -522,7 +530,7 @@ func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode) (UserTokenResu
 	if err := o.d.Codes.MarkUsed(ctx, hash, marker, usedCodeTTL); err != nil {
 		return UserTokenResult{}, unavailableErr(err)
 	}
-	// 8. The tokens. The family is made now, in one statement that checks the
+	// 9. The refresh token. The family is made now, in one statement that checks the
 	// session.
 	refresh := ""
 	if slices.Contains(rec.OIDCScopes, domain.ScopeOfflineAccess) {
@@ -548,12 +556,6 @@ func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode) (UserTokenResu
 		if err != nil || !again.Valid(now) {
 			return UserTokenResult{}, grantErr("The session has ended.")
 		}
-	}
-	access, idToken, err := o.mint(client, user, rec.Scope, rec.OIDCScopes, &idTokenInput{
-		Nonce: rec.Nonce, AuthTime: rec.AuthTime, SessionID: sess.ID,
-	})
-	if err != nil {
-		return UserTokenResult{}, err
 	}
 	o.issued.Add(ctx, 1, metric.WithAttributes(attribute.String("grant_type", "authorization_code"), attribute.String("principal_type", domain.PrincipalUser)))
 	return UserTokenResult{
@@ -678,8 +680,8 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 		reused    bool
 		reusedFam domain.RefreshFamily
 		scopes    []string
-		fam       domain.RefreshFamily
-		user      domain.User
+		access    string
+		mintErr   error
 	)
 	err = o.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		// 0. The session row first. 1. The family row. This is the lock order of
@@ -701,7 +703,8 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 			return err
 		}
 		now := o.now()
-		// 2. A used token is a reuse. Revoke the family, the session, and all
+		// 2. A used token is a reuse, also with a wrong client_id. The plan says
+		// that a used token that comes back shows a theft. Revoke the family, the session, and all
 		// other families of the session. The transaction commits. The error comes
 		// after the commit.
 		if tok.UsedAt != nil {
@@ -728,7 +731,7 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 		if err != nil {
 			return err
 		}
-		narrowed, err := domain.NarrowScope(f.Scope, in.Scope)
+		narrowed, err := domain.NarrowScope(f.Scope, f.OIDCScopes, in.Scope)
 		if err != nil {
 			return errRefreshScope
 		}
@@ -736,7 +739,19 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 		if len(effective) == 0 {
 			return errRefreshRejected
 		}
-		// 4. Mark the token as used.
+		// 4. Make the access token before the token is used. If the key or the
+		// signer fails, the transaction rolls back and the old token stays valid.
+		client, ok, err := o.publicClient(ctx, f.ClientID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errRefreshRejected
+		}
+		if access, _, mintErr = o.mint(client, u, effective, nil, nil); mintErr != nil {
+			return mintErr
+		}
+		// 5. Mark the token as used.
 		used, err := o.d.Refresh.MarkUsed(ctx, hash, now)
 		if err != nil {
 			return err
@@ -744,7 +759,7 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 		if !used {
 			return errRefreshRejected
 		}
-		// 5. Insert the new token.
+		// 6. Insert the new token.
 		if err := o.d.Refresh.InsertToken(ctx, domain.RefreshToken{
 			Hash: tokenHash, FamilyID: f.ID, CreatedAt: now, ExpiresAt: st.Session.ExpiresAt,
 		}); err != nil {
@@ -755,10 +770,12 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 				return err
 			}
 		}
-		scopes, fam, user = effective, f, u
+		scopes = effective
 		return nil
 	})
 	switch {
+	case mintErr != nil && errors.Is(err, mintErr):
+		return UserTokenResult{}, mintErr
 	case errors.Is(err, errRefreshRejected):
 		return UserTokenResult{}, grantErr("The refresh token is not valid.")
 	case errors.Is(err, errRefreshScope):
@@ -771,14 +788,6 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 		o.d.Log.WarnContext(ctx, "refresh token reuse", "event", "identity.refresh_token.reuse",
 			"session_id", reusedFam.SessionID, "family_id", reusedFam.ID, "client_id", reusedFam.ClientID)
 		return UserTokenResult{}, grantErr("The refresh token is not valid.")
-	}
-	client, ok, err := o.publicClient(ctx, fam.ClientID)
-	if err != nil || !ok {
-		return UserTokenResult{}, grantErr("The refresh token is not valid.")
-	}
-	access, _, err := o.mint(client, user, scopes, nil, nil)
-	if err != nil {
-		return UserTokenResult{}, err
 	}
 	o.issued.Add(ctx, 1, metric.WithAttributes(attribute.String("grant_type", "refresh_token"), attribute.String("principal_type", domain.PrincipalUser)))
 	return UserTokenResult{
