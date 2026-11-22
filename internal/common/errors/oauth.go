@@ -18,6 +18,8 @@ const (
 	OAuthInvalidTarget          = "invalid_target"
 	OAuthServerError            = "server_error"
 	OAuthTemporarilyUnavailable = "temporarily_unavailable"
+	OAuthInvalidGrant           = "invalid_grant"
+	OAuthUnsupportedTokenType   = "unsupported_token_type"
 )
 
 // OAuthError is an error of the token endpoint. The description is safe to
