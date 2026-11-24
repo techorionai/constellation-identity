@@ -113,6 +113,7 @@ type Retention struct {
 	Sessions             retention.Config `envPrefix:"SESSIONS__"`
 	RefreshTokens        retention.Config `envPrefix:"REFRESH_TOKENS__"`
 	RefreshTokenFamilies retention.Config `envPrefix:"REFRESH_TOKEN_FAMILIES__"`
+	APITokens            retention.Config `envPrefix:"API_TOKENS__"`
 }
 
 // Limits of the OIDC settings.
@@ -130,6 +131,20 @@ type OIDC struct {
 	AuthRequestTTL time.Duration `env:"AUTH_REQUEST_TTL" envDefault:"10m"`
 	CodeTTL        time.Duration `env:"CODE_TTL" envDefault:"60s"`
 	UserTokenTTL   time.Duration `env:"USER_TOKEN_TTL" envDefault:"15m"`
+}
+
+// Limits of the API token settings.
+const (
+	MaxAPITokenTTLDays    = 365
+	MaxAPITokensPerUser   = 500
+	maxAPITokenTTLDaysMin = 1
+)
+
+// APIToken is the config of the personal API tokens.
+type APIToken struct {
+	DefaultTTLDays int `env:"DEFAULT_TTL_DAYS" envDefault:"90"`
+	MaxTTLDays     int `env:"MAX_TTL_DAYS" envDefault:"365"`
+	MaxPerUser     int `env:"MAX_PER_USER" envDefault:"50"`
 }
 
 // DefaultRetentionPeriod is the default age after which the retention jobs
@@ -160,6 +175,7 @@ type Config struct {
 	Login       Login           `envPrefix:"LOGIN__"`
 	Retention   Retention       `envPrefix:"RETENTION__"`
 	OIDC        OIDC            `envPrefix:"OIDC__"`
+	APIToken    APIToken        `envPrefix:"API_TOKEN__"`
 	ClientsFile string          `env:"CLIENTS_FILE"`
 }
 
@@ -232,6 +248,18 @@ func (c Config) validateUsers() []error {
 	}
 	if err := c.Retention.RefreshTokenFamilies.Validate(); err != nil {
 		bad("RETENTION__REFRESH_TOKEN_FAMILIES__*", err.Error())
+	}
+	if err := c.Retention.APITokens.Validate(); err != nil {
+		bad("RETENTION__API_TOKENS__*", err.Error())
+	}
+	if c.APIToken.MaxTTLDays < maxAPITokenTTLDaysMin || c.APIToken.MaxTTLDays > MaxAPITokenTTLDays {
+		bad("API_TOKEN__MAX_TTL_DAYS", fmt.Sprintf("must be from %d to %d", maxAPITokenTTLDaysMin, MaxAPITokenTTLDays))
+	}
+	if c.APIToken.DefaultTTLDays < maxAPITokenTTLDaysMin || c.APIToken.DefaultTTLDays > c.APIToken.MaxTTLDays {
+		bad("API_TOKEN__DEFAULT_TTL_DAYS", fmt.Sprintf("must be from %d to %sAPI_TOKEN__MAX_TTL_DAYS", maxAPITokenTTLDaysMin, Prefix))
+	}
+	if c.APIToken.MaxPerUser < 1 || c.APIToken.MaxPerUser > MaxAPITokensPerUser {
+		bad("API_TOKEN__MAX_PER_USER", fmt.Sprintf("must be from 1 to %d", MaxAPITokensPerUser))
 	}
 	if c.OIDC.AuthRequestTTL < MinAuthRequestTTL || c.OIDC.AuthRequestTTL > MaxAuthRequestTTL {
 		bad("OIDC__AUTH_REQUEST_TTL", fmt.Sprintf("must be from %s to %s", MinAuthRequestTTL, MaxAuthRequestTTL))
