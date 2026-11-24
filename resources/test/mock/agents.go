@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/agentroles"
@@ -57,18 +58,26 @@ func (r *Agents) Get(_ context.Context, id string) (domain.Agent, error) {
 	return a, nil
 }
 
-// Update writes an agent.
-func (r *Agents) Update(_ context.Context, a domain.Agent) error {
+// Patch changes the fields that are not nil.
+func (r *Agents) Patch(_ context.Context, id string, name *string, enabled *bool, updatedAt time.Time) (domain.Agent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.Rows[a.ID]; !ok {
-		return fmt.Errorf("agent %s: %w", a.ID, agents.ErrNotFound)
+	a, ok := r.Rows[id]
+	if !ok {
+		return domain.Agent{}, fmt.Errorf("agent %s: %w", id, agents.ErrNotFound)
 	}
-	if r.nameTaken(a.ID, a.Name) {
-		return agents.ErrNameTaken
+	if name != nil {
+		if r.nameTaken(id, *name) {
+			return domain.Agent{}, agents.ErrNameTaken
+		}
+		a.Name = *name
 	}
-	r.Rows[a.ID] = a
-	return nil
+	if enabled != nil {
+		a.Enabled = *enabled
+	}
+	a.UpdatedAt = updatedAt
+	r.Rows[id] = a
+	return a, nil
 }
 
 // List returns a page of agents.
@@ -178,4 +187,16 @@ func (r *AgentRoles) Delete(_ context.Context, agentID string, role domain.RoleR
 	}
 	r.Rows[agentID] = slices.Delete(r.Rows[agentID], i, i+1)
 	return true, nil
+}
+
+// Get returns one assignment of an agent. It returns false if the agent does
+// not have the role.
+func (r *AgentRoles) Get(ctx context.Context, agentID string, role domain.RoleRef) (domain.RoleAssignment, bool, error) {
+	all, _ := r.Assignments(ctx, agentID)
+	for _, a := range all {
+		if a.Role == role {
+			return a, true, nil
+		}
+	}
+	return domain.RoleAssignment{}, false, nil
 }

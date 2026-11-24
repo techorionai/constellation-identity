@@ -374,10 +374,7 @@ func TestIssue10Integration(t *testing.T) {
 			t.Fatal("no jti")
 		}
 		// The raw response has the headers and issued_token_type, and no refresh token.
-		form := testserver.TokenForm(f.a.Assertion(t, demo, nil), "extra", extraRead)
-		form.Set("grant_type", domain.GrantTypeTokenExchange)
-		form.Set("subject_token", subject)
-		form.Set("subject_token_type", domain.TokenTypeAccessToken)
+		form := testserver.ExchangeForm(f.a.Assertion(t, demo, nil), "extra", extraRead, subject)
 		form.Set("actor_token", agentID)
 		form.Set("actor_token_type", domain.TokenTypeAgentID)
 		form.Set("requested_token_type", domain.TokenTypeAccessToken)
@@ -579,11 +576,7 @@ func TestIssue10Integration(t *testing.T) {
 	// The request rules on the wire.
 	t.Run("raw_request_rules", func(t *testing.T) {
 		base := func() url.Values {
-			form := testserver.TokenForm(f.a.Assertion(t, demo, nil), "extra", extraRead)
-			form.Set("grant_type", domain.GrantTypeTokenExchange)
-			form.Set("subject_token", subject)
-			form.Set("subject_token_type", domain.TokenTypeAccessToken)
-			return form
+			return testserver.ExchangeForm(f.a.Assertion(t, demo, nil), "extra", extraRead, subject)
 		}
 		post := func(form url.Values) (int, string) {
 			resp, body := f.a.PostToken(t, form)

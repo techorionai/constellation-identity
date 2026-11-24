@@ -4,6 +4,7 @@ package agents
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/techorionai/constellation-identity/internal/domain"
 )
@@ -22,10 +23,10 @@ type Repository interface {
 	Create(ctx context.Context, a domain.Agent) error
 	// Get returns an agent. It returns an error that wraps ErrNotFound.
 	Get(ctx context.Context, id string) (domain.Agent, error)
-	// Update writes the name, the enabled flag, and the update time. A used
-	// name gives ErrNameTaken. A missing agent gives an error that wraps
-	// ErrNotFound.
-	Update(ctx context.Context, a domain.Agent) error
+	// Patch changes only the fields that are not nil, and the update time. It
+	// returns the changed agent. A used name gives ErrNameTaken. A missing
+	// agent gives an error that wraps ErrNotFound.
+	Patch(ctx context.Context, id string, name *string, enabled *bool, updatedAt time.Time) (domain.Agent, error)
 	// List returns up to limit agents in order of the creation time and the ID,
 	// after the cursor. A nil cursor means the start.
 	List(ctx context.Context, after *domain.PageCursor, limit int) ([]domain.Agent, error)

@@ -116,13 +116,10 @@ func (a *Admin) UpdateAgent(ctx context.Context, actor, id string, name *string,
 		if err != nil {
 			return domain.Agent{}, errAgentName()
 		}
-		ag.Name = n
+		name = &n
 	}
-	if enabled != nil {
-		ag.Enabled = *enabled
-	}
-	ag.UpdatedAt = a.agentNow()
-	if err := a.d.Agents.Update(ctx, ag); errors.Is(err, agents.ErrNameTaken) {
+	ag, err = a.d.Agents.Patch(ctx, ag.ID, name, enabled, a.agentNow())
+	if errors.Is(err, agents.ErrNameTaken) {
 		return domain.Agent{}, errAgentNameTaken()
 	} else if errors.Is(err, agents.ErrNotFound) {
 		return domain.Agent{}, errAgentNotFound()
@@ -168,20 +165,19 @@ func (a *Admin) AssignAgentRole(ctx context.Context, actor, agentID string, ref 
 		return domain.RoleAssignment{}, err
 	}
 	a.LogChange(ctx, actor, "AgentRoles_assign", ag.ID)
-	all, err := a.d.AgentRoles.Assignments(ctx, ag.ID)
+	got, ok, err := a.d.AgentRoles.Get(ctx, ag.ID, ref)
 	if err != nil {
 		return domain.RoleAssignment{}, err
 	}
-	for _, x := range all {
-		if x.Role == ref {
-			return x, nil
-		}
+	if !ok {
+		return domain.RoleAssignment{Role: ref, Source: domain.AssignmentAPI}, nil
 	}
-	return domain.RoleAssignment{Role: ref, Source: domain.AssignmentAPI}, nil
+	return got, nil
 }
 
 // RemoveAgentRole removes a role of an agent. A role that the agent does not
-// have is not an error.
+// have is not an error. The call then writes no identity.admin.change record,
+// because nothing changed.
 func (a *Admin) RemoveAgentRole(ctx context.Context, actor, agentID string, ref domain.RoleRef) error {
 	ag, err := a.getAgent(ctx, agentID)
 	if err != nil {

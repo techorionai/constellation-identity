@@ -46,6 +46,13 @@ func newAgentEnv(t *testing.T) *agentEnv {
 	return e
 }
 
+// Test ID map. The scope of each agent operation (U13b) is a rule of the
+// OpenAPI contract. The generated router enforces it, so only the integration
+// test TestIssue10Integration/I2a_errors in internal/services checks it. The
+// discovery document with 4 grant types (U14) has its tests in
+// internal/handlers/http/server_test.go (TestU10_Discovery) and
+// internal/handlers/http/apitokens_test.go.
+
 // Issue10_U13: an agent needs an existing service client. A disabled service
 // client is allowed.
 func TestIssue10_U13_CreateAgent(t *testing.T) {

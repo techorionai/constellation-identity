@@ -500,16 +500,22 @@ func TestIssue10_U11_Audience(t *testing.T) {
 	}
 }
 
-// Issue10_U11a_U12: a repeated parameter and a second authentication method.
+// Issue10_U11a: a repeated parameter. The handler test
+// TestIssue10_U11a_U12_RepeatedFields checks the detection of each field.
 func TestIssue10_U11a_Repeated(t *testing.T) {
 	e := newExchangeEnv(t)
 	in := e.in(t)
 	in.RepeatedParameter = true
 	_, err := e.cmd.Execute(ctx, in)
 	wantCode(t, "repeated", err, apperrors.OAuthInvalidRequest)
-	in = e.in(t)
+}
+
+// Issue10_U12: a second authentication method.
+func TestIssue10_U12_SecondAuthentication(t *testing.T) {
+	e := newExchangeEnv(t)
+	in := e.in(t)
 	in.SecondAuthentication = true
-	_, err = e.cmd.Execute(ctx, in)
+	_, err := e.cmd.Execute(ctx, in)
 	wantCode(t, "second authentication", err, apperrors.OAuthInvalidRequest)
 }
 

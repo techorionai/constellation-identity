@@ -64,21 +64,24 @@ func (r *Agents) Get(ctx context.Context, id string) (domain.Agent, error) {
 	return a, nil
 }
 
-// Update writes the name and the enabled flag.
-func (r *Agents) Update(ctx context.Context, a domain.Agent) error {
-	tag, err := clientspg.Conn(ctx, r.pool).Exec(ctx,
-		`UPDATE agents SET name = $2, enabled = $3, updated_at = $4 WHERE id = $1`,
-		a.ID, a.Name, a.Enabled, a.UpdatedAt.UTC().Truncate(time.Microsecond))
+// Patch changes only the fields that are not nil. One statement does the
+// change, so two parallel patches of different fields do not overwrite each
+// other.
+func (r *Agents) Patch(ctx context.Context, id string, name *string, enabled *bool, updatedAt time.Time) (domain.Agent, error) {
+	a, err := scanAgent(clientspg.Conn(ctx, r.pool).QueryRow(ctx, `
+		UPDATE agents SET name = COALESCE($2, name), enabled = COALESCE($3, enabled), updated_at = $4
+		WHERE id = $1 RETURNING `+agentColumns,
+		id, name, enabled, updatedAt.UTC().Truncate(time.Microsecond)))
 	if isNameTaken(err) {
-		return agents.ErrNameTaken
+		return domain.Agent{}, agents.ErrNameTaken
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Agent{}, fmt.Errorf("agent %s: %w", id, agents.ErrNotFound)
 	}
 	if err != nil {
-		return fmt.Errorf("update agent: %w", err)
+		return domain.Agent{}, fmt.Errorf("update agent: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("agent %s: %w", a.ID, agents.ErrNotFound)
-	}
-	return nil
+	return a, nil
 }
 
 // List returns a page of agents.

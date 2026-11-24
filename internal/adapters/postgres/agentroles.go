@@ -2,8 +2,11 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	clientspg "github.com/techorionai/constellation-platform-go/clients/postgres"
 
@@ -21,10 +24,35 @@ var _ agentroles.Repository = (*AgentRoles)(nil)
 // NewAgentRoles makes the repository.
 func NewAgentRoles(pool *pgxpool.Pool) *AgentRoles { return &AgentRoles{pool: pool} }
 
+// allRows is the limit of a query that must read all rows of one holder. An
+// agent has a small number of roles.
+const allRows = math.MaxInt32
+
+// Get returns one assignment of an agent.
+func (r *AgentRoles) Get(ctx context.Context, agentID string, role domain.RoleRef) (domain.RoleAssignment, bool, error) {
+	var (
+		a   domain.RoleAssignment
+		src string
+	)
+	err := clientspg.Conn(ctx, r.pool).QueryRow(ctx, `
+		SELECT t.app, t.role, t.source, (ro.key IS NULL)
+		FROM agent_roles t LEFT JOIN roles ro ON ro.app = t.app AND ro.key = t.role
+		WHERE t.agent_id = $1 AND t.app = $2 AND t.role = $3`, agentID, role.App, role.Role).
+		Scan(&a.Role.App, &a.Role.Role, &src, &a.Pending)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.RoleAssignment{}, false, nil
+	}
+	if err != nil {
+		return domain.RoleAssignment{}, false, fmt.Errorf("get agent role: %w", err)
+	}
+	a.Source = domain.AssignmentSource(src)
+	return a, true, nil
+}
+
 // Assignments returns the assignments of an agent. The service calculates
 // pending in this query. No column stores it.
 func (r *AgentRoles) Assignments(ctx context.Context, agentID string) ([]domain.RoleAssignment, error) {
-	return rolePage(ctx, clientspg.Conn(ctx, r.pool), `agent_roles`, `agent_id`, agentID, nil, 1<<30)
+	return rolePage(ctx, clientspg.Conn(ctx, r.pool), `agent_roles`, `agent_id`, agentID, nil, allRows)
 }
 
 // Page returns a page of the assignments of an agent.
