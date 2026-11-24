@@ -115,6 +115,8 @@ type secretLedger struct {
 	// flow has the values of the code flow: codes, verifiers, refresh tokens,
 	// ID tokens, and auth request IDs.
 	flow []string
+	// apiTokens has the values of the personal API tokens.
+	apiTokens []string
 }
 
 func (l *secretLedger) add(dst *[]string, v string) {

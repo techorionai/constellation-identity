@@ -127,6 +127,33 @@ Reuse of a code: the service keeps a marker for 10 minutes. A request for a used
 - `GET /oauth/end_session` with an optional `id_token_hint`. The hint needs a valid signature, the issuer, `typ` `JWT`, and the `aud` of a registered public client. An expired hint is valid. The service revokes the session of the cookie at once only if the hint is valid and its `sid` is the session of the cookie. It then also revokes all refresh token families. Otherwise it shows a confirmation form, and the `POST` of the form (no field) revokes the session of the cookie only. `post_logout_redirect_uri` is used only with the logout at once and only if it is a registered post-logout URI of the client in the hint.
 - `POST /logout` revokes the session only. A refresh token of that session fails at the session check.
 
+## Personal API tokens
+
+A personal API token is a long-lived credential of one user. A user makes, lists, and revokes own tokens with `MeApiTokens_create`, `MeApiTokens_list`, and `MeApiTokens_revoke`. These operations need the access token of a user with the scope `identity:api_token:manage_own`. A service token, a token with an acting principal (`act`), and a `cpat_` value give 403 `user_token_required`. A `cpat_` value as the bearer token on a `/v1` route gives 401, because the `/v1` routes accept JWTs only.
+
+- Each user with the status `active` has the implicit role `identity:user`. It grants `identity:api_token:manage_own`. See [manifests.md](manifests.md). A user with no role can make a token.
+- Format: `cpat_` and 43 base64url characters (32 random bytes). The service stores only the SHA-256 hash (hex). The response of create shows the token one time. It has `Cache-Control: no-store`. The service never logs the token or the hash.
+- `name` has 1 to 100 characters after trim. `expiresInDays` is an integer from 1 to `IDENTITY_API_TOKEN__MAX_TTL_DAYS`. The default is `IDENTITY_API_TOKEN__DEFAULT_TTL_DAYS`. A bad name, a bad `expiresInDays`, an empty scope, an OIDC scope, and a value that is not a permission key give 400 `invalid_request`.
+- `scope` has permission keys. Each key must be in the permissions of the user at the time of create. For each key that is not, the response is 422 with one field error (`field` `/scope`, `code` `scope_not_granted`). A key of the app `identity` is never possible, also for an admin. The reason is that a token with a long life must not carry the highest privilege of the identity service.
+- Limits: a user can have `IDENTITY_API_TOKEN__MAX_PER_USER` active tokens (default 50). The create also checks the number of all rows of the user (active, expired, and revoked). It is 10 times the limit above. A user at this limit gets 422 `token_limit` until the retention job removes old rows (7 days after the end of a token). Until the rate limits of milestone M2, this limit keeps the table small.
+- Create runs in one transaction under the lock of the user row. The user must have the status `active`. Otherwise the result is 403 `user_token_required` and no row is made. This closes the gap between the disable of a user and the end of the 15 minute access token.
+- A revoke of a token of another user, of an unknown ID, or of an ID that is not a UUID gives 404 `api_token_not_found`. A revoke of a token that is revoked already gives 204.
+- Each create and each revoke writes the `info` record `identity.api_token.change` with `actor_id`, `operation` (`create` or `revoke`), and `token_id`.
+- The retention job `api_tokens` removes a row `IDENTITY_RETENTION__API_TOKENS__PERIOD` after it expired or was revoked.
+
+## Token introspection
+
+`POST /oauth/introspect` (RFC 7662) tells a service if an API token is active, and for which scopes. The service sends a form.
+
+- The caller is a service client with `private_key_jwt` (`client_assertion_type` and `client_assertion`). A public client, an unknown client, a client secret, and an `Authorization: Basic` header give 401 `invalid_client`. A missing or wrong `client_assertion_type` and an empty `client_assertion` give 401 `invalid_client` too (the token endpoint gives `invalid_request` for these). A repeated form field gives 400 `invalid_request`. A failure of the `jti` store or of PostgreSQL gives 503 `temporarily_unavailable`. The assertion is single-use, like at the token endpoint.
+- The caller app is the `app` of the client. The response has only the scopes for this app: the keys of the token that are still in the current permissions of the user, with the prefix `<app>:`. A key of the app `identity` never shows. If no key is left, the token is not active for the caller.
+- The token is not active if: it is longer than 512 bytes, it does not have the strict format, no row has its hash, it is revoked, it expires now or earlier, or its user does not have the status `active`. The answer is `{"active": false}` and no other field. The answer is the same for each reason, so the caller cannot learn why. A value with a bad format does not query the database.
+- An active answer has `active`, `scope`, `sub` (the user ID), `aud` (the caller app), `exp` and `iat` (Unix seconds, integers), `jti` (the ID of the token), `token_type` `api_token`, and `principal_type` `user`. The response has `Cache-Control: no-store` and `Pragma: no-cache`.
+- PostgreSQL is the source of truth for each call. Identity has no cache. A service keeps the result in memory for 60 seconds or less (`auth/introspect` in `constellation-platform-go`). A revoked token can work in a service for this time. A `cpat_` token works in a service that uses `auth.ByFormat` with this verifier.
+- The service sets `last_used_at` at the first use, and then at most one time each hour. A failure of this update does not change the answer and writes one `warn` record.
+- The counter `identity.introspections` has the attribute `result` (`active`, `inactive`, or `error`). No token, hash, or user ID is in a metric, a span, or a log record. The discovery document has `introspection_endpoint`.
+- There is no rate limit on `/oauth/introspect` and on `MeApiTokens_create` in this version. They come with milestone M2.
+
 ### Telemetry
 
 `identity.tokens.issued` has the `grant_type` values `client_credentials`, `authorization_code`, and `refresh_token`. The counters `identity.code.reuse` and `identity.refresh_token.reuse` count the reuse cases. The values `code`, `code_verifier`, `refresh_token`, `id_token_hint`, `authRequest`, `state`, `nonce`, and `token` are `REDACTED` in the query of a logged or traced URL.

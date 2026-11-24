@@ -45,6 +45,7 @@ The hash is the SHA-256 of a canonical JSON form. The permissions and the roles 
 
 - The clients file gives a `roles` list for each client. See [configuration.md](configuration.md).
 - Every service client has the implicit role `identity:service` with the permission `identity:manifest:publish`. It has no row in the database, and the API cannot remove it.
+- Every user with the status `active` has the implicit role `identity:user` with the permission `identity:api_token:manage_own`. It has no row in the database. The role list shows it with the source `config`, and the API cannot remove it. A user with the status `invited` or `disabled` does not have it.
 - An assignment is pending when its role is not in the current manifest of its app. The service calculates this in each query. A publish never changes or deletes an assignment. An assignment of a deleted role is pending, and applies again when the role comes back. Pending assignments grant nothing.
 - A token that exists keeps its scopes after a manifest change. A token lives 5 minutes at most.
 

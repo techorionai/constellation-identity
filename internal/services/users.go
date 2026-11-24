@@ -70,6 +70,9 @@ type userStack struct {
 
 	oidc          *commands.OIDC
 	admin         *commands.Admin
+	apiTokens     *commands.APITokens
+	apiTokenRepo  *postgres.APITokens
+	userRoles     *postgres.UserRoles
 	cors          *queries.CORSOrigins
 	exchangeCode  executor.ExecutorWithReturn[commands.ExchangeCode, commands.UserTokenResult]
 	refreshTokens executor.ExecutorWithReturn[commands.RefreshTokens, commands.UserTokenResult]
@@ -108,6 +111,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		clock = time.Now
 	}
 	refreshRepo := postgres.NewRefreshTokens(pool)
+	apiTokenRepo := postgres.NewAPITokens(pool)
 	clientRepo := postgres.NewClients(pool)
 	store := adaptervalkey.NewStore(a.kv.Raw, a.kv.Keys)
 
@@ -146,7 +150,14 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	st.admin = commands.NewAdmin(commands.AdminDeps{
 		Users: userRepo, UserRoles: roles, Sessions: sessionRepo, Clients: clientRepo,
 		ClientRoles: postgres.NewClientRoles(pool), Manifests: postgres.NewManifests(pool), Tokens: tokens,
-		Refresh: refreshRepo, Lock: postgres.NewAdminLock(pool), Tx: tx, Log: log, Now: clock,
+		Refresh: refreshRepo, APITokens: apiTokenRepo, Lock: postgres.NewAdminLock(pool), Tx: tx, Log: log, Now: clock,
+	})
+	st.apiTokenRepo, st.userRoles = apiTokenRepo, roles
+	st.apiTokens = commands.NewAPITokens(commands.APITokensDeps{
+		Tokens: apiTokenRepo, Users: userRepo, UserRoles: roles, Tx: tx, Log: log, Now: clock,
+		Settings: commands.APITokenSettings{
+			DefaultTTLDays: cfg.APIToken.DefaultTTLDays, MaxTTLDays: cfg.APIToken.MaxTTLDays, MaxPerUser: cfg.APIToken.MaxPerUser,
+		},
 	})
 	corsTTL := queries.DefaultCORSCacheTTL
 	if o.corsCacheTTL != nil {
@@ -197,6 +208,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		{Name: "sessions", Config: cfg.Retention.Sessions, DefaultPeriod: config.DefaultRetentionPeriod, Purger: postgres.NewSessionPurger(pool)},
 		{Name: "refresh_tokens", Config: cfg.Retention.RefreshTokens, DefaultPeriod: config.DefaultRetentionPeriod, Purger: postgres.NewRefreshTokenPurger(pool)},
 		{Name: "refresh_token_families", Config: cfg.Retention.RefreshTokenFamilies, DefaultPeriod: config.DefaultRetentionPeriod, Purger: postgres.NewRefreshFamilyPurger(pool)},
+		{Name: "api_tokens", Config: cfg.Retention.APITokens, DefaultPeriod: config.DefaultRetentionPeriod, Purger: postgres.NewAPITokenPurger(pool)},
 	}, retention.RunnerOptions{After: o.retentionAfter})
 	if err != nil {
 		return nil, fmt.Errorf("make the retention runner: %w", err)

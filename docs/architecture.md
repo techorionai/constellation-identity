@@ -48,6 +48,7 @@ The `.golangci.yml` file has `depguard` rules for the import table of the guide.
 | Auth request store and code store | `internal/ports/authflow` | `internal/adapters/valkey` (`SET`, `GET`, `GETDEL`) |
 | Refresh token families and tokens | `internal/ports/refreshtokens` | `internal/adapters/postgres` |
 | Token verifier (own tokens) | `internal/ports/tokenverifier` | `internal/adapters/jose` |
+| Personal API tokens (table `api_tokens`) | `internal/ports/apitokens` | `internal/adapters/postgres` |
 | Admin change lock | `internal/ports/adminlock` | `internal/adapters/postgres` (`pg_advisory_xact_lock`) |
 
 The ports of the sessions, users, user roles, clients, and client roles have the methods that the code flow and the admin API need: the session `Reauthenticate` and `RevokeCascade`, the lists with a cursor, the role `Page`, and the client create, update, and key methods.
@@ -70,6 +71,7 @@ The token endpoint is the use case `IssueServiceToken` in `internal/app/commands
 | `GET /oauth/authorize`, `GET /oauth/end_session` | HTML pages on the pages router, because they need the raw query, the cookie, and pages. The generated operations answer 501 if a request ever reaches them. |
 | `GET /oauth/authorize/continue`, `POST /oauth/end_session` | Page routes that are not in the OpenAPI file. |
 | `GET /oauth/userinfo`, `POST /oauth/revoke` | Implemented. CORS for registered origins. |
+| `POST /oauth/introspect` | Implemented. The use case `Introspect` checks the caller with `AuthenticateService` and reads the table `api_tokens`. See [tokens.md](tokens.md). |
 | All `/v1` operations | Implemented. See [admin-api.md](admin-api.md). |
 | `PUT /v1/permission-manifests/{app}`, `GET /v1/permission-manifests`, `GET /v1/permission-manifests/{app}`, `GET /v1/roles`, `GET /v1/roles/{role}` | Implemented. |
 | `GET /login`, `POST /login`, `GET /login/done`, `POST /logout`, `GET /setup`, `POST /setup`, `GET /invite`, `POST /invite`, `GET /assets/pages.css` | HTML pages. They are not in the OpenAPI file. See [security.md](security.md). |
@@ -80,6 +82,8 @@ The use cases of the users are in `internal/app/commands/` (`EnsureSetupToken`, 
 
 ### Lock order
 
+The create of an API token locks the user row (`SELECT ... FOR UPDATE`) in its own transaction, checks the status and the two limits, and inserts the row into the table `api_tokens`. The disable of a user holds the user row lock too, so a create and a disable cannot both pass. The disable revokes the API tokens in the same transaction as the sessions.
+
 All paths that touch a session and its refresh token families lock in one order: the advisory lock of the admin change (only for admin changes that can remove the last admin), then the session row, then the family rows in ascending ID order. The paths are: rotation, reuse revoke, logout, end session, session revoke, user disable, client disable, and the revoke endpoint.
 
 ## Startup order
@@ -87,7 +91,7 @@ All paths that touch a session and its refresh token families lock in one order:
 1. Load the clients file (an error stops the start).
 2. Connect to PostgreSQL and Valkey.
 3. Start the admin server. `/livez` is 200 and `/readyz` is 503.
-4. Run the migrations of `secrets/postgres`, then the migrations of the service. Then publish the own manifest of the service (the roles `identity:admin` and `identity:service`). Then, under a PostgreSQL advisory lock, make the first-admin setup token if no active user has the role `identity:admin` and no valid setup token exists, and write one log record with the expiry (the record has no link). See [first-start.md](first-start.md).
+4. Run the migrations of `secrets/postgres`, then the migrations of the service. Then publish the own manifest of the service (the roles `identity:admin`, `identity:service`, and `identity:user`). Then, under a PostgreSQL advisory lock, make the first-admin setup token if no active user has the role `identity:admin` and no valid setup token exists, and write one log record with the expiry (the record has no link). See [first-start.md](first-start.md).
 5. Load the key cache. A key that does not decrypt stops the start. Then run the key manager one time and load the cache again. The first load comes before the manager, so the manager never makes a key after a master key change.
 6. Start the key manager loop (10 minutes) and the cache reload loop (1 minute).
 7. Sync the clients file.

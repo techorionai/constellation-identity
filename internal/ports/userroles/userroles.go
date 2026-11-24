@@ -23,8 +23,9 @@ type Repository interface {
 	// after the role. A nil role means the start.
 	Page(ctx context.Context, userID string, after *domain.RoleRef, limit int) ([]domain.RoleAssignment, error)
 	// GrantedPermissions returns the permission keys that the user has through
-	// assignments that are not pending. The result has no duplicates.
-	GrantedPermissions(ctx context.Context, userID string) ([]string, error)
+	// assignments that are not pending, and through the implicit roles. The
+	// result has no duplicates.
+	GrantedPermissions(ctx context.Context, userID string, implicit ...domain.RoleRef) ([]string, error)
 	// ActiveUserHasRole reports whether at least one user with the status
 	// active has the role.
 	ActiveUserHasRole(ctx context.Context, role domain.RoleRef) (bool, error)

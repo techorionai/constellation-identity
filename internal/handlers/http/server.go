@@ -62,6 +62,8 @@ type Deps struct {
 	UserInfo      executor.ExecutorWithReturn[commands.UserInfo, commands.UserInfoResult]
 	// The use cases of the admin API.
 	Admin        *commands.Admin
+	APITokens    *commands.APITokens
+	Introspect   executor.ExecutorWithReturn[commands.Introspect, commands.IntrospectResult]
 	CreateUser   executor.ExecutorWithReturn[commands.CreateUser, commands.CreateUserResult]
 	CreateInvite executor.ExecutorWithReturn[commands.CreateInvite, commands.Link]
 	// CORSOrigins gives the login redirect URIs of the public clients that are
@@ -137,7 +139,7 @@ type tokenRequest struct {
 
 // captureTokenRequest puts the form of the token request in the context.
 func captureTokenRequest(f gen.StrictHandlerFunc, operation string) gen.StrictHandlerFunc {
-	if operation != "OAuthToken" && operation != "OAuthRevoke" && operation != "OAuthUserinfo" {
+	if operation != "OAuthToken" && operation != "OAuthRevoke" && operation != "OAuthUserinfo" && operation != "OAuthIntrospect" {
 		return f
 	}
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error) {
@@ -219,6 +221,7 @@ func (s *Server) DiscoveryOpenidConfiguration(ctx context.Context, _ gen.Discove
 	if err != nil {
 		return nil, err
 	}
+	introspection := d.IntrospectionEndpoint
 	doc := gen.DiscoveryDocument{
 		Issuer:                                     d.Issuer,
 		AuthorizationEndpoint:                      d.AuthorizationEndpoint,
@@ -226,6 +229,7 @@ func (s *Server) DiscoveryOpenidConfiguration(ctx context.Context, _ gen.Discove
 		UserinfoEndpoint:                           d.UserinfoEndpoint,
 		EndSessionEndpoint:                         d.EndSessionEndpoint,
 		RevocationEndpoint:                         d.RevocationEndpoint,
+		IntrospectionEndpoint:                      &introspection,
 		JwksUri:                                    d.JWKSURI,
 		ScopesSupported:                            d.ScopesSupported,
 		ResponseTypesSupported:                     d.ResponseTypesSupported,

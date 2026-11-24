@@ -350,7 +350,7 @@ func (o *OIDC) complete(ctx context.Context, req domain.AuthRequest, sess domain
 	if !ok || !domain.MatchRedirectURI(client.RedirectURIs, req.RedirectURI) {
 		return errorPage("The client or the redirect address is not valid."), nil
 	}
-	granted, err := o.d.UserRoles.GrantedPermissions(ctx, user.ID)
+	granted, err := o.d.UserRoles.GrantedPermissions(ctx, user.ID, domain.ImplicitUserRoles(user.Status)...)
 	if err != nil {
 		return AuthorizeOutcome{}, fmt.Errorf("get the permissions: %w", err)
 	}
@@ -727,7 +727,7 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 		if err != nil {
 			return err
 		}
-		granted, err := o.d.UserRoles.GrantedPermissions(ctx, f.UserID)
+		granted, err := o.d.UserRoles.GrantedPermissions(ctx, f.UserID, domain.ImplicitUserRoles(u.Status)...)
 		if err != nil {
 			return err
 		}

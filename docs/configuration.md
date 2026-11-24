@@ -14,7 +14,7 @@ The service reads its settings from environment variables with the prefix `IDENT
 | `IDENTITY_ADMIN__CHECK_TIMEOUT` | `2s` | | Time limit of the readiness checks. |
 | `IDENTITY_ADMIN__DRAIN_DELAY` | `5s` | | Time that `/readyz` is 503 before the public server stops. |
 | `IDENTITY_DATABASE__URL`, `IDENTITY_DATABASE__NAME` | required | platform-go `clients/postgres` rules | PostgreSQL. Also `IDENTITY_DATABASE__URL_FILE`. |
-| `IDENTITY_VALKEY__ADDRESS`, `IDENTITY_VALKEY__KEY_PREFIX` | required | platform-go `clients/valkey` rules | Valkey. Use the key prefix `identity`. The token flow does not store data in Valkey. The login failure counters are in Valkey (keys `identity:login:fail:*`). The service checks Valkey in `/readyz`. |
+| `IDENTITY_VALKEY__ADDRESS`, `IDENTITY_VALKEY__KEY_PREFIX` | required | platform-go `clients/valkey` rules | Valkey. Use the key prefix `identity`. The service keeps the login failure counters, the auth requests, the authorization codes, and the used-code markers in Valkey. The `jti` values of client assertions are in PostgreSQL. API tokens are in PostgreSQL only. The service checks Valkey in `/readyz`. |
 | `IDENTITY_SECRETS__MASTER_KEY` or `IDENTITY_SECRETS__MASTER_KEY_FILE` | required | 32 bytes, base64 | Master key for the envelope encryption of the signing keys. |
 | `IDENTITY_SECRETS__MASTER_KEY_ID` | required | `^[a-z0-9-]{1,32}$` | ID of the master key. |
 | `IDENTITY_SECRETS__PREVIOUS_KEYS` | empty | `<id>:<base64>` items, separated by commas | Old master keys, for master key rotation. |
@@ -31,6 +31,10 @@ The service reads its settings from environment variables with the prefix `IDENT
 | `IDENTITY_LOGIN__MAX_FAILURES_PER_IP` | `50` | 1 to 10000 | Failed login attempts from one client IP in the window. A good login takes back its attempt. The attempt after the limit gets status 429. |
 | `IDENTITY_LOGIN__FAILURE_WINDOW` | `15m` | 1 minute to 24 hours | Life of the failure counters. |
 | `IDENTITY_RETENTION__TOKENS__PERIOD`, `IDENTITY_RETENTION__SESSIONS__PERIOD`, `IDENTITY_RETENTION__REFRESH_TOKENS__PERIOD`, `IDENTITY_RETENTION__REFRESH_TOKEN_FAMILIES__PERIOD` | `168h` | | Age after which the service deletes ended tokens, sessions, refresh tokens, and refresh token families. Also `INTERVAL` and `BATCH_SIZE`. The refresh token job deletes a token only after it expired, so a used token stays until its session expires and a replay still starts the reuse detection. See `retention` in `constellation-platform-go`. |
+| `IDENTITY_API_TOKEN__DEFAULT_TTL_DAYS` | `90` | 1 to `API_TOKEN__MAX_TTL_DAYS` | Life of a personal API token when the request has no `expiresInDays`. |
+| `IDENTITY_API_TOKEN__MAX_TTL_DAYS` | `365` | 1 to 365 | Largest `expiresInDays` of a personal API token. |
+| `IDENTITY_API_TOKEN__MAX_PER_USER` | `50` | 1 to 500 | Active API tokens of one user. The create also refuses a user with 10 times this number of rows (active, expired, and revoked). |
+| `IDENTITY_RETENTION__API_TOKENS__PERIOD` | `168h` | | Age after which the service deletes API tokens that expired or were revoked. Also `INTERVAL` and `BATCH_SIZE`. |
 | `IDENTITY_OIDC__AUTH_REQUEST_TTL` | `10m` | 1 to 60 minutes | Life of an auth request. |
 | `IDENTITY_OIDC__CODE_TTL` | `60s` | 10 seconds to 10 minutes | Life of an authorization code. |
 | `IDENTITY_OIDC__USER_TOKEN_TTL` | `15m` | 1 to 60 minutes | Life of the access tokens and the ID tokens of users. |

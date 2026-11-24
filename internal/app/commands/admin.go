@@ -20,6 +20,7 @@ import (
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/adminlock"
+	"github.com/techorionai/constellation-identity/internal/ports/apitokens"
 	"github.com/techorionai/constellation-identity/internal/ports/clientroles"
 	"github.com/techorionai/constellation-identity/internal/ports/clients"
 	"github.com/techorionai/constellation-identity/internal/ports/manifests"
@@ -40,6 +41,7 @@ type AdminDeps struct {
 	Manifests   manifests.Repository
 	Tokens      onetimetokens.Repository
 	Refresh     refreshtokens.Repository
+	APITokens   apitokens.Repository
 	Lock        adminlock.Locker
 	Tx          transaction.Transactor
 	Log         *slog.Logger
@@ -65,10 +67,11 @@ func NewAdmin(d AdminDeps) *Admin {
 
 func (a *Admin) now() time.Time { return a.d.Now().UTC() }
 
-// LogChange writes the info log record of an admin change.
-func (a *Admin) LogChange(ctx context.Context, actor, op, target string) {
-	a.d.Log.InfoContext(ctx, "identity.admin.change", "event", "identity.admin.change",
-		"actor_id", actor, "operation", op, "target_id", target)
+// LogChange writes the info log record of an admin change. attrs are more
+// key and value pairs for the record. They have no secret value.
+func (a *Admin) LogChange(ctx context.Context, actor, op, target string, attrs ...any) {
+	a.d.Log.InfoContext(ctx, "identity.admin.change", append([]any{"event", "identity.admin.change",
+		"actor_id", actor, "operation", op, "target_id", target}, attrs...)...)
 }
 
 // Problems of the admin API.
@@ -238,6 +241,7 @@ func (a *Admin) GetUser(ctx context.Context, id string) (domain.User, error) {
 // one transaction under the lock of the admin changes.
 func (a *Admin) UpdateUser(ctx context.Context, actor, id string, name *string, disabled *bool) (domain.User, error) {
 	var newName string
+	revokedTokens := -1
 	if name != nil {
 		n, err := domain.CheckName(*name)
 		if err != nil {
@@ -274,6 +278,11 @@ func (a *Admin) UpdateUser(ctx context.Context, actor, id string, name *string, 
 			if _, err := a.d.Sessions.RevokeAllOfUser(ctx, id, now); err != nil {
 				return err
 			}
+			n, err := a.d.APITokens.RevokeAllOfUser(ctx, id, now)
+			if err != nil {
+				return err
+			}
+			revokedTokens = n
 			if err := a.d.Tokens.DeleteUnusedInvites(ctx, id); err != nil {
 				return err
 			}
@@ -296,7 +305,11 @@ func (a *Admin) UpdateUser(ctx context.Context, actor, id string, name *string, 
 	if err != nil {
 		return domain.User{}, err
 	}
-	a.LogChange(ctx, actor, "Users_update", id)
+	if revokedTokens >= 0 {
+		a.LogChange(ctx, actor, "Users_update", id, "api_tokens_revoked", revokedTokens)
+	} else {
+		a.LogChange(ctx, actor, "Users_update", id)
+	}
 	return a.GetUser(ctx, id)
 }
 
@@ -346,11 +359,35 @@ func (a *Admin) ListUserRoles(ctx context.Context, userID string, p ListPage) (P
 	if _, err := a.requireUser(ctx, userID); err != nil {
 		return Page[domain.RoleAssignment]{}, err
 	}
-	items, err := a.d.UserRoles.Page(ctx, userID, cur, n+1)
+	all, err := a.d.UserRoles.Assignments(ctx, userID)
 	if err != nil {
 		return Page[domain.RoleAssignment]{}, fmt.Errorf("list user roles: %w", err)
 	}
-	return rolePage(items, n), nil
+	return implicitRolePage(all, domain.UserRole, cur, n), nil
+}
+
+// implicitRolePage makes a page of the assignments with one implicit role. The
+// implicit role shows one time, with the source config, also if a row with the
+// same role exists. The list is in order of app and role.
+func implicitRolePage(all []domain.RoleAssignment, implicit domain.RoleRef, cur *domain.RoleRef, n int) Page[domain.RoleAssignment] {
+	all = slices.DeleteFunc(slices.Clone(all), func(x domain.RoleAssignment) bool { return x.Role == implicit })
+	all = append(all, domain.RoleAssignment{Role: implicit, Source: domain.AssignmentConfig})
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Role.App != all[j].Role.App {
+			return all[i].Role.App < all[j].Role.App
+		}
+		return all[i].Role.Role < all[j].Role.Role
+	})
+	var rest []domain.RoleAssignment
+	for _, x := range all {
+		if cur == nil || x.Role.App > cur.App || x.Role.App == cur.App && x.Role.Role > cur.Role {
+			rest = append(rest, x)
+		}
+	}
+	if len(rest) > n+1 {
+		rest = rest[:n+1]
+	}
+	return rolePage(rest, n)
 }
 
 func rolePage(items []domain.RoleAssignment, n int) Page[domain.RoleAssignment] {
@@ -380,6 +417,10 @@ func (a *Admin) AssignUserRole(ctx context.Context, actor, userID string, ref do
 	if _, err := a.requireUser(ctx, userID); err != nil {
 		return domain.RoleAssignment{}, err
 	}
+	if ref == domain.UserRole {
+		// Each active user has this role. It has no row, so the call writes nothing.
+		return domain.RoleAssignment{Role: ref, Source: domain.AssignmentConfig}, nil
+	}
 	if err := a.roleExists(ctx, ref); err != nil {
 		return domain.RoleAssignment{}, err
 	}
@@ -402,6 +443,11 @@ func (a *Admin) AssignUserRole(ctx context.Context, actor, userID string, ref do
 // RemoveUserRole removes a role from a user. The last active admin cannot
 // lose identity:admin.
 func (a *Admin) RemoveUserRole(ctx context.Context, actor, userID string, ref domain.RoleRef) error {
+	if ref == domain.UserRole {
+		// The implicit role cannot go. The call changes nothing.
+		_, err := a.requireUser(ctx, userID)
+		return err
+	}
 	err := a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		if err := a.d.Lock.Lock(ctx); err != nil {
 			return err
