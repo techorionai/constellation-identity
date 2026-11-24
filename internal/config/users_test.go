@@ -137,3 +137,55 @@ func TestIssue4_PublicClientInFile(t *testing.T) {
 		t.Error("a service client with a redirect URI must fail")
 	}
 }
+
+// Issue9_U14: the settings of the API tokens and the retention job. Each error
+// names its variable.
+func TestIssue9_U14_APITokenSettings(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		baseEnv(t)
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.APIToken.DefaultTTLDays != 90 || cfg.APIToken.MaxTTLDays != 365 || cfg.APIToken.MaxPerUser != 50 {
+			t.Fatalf("api token = %+v", cfg.APIToken)
+		}
+	})
+	tests := []struct {
+		name, value string
+		ok          bool
+	}{
+		{"IDENTITY_API_TOKEN__MAX_TTL_DAYS", "90", true}, {"IDENTITY_API_TOKEN__MAX_TTL_DAYS", "365", true},
+		{"IDENTITY_API_TOKEN__MAX_TTL_DAYS", "0", false}, {"IDENTITY_API_TOKEN__MAX_TTL_DAYS", "366", false},
+		{"IDENTITY_API_TOKEN__DEFAULT_TTL_DAYS", "1", true}, {"IDENTITY_API_TOKEN__DEFAULT_TTL_DAYS", "365", true},
+		{"IDENTITY_API_TOKEN__DEFAULT_TTL_DAYS", "0", false}, {"IDENTITY_API_TOKEN__DEFAULT_TTL_DAYS", "366", false},
+		{"IDENTITY_API_TOKEN__MAX_PER_USER", "1", true}, {"IDENTITY_API_TOKEN__MAX_PER_USER", "500", true},
+		{"IDENTITY_API_TOKEN__MAX_PER_USER", "0", false}, {"IDENTITY_API_TOKEN__MAX_PER_USER", "501", false},
+		{"IDENTITY_RETENTION__API_TOKENS__BATCH_SIZE", "1", true}, {"IDENTITY_RETENTION__API_TOKENS__BATCH_SIZE", "0", false},
+		{"IDENTITY_RETENTION__API_TOKENS__INTERVAL", "1m", true}, {"IDENTITY_RETENTION__API_TOKENS__INTERVAL", "59s", false},
+		{"IDENTITY_RETENTION__API_TOKENS__PERIOD", "0s", true}, {"IDENTITY_RETENTION__API_TOKENS__PERIOD", "-1h", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name+"="+tt.value, func(t *testing.T) {
+			baseEnv(t)
+			t.Setenv(tt.name, tt.value)
+			_, err := config.Load()
+			switch {
+			case tt.ok && err != nil:
+				t.Fatalf("err = %v", err)
+			case !tt.ok && err == nil:
+				t.Fatal("want an error")
+			case !tt.ok && !strings.Contains(err.Error(), strings.TrimPrefix(tt.name[:strings.LastIndex(tt.name, "__")], "IDENTITY_")):
+				t.Fatalf("the error must name the variable: %v", err)
+			}
+		})
+	}
+	t.Run("default more than max", func(t *testing.T) {
+		baseEnv(t)
+		t.Setenv("IDENTITY_API_TOKEN__MAX_TTL_DAYS", "30")
+		_, err := config.Load()
+		if err == nil || !strings.Contains(err.Error(), "IDENTITY_API_TOKEN__DEFAULT_TTL_DAYS") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+}

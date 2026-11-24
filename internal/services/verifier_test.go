@@ -67,7 +67,7 @@ func TestIssue2_U12c_OwnManifest(t *testing.T) {
 	for _, r := range own.Roles {
 		holders[r.Key] = slices.Contains(r.Permissions, domain.AdminPermission)
 	}
-	if !holders["admin"] || holders["service"] || len(holders) != 2 {
+	if !holders["admin"] || holders["service"] || holders["user"] || len(holders) != 3 {
 		t.Fatalf("holders = %v", holders)
 	}
 	var service domain.RoleDef

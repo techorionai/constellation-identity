@@ -21,7 +21,7 @@ func (e *env) admin() *commands.Admin {
 	e.roles.Perms[domain.AdminRole] = []string{domain.AdminPermission}
 	e.roles.Perms[domain.RoleRef{App: "ops", Role: "root"}] = []string{domain.AdminPermission}
 	return commands.NewAdmin(commands.AdminDeps{
-		Users: e.users, UserRoles: e.roles, Sessions: e.sessions, Tokens: e.tokens, Lock: noLock{}, Tx: mock.Tx{}, Now: e.clock,
+		Users: e.users, UserRoles: e.roles, Sessions: e.sessions, Tokens: e.tokens, APITokens: mock.NewAPITokens(e.users), Lock: noLock{}, Tx: mock.Tx{}, Now: e.clock,
 	})
 }
 

@@ -37,6 +37,8 @@ type fakeClients struct {
 	clients.Repository // The test uses only the methods that the struct defines.
 	clients            map[string]domain.Client
 	keys               map[string][]domain.ClientKey
+	// getErr is the error of Get. Nil means no error.
+	getErr error
 }
 
 func (f *fakeClients) UpsertConfig(context.Context, domain.ClientConfig) (bool, error) {
@@ -46,6 +48,9 @@ func (f *fakeClients) DisableConfigNotIn(context.Context, []string) ([]string, e
 	return nil, nil
 }
 func (f *fakeClients) Get(_ context.Context, id string) (domain.Client, error) {
+	if f.getErr != nil {
+		return domain.Client{}, f.getErr
+	}
 	c, ok := f.clients[id]
 	if !ok {
 		return domain.Client{}, clients.ErrNotFound

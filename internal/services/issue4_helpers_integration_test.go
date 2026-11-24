@@ -48,6 +48,8 @@ type fixture struct {
 	admin *testserver.Web
 	// serviceClient is the service client of the app demo.
 	serviceClient testserver.ServiceClient
+	// extraClient is the service client of the app extra.
+	extraClient testserver.ServiceClient
 }
 
 // newFixture starts a server, makes the first admin, and publishes the manifest
@@ -62,7 +64,7 @@ func newFixture(t *testing.T, h *harness, opts ...testserver.Option) *fixture {
 		testserver.WithClock(clock), testserver.WithCORSCacheTTL(0),
 	}, opts...)
 	a := h.start(t, all...)
-	f := &fixture{t: t, a: a, clock: clock, serviceClient: demo}
+	f := &fixture{t: t, a: a, clock: clock, serviceClient: demo, extraClient: extra}
 	web, resp := a.completeSetup(t, a.setupLink(t), "admin@example.com", "Admin", adminPassword)
 	status(t, resp, http.StatusSeeOther, "setup")
 	f.admin = web

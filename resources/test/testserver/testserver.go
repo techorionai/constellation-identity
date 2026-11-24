@@ -303,7 +303,9 @@ func (e *Env) buildConfig(t testing.TB, opts []Option) (config.Config, *settings
 
 			RefreshTokens:        retention.Config{Interval: time.Hour, BatchSize: 1000},
 			RefreshTokenFamilies: retention.Config{Interval: time.Hour, BatchSize: 1000},
+			APITokens:            retention.Config{Interval: time.Hour, BatchSize: 1000},
 		},
+		APIToken:    config.APIToken{DefaultTTLDays: 90, MaxTTLDays: 365, MaxPerUser: 50},
 		OIDC:        config.OIDC{AuthRequestTTL: 10 * time.Minute, CodeTTL: time.Minute, UserTokenTTL: 15 * time.Minute},
 		ClientsFile: s.clientsFile,
 	}

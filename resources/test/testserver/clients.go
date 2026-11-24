@@ -257,7 +257,14 @@ func (s *Server) PostToken(t testing.TB, form url.Values) (Response, []byte) {
 // Authorization header.
 func (s *Server) PostTokenAuthorization(t testing.TB, form url.Values, authorization string) (Response, []byte) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.PublicURL+"/oauth/token", strings.NewReader(form.Encode()))
+	return s.PostAuthorization(t, "/oauth/token", form, authorization)
+}
+
+// PostAuthorization posts the form to a path of the public URL with an
+// Authorization header.
+func (s *Server) PostAuthorization(t testing.TB, path string, form url.Values, authorization string) (Response, []byte) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.PublicURL+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatalf("testserver: request: %v", err)
 	}
@@ -265,7 +272,7 @@ func (s *Server) PostTokenAuthorization(t testing.TB, form url.Values, authoriza
 	req.Header.Set("Authorization", authorization)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("testserver: POST /oauth/token: %v", err)
+		t.Fatalf("testserver: POST %s: %v", path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
