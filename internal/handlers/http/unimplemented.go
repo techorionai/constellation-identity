@@ -20,33 +20,3 @@ func (unimplemented) OAuthAuthorize(context.Context, gen.OAuthAuthorizeRequestOb
 func (unimplemented) OAuthEndSession(context.Context, gen.OAuthEndSessionRequestObject) (gen.OAuthEndSessionResponseObject, error) {
 	return nil, errNotImplemented
 }
-
-// The agent operations are for the next issue. They answer 501 until then.
-
-func (unimplemented) AgentsList(context.Context, gen.AgentsListRequestObject) (gen.AgentsListResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) AgentsCreate(context.Context, gen.AgentsCreateRequestObject) (gen.AgentsCreateResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) AgentsGet(context.Context, gen.AgentsGetRequestObject) (gen.AgentsGetResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) AgentsUpdate(context.Context, gen.AgentsUpdateRequestObject) (gen.AgentsUpdateResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) AgentRolesList(context.Context, gen.AgentRolesListRequestObject) (gen.AgentRolesListResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) AgentRolesRemove(context.Context, gen.AgentRolesRemoveRequestObject) (gen.AgentRolesRemoveResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) AgentRolesAssign(context.Context, gen.AgentRolesAssignRequestObject) (gen.AgentRolesAssignResponseObject, error) {
-	return nil, errNotImplemented
-}
