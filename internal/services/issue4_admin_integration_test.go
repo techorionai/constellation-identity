@@ -372,7 +372,8 @@ func TestIssue4AdminIntegration(t *testing.T) {
 		}
 		// I13n: a pending assignment in the list.
 		_, list := fx2.api(tok2, http.MethodGet, "/v1/users/"+pid+"/roles", nil)
-		if got := items(list); len(got) != 1 || got[0]["pending"] != true {
+		// The list has the pending role and the implicit role identity:user (issue 9).
+		if got := items(list); len(got) != 2 || got[0]["pending"] != true || got[1]["role"] != "identity:user" || got[1]["pending"] != false {
 			t.Fatalf("pending list: %v", list)
 		}
 	})
@@ -480,7 +481,13 @@ func TestIssue4AdminIntegration(t *testing.T) {
 				token = next
 			}
 			want := []string{"demo:admin", "demo:agent", "extra:editor", "extra:viewer", "identity:service"}
-			if !slices.Equal(got, want) || !slices.Equal(sizes, []int{2, 2, 1}) {
+			wantSizes := []int{2, 2, 1}
+			if strings.Contains(base, "/users/") {
+				// The list of a user has the implicit role identity:user (issue 9).
+				want = []string{"demo:admin", "demo:agent", "extra:editor", "extra:viewer", "identity:service", "identity:user"}
+				wantSizes = []int{2, 2, 2}
+			}
+			if !slices.Equal(got, want) || !slices.Equal(sizes, wantSizes) {
 				t.Fatalf("%s: roles = %v, sizes = %v", base, got, sizes)
 			}
 		}
