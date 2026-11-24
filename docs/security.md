@@ -58,6 +58,15 @@ The client IP is the remote address of the connection. If the remote address is 
 - `POST /oauth/end_session` takes the session from the cookie only and ignores the body. A valid `id_token_hint` with another `sid` does not log out the cookie session without the confirmation form.
 - The endpoints `/oauth/*` have no IP rate limit in this version. The login failure limit still applies to the login form.
 
+## Personal API tokens
+
+- The service stores the SHA-256 hash of a token (hex), never the token. The create response shows the token one time with `Cache-Control: no-store`. A list never has the token or the hash. No log record, span, or metric has the token, the hash, or the user ID of an introspection.
+- An introspection answer for a token that is not active is the same for each reason, so the caller cannot learn why. An answer for an active token has only the scopes for the app of the caller, never a key of the app `identity`.
+- The service checks the format of a value before it looks it up. A value that is longer than 512 bytes or does not have the format `cpat_` and 43 base64url characters is not active and does not query the database.
+- A revoke or a disable takes effect at the next introspection. A service keeps a result in memory for 60 seconds or less, so a revoked token can work in a service for this time. Revocation events come later.
+- Create takes the lock of the user row and checks that the user is `active`. A user who is disabled cannot make a token with an access token that is not expired. A disable revokes all tokens of the user. An enable does not restore them.
+- A token cannot have a key of the app `identity`. The limit of the number of rows of a user (10 times `API_TOKEN__MAX_PER_USER`) stops a loop of create and revoke. The rate limits of `/oauth/introspect` and of create come with milestone M2.
+
 ## Not in this version
 
 General rate limits on other endpoints, MFA, passkeys, and upstream OIDC come with R07. Password reset by email needs R12. Audit entries for logins, for admin changes, and for token issue come with R08 and R09. Rate limits for the public endpoints `/oauth/*` come with milestone M2. Until then the structured log records (`identity.login.ok`, `identity.login.failed`, and others) are the only record.

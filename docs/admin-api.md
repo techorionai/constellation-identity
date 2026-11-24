@@ -14,6 +14,9 @@ Each change writes one `info` log record (`identity.admin.change`) with `actor_i
 | `UserRoles_assign`, `UserRoles_remove`, `ClientRoles_assign`, `ClientRoles_remove` | `identity:role:assign` |
 | `Clients_list`, `Clients_get` | `identity:client:read` |
 | `Clients_create`, `Clients_update`, `ClientKeys_add`, `ClientKeys_remove` | `identity:client:write` and `identity:admin` |
+| `UserApiTokens_list` | `identity:api_token:read` |
+| `ApiTokens_revoke` | `identity:api_token:revoke` |
+| `MeApiTokens_create`, `MeApiTokens_list`, `MeApiTokens_revoke` | `identity:api_token:manage_own` (user token only) |
 | `Sessions_list` | `identity:session:read` |
 | `Sessions_revoke`, `Sessions_revokeAll` | `identity:session:revoke` |
 | `Me_get` | No scope. A user token is necessary. |
@@ -39,7 +42,16 @@ Only the role `admin` holds `identity:admin`. A holder of `identity:client:write
 ## Role assignments
 
 - A role assignment needs a role in a published manifest. Otherwise 422 `role_unknown`.
+- Each user with the status `active` has the implicit role `identity:user`. `UserRoles_list` shows it one time, with the source `config`, in its place in the order of `app` and `role`. If a row for this role exists, the implicit entry is the one in the list. `UserRoles_assign` for `identity:user` gives 200 with the source `config` and writes no row. `UserRoles_remove` for `identity:user` gives 204 and changes nothing. Both check that the user exists.
 - `UserRoles_list` and `ClientRoles_list` return `RoleAssignment` items with `source` and `pending`. The list of a service client has the implicit role `identity:service`.
+
+## API tokens
+
+The self-service operations are in [tokens.md](tokens.md).
+
+- `UserApiTokens_list` lists the tokens of one user (active, expired, and revoked), newest first, with the same pages as the other lists. An unknown user, or a `userId` that is not a UUID, gives 404 `user_not_found`. No response has the token value or the hash.
+- `ApiTokens_revoke` revokes the token of any user. An unknown ID, or an ID that is not a UUID, gives 404 `api_token_not_found`. A revoke of a token that is revoked already gives 204. The log record is `identity.admin.change` with `operation` `api_token.revoke`.
+- `Users_update` with `disabled` `true` also revokes all active API tokens of the user, in the same transaction. The `identity.admin.change` record of the disable has `api_tokens_revoked` with the number of tokens. An enable does not restore the tokens.
 
 ## Clients
 
