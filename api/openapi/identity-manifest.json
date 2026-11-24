@@ -40,6 +40,30 @@
     {
       "key": "identity:manifest:publish",
       "description": "Publish the manifest of the own app."
+    },
+    {
+      "key": "identity:api_token:manage_own",
+      "description": "Create, list, and revoke own personal API tokens."
+    },
+    {
+      "key": "identity:api_token:read",
+      "description": "List the API tokens of any user."
+    },
+    {
+      "key": "identity:api_token:revoke",
+      "description": "Revoke the API token of any user."
+    },
+    {
+      "key": "identity:agent:read",
+      "description": "Read agents."
+    },
+    {
+      "key": "identity:agent:write",
+      "description": "Create and change agents."
+    },
+    {
+      "key": "identity:token:exchange",
+      "description": "Use the token exchange grant."
     }
   ],
   "defaultRoles": [
@@ -57,7 +81,13 @@
         "identity:admin",
         "identity:session:read",
         "identity:session:revoke",
-        "identity:manifest:publish"
+        "identity:manifest:publish",
+        "identity:api_token:manage_own",
+        "identity:api_token:read",
+        "identity:api_token:revoke",
+        "identity:agent:read",
+        "identity:agent:write",
+        "identity:token:exchange"
       ]
     },
     {
@@ -66,6 +96,14 @@
       "description": "Role of every service client. It can publish the manifest of its own app.",
       "permissions": [
         "identity:manifest:publish"
+      ]
+    },
+    {
+      "key": "user",
+      "name": "User",
+      "description": "Role of every active user. Every active user has it implicitly. It has no database row. A role list shows it with the source config.",
+      "permissions": [
+        "identity:api_token:manage_own"
       ]
     }
   ]

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/oapi-codegen/runtime"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 // Defines values for AssignmentSource.
@@ -56,16 +57,16 @@ func (e ClientSource) Valid() bool {
 
 // Defines values for ClientType.
 const (
-	Public  ClientType = "public"
-	Service ClientType = "service"
+	ClientTypePublic  ClientType = "public"
+	ClientTypeService ClientType = "service"
 )
 
 // Valid indicates whether the value is a known member of the ClientType enum.
 func (e ClientType) Valid() bool {
 	switch e {
-	case Public:
+	case ClientTypePublic:
 		return true
-	case Service:
+	case ClientTypeService:
 		return true
 	default:
 		return false
@@ -74,9 +75,10 @@ func (e ClientType) Valid() bool {
 
 // Defines values for GrantType0.
 const (
-	GrantType0AuthorizationCode GrantType0 = "authorization_code"
-	GrantType0ClientCredentials GrantType0 = "client_credentials"
-	GrantType0RefreshToken      GrantType0 = "refresh_token"
+	GrantType0AuthorizationCode                        GrantType0 = "authorization_code"
+	GrantType0ClientCredentials                        GrantType0 = "client_credentials"
+	GrantType0RefreshToken                             GrantType0 = "refresh_token"
+	GrantType0UrnIetfParamsOauthGrantTypeTokenExchange GrantType0 = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
 // Valid indicates whether the value is a known member of the GrantType0 enum.
@@ -87,6 +89,44 @@ func (e GrantType0) Valid() bool {
 	case GrantType0ClientCredentials:
 		return true
 	case GrantType0RefreshToken:
+		return true
+	case GrantType0UrnIetfParamsOauthGrantTypeTokenExchange:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for IntrospectTokenTypeHint0.
+const (
+	IntrospectTokenTypeHint0AccessToken  IntrospectTokenTypeHint0 = "access_token"
+	IntrospectTokenTypeHint0ApiToken     IntrospectTokenTypeHint0 = "api_token"
+	IntrospectTokenTypeHint0RefreshToken IntrospectTokenTypeHint0 = "refresh_token"
+)
+
+// Valid indicates whether the value is a known member of the IntrospectTokenTypeHint0 enum.
+func (e IntrospectTokenTypeHint0) Valid() bool {
+	switch e {
+	case IntrospectTokenTypeHint0AccessToken:
+		return true
+	case IntrospectTokenTypeHint0ApiToken:
+		return true
+	case IntrospectTokenTypeHint0RefreshToken:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for IntrospectedTokenType0.
+const (
+	IntrospectedTokenType0ApiToken IntrospectedTokenType0 = "api_token"
+)
+
+// Valid indicates whether the value is a known member of the IntrospectedTokenType0 enum.
+func (e IntrospectedTokenType0) Valid() bool {
+	switch e {
+	case IntrospectedTokenType0ApiToken:
 		return true
 	default:
 		return false
@@ -195,6 +235,30 @@ func (e OAuthErrorCode0) Valid() bool {
 	}
 }
 
+// Defines values for PrincipalType.
+const (
+	PrincipalTypeAgent    PrincipalType = "agent"
+	PrincipalTypeService  PrincipalType = "service"
+	PrincipalTypeUser     PrincipalType = "user"
+	PrincipalTypeWorkflow PrincipalType = "workflow"
+)
+
+// Valid indicates whether the value is a known member of the PrincipalType enum.
+func (e PrincipalType) Valid() bool {
+	switch e {
+	case PrincipalTypeAgent:
+		return true
+	case PrincipalTypeService:
+		return true
+	case PrincipalTypeUser:
+		return true
+	case PrincipalTypeWorkflow:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for TokenResponseTokenType.
 const (
 	Bearer TokenResponseTokenType = "Bearer"
@@ -204,6 +268,24 @@ const (
 func (e TokenResponseTokenType) Valid() bool {
 	switch e {
 	case Bearer:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TokenType0.
+const (
+	UrnConstellationParamsOauthTokenTypeAgentId TokenType0 = "urn:constellation:params:oauth:token-type:agent-id"
+	UrnIetfParamsOauthTokenTypeAccessToken      TokenType0 = "urn:ietf:params:oauth:token-type:access_token"
+)
+
+// Valid indicates whether the value is a known member of the TokenType0 enum.
+func (e TokenType0) Valid() bool {
+	switch e {
+	case UrnConstellationParamsOauthTokenTypeAgentId:
+		return true
+	case UrnIetfParamsOauthTokenTypeAccessToken:
 		return true
 	default:
 		return false
@@ -277,6 +359,133 @@ func (e OAuthAuthorizeParamsCodeChallengeMethod) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// Agent An agent principal.
+type Agent struct {
+	// ClientId ID of the service client that can act as the agent.
+	ClientId string `json:"clientId"`
+
+	// CreatedAt Time when the agent was created.
+	CreatedAt time.Time `json:"createdAt"`
+
+	// Enabled True if the agent is enabled.
+	Enabled bool `json:"enabled"`
+
+	// Id ID of the agent.
+	Id openapi_types.UUID `json:"id"`
+
+	// Name Name of the agent. It is unique and case-sensitive.
+	Name string `json:"name"`
+
+	// UpdatedAt Time when the agent was changed.
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// AgentCreate Request to create an agent.
+type AgentCreate struct {
+	// ClientId ID of the service client that can act as the agent.
+	ClientId string `json:"clientId"`
+
+	// Name Name of the agent. It is unique and case-sensitive.
+	Name string `json:"name"`
+}
+
+// AgentPage One page of agents.
+type AgentPage struct {
+	// Items Items of the page.
+	Items []Agent `json:"items"`
+
+	// NextPageToken Token for the next page. No value means that this is the last page.
+	NextPageToken *string `json:"nextPageToken,omitempty"`
+}
+
+// AgentUpdate Request to change an agent. A field that is not present does not change.
+type AgentUpdate struct {
+	// Enabled True to enable the agent. False to disable it.
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Name Name of the agent.
+	Name *string `json:"name,omitempty"`
+}
+
+// ApiToken A personal API token. It has no secret.
+type ApiToken struct {
+	// CreatedAt Time when the token was created.
+	CreatedAt time.Time `json:"createdAt"`
+
+	// ExpiresAt Time when the token expires.
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	// Id ID of the token.
+	Id openapi_types.UUID `json:"id"`
+
+	// LastUsedAt Time when the token was last used.
+	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+
+	// Name Name of the token.
+	Name string `json:"name"`
+
+	// RevokedAt Time when the token was revoked.
+	RevokedAt *time.Time `json:"revokedAt,omitempty"`
+
+	// Scope Permission keys of the token.
+	Scope ScopeString `json:"scope"`
+
+	// UserId ID of the user that owns the token.
+	UserId string `json:"userId"`
+}
+
+// ApiTokenCreate Request to create a personal API token.
+type ApiTokenCreate struct {
+	// ExpiresInDays Days until the token expires. The identity service can set a lower maximum.
+	ExpiresInDays *int32 `json:"expiresInDays,omitempty"`
+
+	// Name Name of the token.
+	Name string `json:"name"`
+
+	// Scope Permission keys of the token, at least one. An OIDC scope is not valid.
+	Scope ScopeString `json:"scope"`
+}
+
+// ApiTokenCreated A new personal API token. The response has the token one time only.
+type ApiTokenCreated struct {
+	// CreatedAt Time when the token was created.
+	CreatedAt time.Time `json:"createdAt"`
+
+	// ExpiresAt Time when the token expires.
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	// Id ID of the token.
+	Id openapi_types.UUID `json:"id"`
+
+	// LastUsedAt Time when the token was last used.
+	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+
+	// Name Name of the token.
+	Name string `json:"name"`
+
+	// RevokedAt Time when the token was revoked.
+	RevokedAt *time.Time `json:"revokedAt,omitempty"`
+
+	// Scope Permission keys of the token.
+	Scope ScopeString `json:"scope"`
+
+	// Token The token. The format is `cpat_` followed by 43 base64url characters (32 random bytes).
+	// The identity service shows it one time only.
+	Token string `json:"token"`
+
+	// UserId ID of the user that owns the token.
+	UserId string `json:"userId"`
+}
+
+// ApiTokenPage One page of personal API tokens.
+type ApiTokenPage struct {
+	// Items Items of the page.
+	Items []ApiToken `json:"items"`
+
+	// NextPageToken Token for the next page. No value means that this is the last page.
+	NextPageToken *string `json:"nextPageToken,omitempty"`
 }
 
 // AppKey Key of an application, for example `helpdesk` or `customer_portal`.
@@ -400,11 +609,14 @@ type DiscoveryDocument struct {
 	// EndSessionEndpoint URL of the end session endpoint.
 	EndSessionEndpoint string `json:"end_session_endpoint"`
 
-	// GrantTypesSupported Supported grant types.
+	// GrantTypesSupported Supported grant types. They include `urn:ietf:params:oauth:grant-type:token-exchange`.
 	GrantTypesSupported []string `json:"grant_types_supported"`
 
 	// IdTokenSigningAlgValuesSupported Supported algorithms of the ID token signature.
 	IdTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
+
+	// IntrospectionEndpoint URL of the introspection endpoint.
+	IntrospectionEndpoint *string `json:"introspection_endpoint,omitempty"`
 
 	// Issuer Issuer URL.
 	Issuer string `json:"issuer"`
@@ -496,6 +708,78 @@ type GrantType1 = string
 
 // InternalServerError The server has an internal error.
 type InternalServerError = Problem
+
+// IntrospectRequest Form body of an introspection request (RFC 7662).
+// The client fields are optional in the schema. A missing assertion gives the OAuth error `invalid_client`.
+type IntrospectRequest struct {
+	// ClientAssertion Signed JWT (`private_key_jwt`) that authenticates a service client.
+	ClientAssertion *string `json:"client_assertion,omitempty"`
+
+	// ClientAssertionType Type of the client assertion. It is `urn:ietf:params:oauth:client-assertion-type:jwt-bearer`.
+	ClientAssertionType *string `json:"client_assertion_type,omitempty"`
+
+	// ClientId ID of the client.
+	ClientId *string `json:"client_id,omitempty"`
+
+	// Token The token to introspect.
+	Token string `json:"token"`
+
+	// TokenTypeHint Type of the token.
+	TokenTypeHint *IntrospectTokenTypeHint `json:"token_type_hint,omitempty"`
+}
+
+// IntrospectResponse Result of an introspection request (RFC 7662).
+// If `active` is false, no other field is present.
+type IntrospectResponse struct {
+	// Active True if the token is active for the caller.
+	Active bool `json:"active"`
+
+	// Aud The caller app.
+	Aud *AppKey `json:"aud,omitempty"`
+
+	// Exp Expiry time in seconds since the Unix epoch.
+	Exp *int64 `json:"exp,omitempty"`
+
+	// Iat Issue time in seconds since the Unix epoch.
+	Iat *int64 `json:"iat,omitempty"`
+
+	// Jti ID of the API token.
+	Jti *string `json:"jti,omitempty"`
+
+	// PrincipalType Type of the principal. It is `user`.
+	PrincipalType *PrincipalType `json:"principal_type,omitempty"`
+
+	// Scope Permission keys of the token that the caller can use.
+	Scope *ScopeString `json:"scope,omitempty"`
+
+	// Sub ID of the user.
+	Sub *string `json:"sub,omitempty"`
+
+	// TokenType Type of the token. It is `api_token` for an API token.
+	TokenType *IntrospectedTokenType `json:"token_type,omitempty"`
+}
+
+// IntrospectTokenTypeHint Type hint of a token in an introspection request. The union is open.
+type IntrospectTokenTypeHint struct {
+	union json.RawMessage
+}
+
+// IntrospectTokenTypeHint0 defines model for IntrospectTokenTypeHint.0.
+type IntrospectTokenTypeHint0 string
+
+// IntrospectTokenTypeHint1 defines model for IntrospectTokenTypeHint.1.
+type IntrospectTokenTypeHint1 = string
+
+// IntrospectedTokenType Type of an introspected token. The union is open.
+type IntrospectedTokenType struct {
+	union json.RawMessage
+}
+
+// IntrospectedTokenType0 defines model for IntrospectedTokenType.0.
+type IntrospectedTokenType0 string
+
+// IntrospectedTokenType1 defines model for IntrospectedTokenType.1.
+type IntrospectedTokenType1 = string
 
 // Invite An invite that lets a user set up a sign-in.
 type Invite struct {
@@ -599,6 +883,9 @@ type PermissionManifest struct {
 	// Permissions Permissions that the application defines.
 	Permissions []PermissionDefinition `json:"permissions"`
 }
+
+// PrincipalType Type of a principal.
+type PrincipalType string
 
 // Problem Problem details for an HTTP API (RFC 9457).
 type Problem struct {
@@ -784,6 +1071,12 @@ type SessionPage struct {
 
 // TokenRequest Form body of a token request. The OAuth field names are in snake case, as RFC 6749 requires.
 type TokenRequest struct {
+	// ActorToken ID of an agent, not a signed token. For token exchange. It goes together with `actor_token_type`.
+	ActorToken *openapi_types.UUID `json:"actor_token,omitempty"`
+
+	// ActorTokenType Type of the actor token. It is `urn:constellation:params:oauth:token-type:agent-id`. For token exchange.
+	ActorTokenType *TokenType `json:"actor_token_type,omitempty"`
+
 	// Audience Application key of the audience of the access token.
 	Audience *AppKey `json:"audience,omitempty"`
 
@@ -811,8 +1104,17 @@ type TokenRequest struct {
 	// RefreshToken Refresh token. For the grant `refresh_token`.
 	RefreshToken *string `json:"refresh_token,omitempty"`
 
+	// RequestedTokenType Type of the token that the client asks for. It is the access token URI. For token exchange.
+	RequestedTokenType *TokenType `json:"requested_token_type,omitempty"`
+
 	// Scope Requested scopes.
 	Scope *RequestScopeString `json:"scope,omitempty"`
+
+	// SubjectToken Access token of the user. For the grant `urn:ietf:params:oauth:grant-type:token-exchange`.
+	SubjectToken *string `json:"subject_token,omitempty"`
+
+	// SubjectTokenType Type of the subject token. It is the access token URI. For token exchange.
+	SubjectTokenType *TokenType `json:"subject_token_type,omitempty"`
 }
 
 // TokenResponse Result of a successful token request.
@@ -826,6 +1128,9 @@ type TokenResponse struct {
 	// IdToken ID token. Present if the request had the scope `openid`.
 	IdToken *string `json:"id_token,omitempty"`
 
+	// IssuedTokenType Type of the issued token. The identity service sets it for token exchange.
+	IssuedTokenType *TokenType `json:"issued_token_type,omitempty"`
+
 	// RefreshToken Refresh token. Present if the request had the scope `offline_access`.
 	RefreshToken *string `json:"refresh_token,omitempty"`
 
@@ -838,6 +1143,17 @@ type TokenResponse struct {
 
 // TokenResponseTokenType Type of the token.
 type TokenResponseTokenType string
+
+// TokenType Type of a token in a token exchange request. The union is open.
+type TokenType struct {
+	union json.RawMessage
+}
+
+// TokenType0 defines model for TokenType.0.
+type TokenType0 string
+
+// TokenType1 defines model for TokenType.1.
+type TokenType1 = string
 
 // TokenTypeHint Type hint of a token in a revoke request. The union is open.
 type TokenTypeHint struct {
@@ -961,6 +1277,24 @@ type OAuthEndSessionParams struct {
 	State                 *string `form:"state,omitempty" json:"state,omitempty"`
 }
 
+// AgentsListParams defines parameters for AgentsList.
+type AgentsListParams struct {
+	// PageToken Opaque token from `nextPageToken` of the previous page.
+	PageToken *CursorPageParamsPageToken `form:"pageToken,omitempty" json:"pageToken,omitempty"`
+
+	// PageSize Maximum number of items in the page.
+	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// AgentRolesListParams defines parameters for AgentRolesList.
+type AgentRolesListParams struct {
+	// PageToken Opaque token from `nextPageToken` of the previous page.
+	PageToken *CursorPageParamsPageToken `form:"pageToken,omitempty" json:"pageToken,omitempty"`
+
+	// PageSize Maximum number of items in the page.
+	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
 // ClientsListParams defines parameters for ClientsList.
 type ClientsListParams struct {
 	// PageToken Opaque token from `nextPageToken` of the previous page.
@@ -972,6 +1306,15 @@ type ClientsListParams struct {
 
 // ClientRolesListParams defines parameters for ClientRolesList.
 type ClientRolesListParams struct {
+	// PageToken Opaque token from `nextPageToken` of the previous page.
+	PageToken *CursorPageParamsPageToken `form:"pageToken,omitempty" json:"pageToken,omitempty"`
+
+	// PageSize Maximum number of items in the page.
+	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// MeApiTokensListParams defines parameters for MeApiTokensList.
+type MeApiTokensListParams struct {
 	// PageToken Opaque token from `nextPageToken` of the previous page.
 	PageToken *CursorPageParamsPageToken `form:"pageToken,omitempty" json:"pageToken,omitempty"`
 
@@ -1008,6 +1351,15 @@ type UsersListParams struct {
 	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
 }
 
+// UserApiTokensListParams defines parameters for UserApiTokensList.
+type UserApiTokensListParams struct {
+	// PageToken Opaque token from `nextPageToken` of the previous page.
+	PageToken *CursorPageParamsPageToken `form:"pageToken,omitempty" json:"pageToken,omitempty"`
+
+	// PageSize Maximum number of items in the page.
+	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
 // UserRolesListParams defines parameters for UserRolesList.
 type UserRolesListParams struct {
 	// PageToken Opaque token from `nextPageToken` of the previous page.
@@ -1026,11 +1378,20 @@ type SessionsListParams struct {
 	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
 }
 
+// OAuthIntrospectFormdataRequestBody defines body for OAuthIntrospect for application/x-www-form-urlencoded ContentType.
+type OAuthIntrospectFormdataRequestBody = IntrospectRequest
+
 // OAuthRevokeFormdataRequestBody defines body for OAuthRevoke for application/x-www-form-urlencoded ContentType.
 type OAuthRevokeFormdataRequestBody = RevokeRequest
 
 // OAuthTokenFormdataRequestBody defines body for OAuthToken for application/x-www-form-urlencoded ContentType.
 type OAuthTokenFormdataRequestBody = TokenRequest
+
+// AgentsCreateJSONRequestBody defines body for AgentsCreate for application/json ContentType.
+type AgentsCreateJSONRequestBody = AgentCreate
+
+// AgentsUpdateJSONRequestBody defines body for AgentsUpdate for application/json ContentType.
+type AgentsUpdateJSONRequestBody = AgentUpdate
 
 // ClientsCreateJSONRequestBody defines body for ClientsCreate for application/json ContentType.
 type ClientsCreateJSONRequestBody = ClientCreate
@@ -1040,6 +1401,9 @@ type ClientsUpdateJSONRequestBody = ClientUpdate
 
 // ClientKeysAddJSONRequestBody defines body for ClientKeysAdd for application/json ContentType.
 type ClientKeysAddJSONRequestBody = JsonWebKey
+
+// MeApiTokensCreateJSONRequestBody defines body for MeApiTokensCreate for application/json ContentType.
+type MeApiTokensCreateJSONRequestBody = ApiTokenCreate
 
 // PermissionManifestsPublishJSONRequestBody defines body for PermissionManifestsPublish for application/json ContentType.
 type PermissionManifestsPublishJSONRequestBody = PermissionManifest
@@ -1113,6 +1477,14 @@ func (a *DiscoveryDocument) UnmarshalJSON(b []byte) error {
 			return fmt.Errorf("error reading 'id_token_signing_alg_values_supported': %w", err)
 		}
 		delete(object, "id_token_signing_alg_values_supported")
+	}
+
+	if raw, found := object["introspection_endpoint"]; found {
+		err = json.Unmarshal(raw, &a.IntrospectionEndpoint)
+		if err != nil {
+			return fmt.Errorf("error reading 'introspection_endpoint': %w", err)
+		}
+		delete(object, "introspection_endpoint")
 	}
 
 	if raw, found := object["issuer"]; found {
@@ -1242,6 +1614,13 @@ func (a DiscoveryDocument) MarshalJSON() ([]byte, error) {
 		object["id_token_signing_alg_values_supported"], err = json.Marshal(a.IdTokenSigningAlgValuesSupported)
 		if err != nil {
 			return nil, fmt.Errorf("error marshaling 'id_token_signing_alg_values_supported': %w", err)
+		}
+	}
+
+	if a.IntrospectionEndpoint != nil {
+		object["introspection_endpoint"], err = json.Marshal(a.IntrospectionEndpoint)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'introspection_endpoint': %w", err)
 		}
 	}
 
@@ -1524,6 +1903,130 @@ func (t *GrantType) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsIntrospectTokenTypeHint0 returns the union data inside the IntrospectTokenTypeHint as a IntrospectTokenTypeHint0
+func (t IntrospectTokenTypeHint) AsIntrospectTokenTypeHint0() (IntrospectTokenTypeHint0, error) {
+	var body IntrospectTokenTypeHint0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromIntrospectTokenTypeHint0 overwrites any union data inside the IntrospectTokenTypeHint as the provided IntrospectTokenTypeHint0
+func (t *IntrospectTokenTypeHint) FromIntrospectTokenTypeHint0(v IntrospectTokenTypeHint0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeIntrospectTokenTypeHint0 performs a merge with any union data inside the IntrospectTokenTypeHint, using the provided IntrospectTokenTypeHint0
+func (t *IntrospectTokenTypeHint) MergeIntrospectTokenTypeHint0(v IntrospectTokenTypeHint0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsIntrospectTokenTypeHint1 returns the union data inside the IntrospectTokenTypeHint as a IntrospectTokenTypeHint1
+func (t IntrospectTokenTypeHint) AsIntrospectTokenTypeHint1() (IntrospectTokenTypeHint1, error) {
+	var body IntrospectTokenTypeHint1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromIntrospectTokenTypeHint1 overwrites any union data inside the IntrospectTokenTypeHint as the provided IntrospectTokenTypeHint1
+func (t *IntrospectTokenTypeHint) FromIntrospectTokenTypeHint1(v IntrospectTokenTypeHint1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeIntrospectTokenTypeHint1 performs a merge with any union data inside the IntrospectTokenTypeHint, using the provided IntrospectTokenTypeHint1
+func (t *IntrospectTokenTypeHint) MergeIntrospectTokenTypeHint1(v IntrospectTokenTypeHint1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t IntrospectTokenTypeHint) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *IntrospectTokenTypeHint) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsIntrospectedTokenType0 returns the union data inside the IntrospectedTokenType as a IntrospectedTokenType0
+func (t IntrospectedTokenType) AsIntrospectedTokenType0() (IntrospectedTokenType0, error) {
+	var body IntrospectedTokenType0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromIntrospectedTokenType0 overwrites any union data inside the IntrospectedTokenType as the provided IntrospectedTokenType0
+func (t *IntrospectedTokenType) FromIntrospectedTokenType0(v IntrospectedTokenType0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeIntrospectedTokenType0 performs a merge with any union data inside the IntrospectedTokenType, using the provided IntrospectedTokenType0
+func (t *IntrospectedTokenType) MergeIntrospectedTokenType0(v IntrospectedTokenType0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsIntrospectedTokenType1 returns the union data inside the IntrospectedTokenType as a IntrospectedTokenType1
+func (t IntrospectedTokenType) AsIntrospectedTokenType1() (IntrospectedTokenType1, error) {
+	var body IntrospectedTokenType1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromIntrospectedTokenType1 overwrites any union data inside the IntrospectedTokenType as the provided IntrospectedTokenType1
+func (t *IntrospectedTokenType) FromIntrospectedTokenType1(v IntrospectedTokenType1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeIntrospectedTokenType1 performs a merge with any union data inside the IntrospectedTokenType, using the provided IntrospectedTokenType1
+func (t *IntrospectedTokenType) MergeIntrospectedTokenType1(v IntrospectedTokenType1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t IntrospectedTokenType) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *IntrospectedTokenType) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsOAuthErrorCode0 returns the union data inside the OAuthErrorCode as a OAuthErrorCode0
 func (t OAuthErrorCode) AsOAuthErrorCode0() (OAuthErrorCode0, error) {
 	var body OAuthErrorCode0
@@ -1582,6 +2085,68 @@ func (t OAuthErrorCode) MarshalJSON() ([]byte, error) {
 }
 
 func (t *OAuthErrorCode) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsTokenType0 returns the union data inside the TokenType as a TokenType0
+func (t TokenType) AsTokenType0() (TokenType0, error) {
+	var body TokenType0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTokenType0 overwrites any union data inside the TokenType as the provided TokenType0
+func (t *TokenType) FromTokenType0(v TokenType0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTokenType0 performs a merge with any union data inside the TokenType, using the provided TokenType0
+func (t *TokenType) MergeTokenType0(v TokenType0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTokenType1 returns the union data inside the TokenType as a TokenType1
+func (t TokenType) AsTokenType1() (TokenType1, error) {
+	var body TokenType1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTokenType1 overwrites any union data inside the TokenType as the provided TokenType1
+func (t *TokenType) FromTokenType1(v TokenType1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTokenType1 performs a merge with any union data inside the TokenType, using the provided TokenType1
+func (t *TokenType) MergeTokenType1(v TokenType1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t TokenType) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *TokenType) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }
@@ -1663,6 +2228,9 @@ type ServerInterface interface {
 	// (GET /oauth/end_session)
 	OAuthEndSession(w http.ResponseWriter, r *http.Request, params OAuthEndSessionParams)
 
+	// (POST /oauth/introspect)
+	OAuthIntrospect(w http.ResponseWriter, r *http.Request)
+
 	// (POST /oauth/revoke)
 	OAuthRevoke(w http.ResponseWriter, r *http.Request)
 
@@ -1671,6 +2239,30 @@ type ServerInterface interface {
 
 	// (GET /oauth/userinfo)
 	OAuthUserinfo(w http.ResponseWriter, r *http.Request)
+
+	// (GET /v1/agents)
+	AgentsList(w http.ResponseWriter, r *http.Request, params AgentsListParams)
+
+	// (POST /v1/agents)
+	AgentsCreate(w http.ResponseWriter, r *http.Request)
+
+	// (GET /v1/agents/{agentId})
+	AgentsGet(w http.ResponseWriter, r *http.Request, agentId string)
+
+	// (PATCH /v1/agents/{agentId})
+	AgentsUpdate(w http.ResponseWriter, r *http.Request, agentId string)
+
+	// (GET /v1/agents/{agentId}/roles)
+	AgentRolesList(w http.ResponseWriter, r *http.Request, agentId string, params AgentRolesListParams)
+
+	// (DELETE /v1/agents/{agentId}/roles/{role})
+	AgentRolesRemove(w http.ResponseWriter, r *http.Request, agentId string, role RoleRef)
+
+	// (PUT /v1/agents/{agentId}/roles/{role})
+	AgentRolesAssign(w http.ResponseWriter, r *http.Request, agentId string, role RoleRef)
+
+	// (DELETE /v1/api-tokens/{tokenId})
+	ApiTokensRevoke(w http.ResponseWriter, r *http.Request, tokenId string)
 
 	// (GET /v1/clients)
 	ClientsList(w http.ResponseWriter, r *http.Request, params ClientsListParams)
@@ -1702,6 +2294,15 @@ type ServerInterface interface {
 	// (GET /v1/me)
 	MeGet(w http.ResponseWriter, r *http.Request)
 
+	// (GET /v1/me/api-tokens)
+	MeApiTokensList(w http.ResponseWriter, r *http.Request, params MeApiTokensListParams)
+
+	// (POST /v1/me/api-tokens)
+	MeApiTokensCreate(w http.ResponseWriter, r *http.Request)
+
+	// (DELETE /v1/me/api-tokens/{tokenId})
+	MeApiTokensRevoke(w http.ResponseWriter, r *http.Request, tokenId string)
+
 	// (GET /v1/permission-manifests)
 	PermissionManifestsList(w http.ResponseWriter, r *http.Request, params PermissionManifestsListParams)
 
@@ -1731,6 +2332,9 @@ type ServerInterface interface {
 
 	// (PATCH /v1/users/{userId})
 	UsersUpdate(w http.ResponseWriter, r *http.Request, userId string)
+
+	// (GET /v1/users/{userId}/api-tokens)
+	UserApiTokensList(w http.ResponseWriter, r *http.Request, userId string, params UserApiTokensListParams)
 
 	// (POST /v1/users/{userId}/invites)
 	InvitesCreate(w http.ResponseWriter, r *http.Request, userId string)
@@ -1997,6 +2601,20 @@ func (siw *ServerInterfaceWrapper) OAuthEndSession(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// OAuthIntrospect operation middleware
+func (siw *ServerInterfaceWrapper) OAuthIntrospect(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.OAuthIntrospect(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // OAuthRevoke operation middleware
 func (siw *ServerInterfaceWrapper) OAuthRevoke(w http.ResponseWriter, r *http.Request) {
 
@@ -2030,6 +2648,269 @@ func (siw *ServerInterfaceWrapper) OAuthUserinfo(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.OAuthUserinfo(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AgentsList operation middleware
+func (siw *ServerInterfaceWrapper) AgentsList(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AgentsListParams
+
+	// ------------- Optional query parameter "pageToken" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageToken", r.URL.Query(), &params.PageToken, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageToken"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageToken", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageSize", r.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageSize"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageSize", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AgentsList(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AgentsCreate operation middleware
+func (siw *ServerInterfaceWrapper) AgentsCreate(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AgentsCreate(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AgentsGet operation middleware
+func (siw *ServerInterfaceWrapper) AgentsGet(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "agentId" -------------
+	var agentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "agentId", r.PathValue("agentId"), &agentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agentId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AgentsGet(w, r, agentId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AgentsUpdate operation middleware
+func (siw *ServerInterfaceWrapper) AgentsUpdate(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "agentId" -------------
+	var agentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "agentId", r.PathValue("agentId"), &agentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agentId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AgentsUpdate(w, r, agentId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AgentRolesList operation middleware
+func (siw *ServerInterfaceWrapper) AgentRolesList(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "agentId" -------------
+	var agentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "agentId", r.PathValue("agentId"), &agentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agentId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AgentRolesListParams
+
+	// ------------- Optional query parameter "pageToken" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageToken", r.URL.Query(), &params.PageToken, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageToken"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageToken", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageSize", r.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageSize"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageSize", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AgentRolesList(w, r, agentId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AgentRolesRemove operation middleware
+func (siw *ServerInterfaceWrapper) AgentRolesRemove(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "agentId" -------------
+	var agentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "agentId", r.PathValue("agentId"), &agentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agentId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "role" -------------
+	var role RoleRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "role", r.PathValue("role"), &role, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "role", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AgentRolesRemove(w, r, agentId, role)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AgentRolesAssign operation middleware
+func (siw *ServerInterfaceWrapper) AgentRolesAssign(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "agentId" -------------
+	var agentId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "agentId", r.PathValue("agentId"), &agentId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agentId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "role" -------------
+	var role RoleRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "role", r.PathValue("role"), &role, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "role", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AgentRolesAssign(w, r, agentId, role)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ApiTokensRevoke operation middleware
+func (siw *ServerInterfaceWrapper) ApiTokensRevoke(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "tokenId" -------------
+	var tokenId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tokenId", r.PathValue("tokenId"), &tokenId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tokenId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ApiTokensRevoke(w, r, tokenId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2351,6 +3232,92 @@ func (siw *ServerInterfaceWrapper) MeGet(w http.ResponseWriter, r *http.Request)
 	handler.ServeHTTP(w, r)
 }
 
+// MeApiTokensList operation middleware
+func (siw *ServerInterfaceWrapper) MeApiTokensList(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params MeApiTokensListParams
+
+	// ------------- Optional query parameter "pageToken" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageToken", r.URL.Query(), &params.PageToken, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageToken"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageToken", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageSize", r.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageSize"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageSize", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MeApiTokensList(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// MeApiTokensCreate operation middleware
+func (siw *ServerInterfaceWrapper) MeApiTokensCreate(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MeApiTokensCreate(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// MeApiTokensRevoke operation middleware
+func (siw *ServerInterfaceWrapper) MeApiTokensRevoke(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "tokenId" -------------
+	var tokenId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tokenId", r.PathValue("tokenId"), &tokenId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tokenId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MeApiTokensRevoke(w, r, tokenId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // PermissionManifestsList operation middleware
 func (siw *ServerInterfaceWrapper) PermissionManifestsList(w http.ResponseWriter, r *http.Request) {
 
@@ -2663,6 +3630,61 @@ func (siw *ServerInterfaceWrapper) UsersUpdate(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UsersUpdate(w, r, userId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UserApiTokensList operation middleware
+func (siw *ServerInterfaceWrapper) UserApiTokensList(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "userId" -------------
+	var userId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", r.PathValue("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UserApiTokensListParams
+
+	// ------------- Optional query parameter "pageToken" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageToken", r.URL.Query(), &params.PageToken, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageToken"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageToken", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageSize", r.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageSize"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageSize", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UserApiTokensList(w, r, userId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3028,9 +4050,18 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/.well-known/openid-configuration", wrapper.DiscoveryOpenidConfiguration)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/oauth/authorize", wrapper.OAuthAuthorize)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/oauth/end_session", wrapper.OAuthEndSession)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/introspect", wrapper.OAuthIntrospect)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/revoke", wrapper.OAuthRevoke)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/token", wrapper.OAuthToken)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/oauth/userinfo", wrapper.OAuthUserinfo)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/agents", wrapper.AgentsList)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/agents", wrapper.AgentsCreate)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/agents/{agentId}", wrapper.AgentsGet)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/v1/agents/{agentId}", wrapper.AgentsUpdate)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/agents/{agentId}/roles", wrapper.AgentRolesList)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/agents/{agentId}/roles/{role}", wrapper.AgentRolesRemove)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/v1/agents/{agentId}/roles/{role}", wrapper.AgentRolesAssign)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/api-tokens/{tokenId}", wrapper.ApiTokensRevoke)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/clients", wrapper.ClientsList)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/clients", wrapper.ClientsCreate)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/clients/{clientId}", wrapper.ClientsGet)
@@ -3041,6 +4072,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/clients/{clientId}/roles/{role}", wrapper.ClientRolesRemove)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/v1/clients/{clientId}/roles/{role}", wrapper.ClientRolesAssign)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/me", wrapper.MeGet)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/me/api-tokens", wrapper.MeApiTokensList)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/me/api-tokens", wrapper.MeApiTokensCreate)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/me/api-tokens/{tokenId}", wrapper.MeApiTokensRevoke)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/permission-manifests", wrapper.PermissionManifestsList)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/permission-manifests/{app}", wrapper.PermissionManifestsGet)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/v1/permission-manifests/{app}", wrapper.PermissionManifestsPublish)
@@ -3051,6 +4085,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/users", wrapper.UsersCreate)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/users/{userId}", wrapper.UsersGet)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/v1/users/{userId}", wrapper.UsersUpdate)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/users/{userId}/api-tokens", wrapper.UserApiTokensList)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/users/{userId}/invites", wrapper.InvitesCreate)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/users/{userId}/roles", wrapper.UserRolesList)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/users/{userId}/roles/{role}", wrapper.UserRolesRemove)
@@ -3185,6 +4220,94 @@ func (response OAuthEndSession302Response) VisitOAuthEndSessionResponse(w http.R
 	w.Header().Set("location", fmt.Sprint(response.Headers.Location))
 	w.WriteHeader(302)
 	return nil
+}
+
+type OAuthIntrospectRequestObject struct {
+	Body *OAuthIntrospectFormdataRequestBody
+}
+
+type OAuthIntrospectResponseObject interface {
+	VisitOAuthIntrospectResponse(w http.ResponseWriter) error
+}
+
+type OAuthIntrospect200ResponseHeaders struct {
+	CacheControl string
+	Pragma       string
+}
+
+type OAuthIntrospect200JSONResponse struct {
+	Body    IntrospectResponse
+	Headers OAuthIntrospect200ResponseHeaders
+}
+
+func (response OAuthIntrospect200JSONResponse) VisitOAuthIntrospectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", fmt.Sprint(response.Headers.CacheControl))
+	w.Header().Set("Pragma", fmt.Sprint(response.Headers.Pragma))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OAuthIntrospect400JSONResponse OAuthError
+
+func (response OAuthIntrospect400JSONResponse) VisitOAuthIntrospectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OAuthIntrospect401JSONResponse OAuthError
+
+func (response OAuthIntrospect401JSONResponse) VisitOAuthIntrospectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OAuthIntrospect500JSONResponse OAuthError
+
+func (response OAuthIntrospect500JSONResponse) VisitOAuthIntrospectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OAuthIntrospect503JSONResponse OAuthError
+
+func (response OAuthIntrospect503JSONResponse) VisitOAuthIntrospectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type OAuthRevokeRequestObject struct {
@@ -3404,6 +4527,762 @@ func (response OAuthUserinfo403Response) VisitOAuthUserinfoResponse(w http.Respo
 	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
 	w.WriteHeader(403)
 	return nil
+}
+
+type AgentsListRequestObject struct {
+	Params AgentsListParams
+}
+
+type AgentsListResponseObject interface {
+	VisitAgentsListResponse(w http.ResponseWriter) error
+}
+
+type AgentsList200JSONResponse AgentPage
+
+func (response AgentsList200JSONResponse) VisitAgentsListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsList400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response AgentsList400ApplicationProblemPlusJSONResponse) VisitAgentsListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsList401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response AgentsList401ApplicationProblemPlusJSONResponse) VisitAgentsListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsList403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response AgentsList403ApplicationProblemPlusJSONResponse) VisitAgentsListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsList500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response AgentsList500ApplicationProblemPlusJSONResponse) VisitAgentsListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsCreateRequestObject struct {
+	Body *AgentsCreateJSONRequestBody
+}
+
+type AgentsCreateResponseObject interface {
+	VisitAgentsCreateResponse(w http.ResponseWriter) error
+}
+
+type AgentsCreate201JSONResponse Agent
+
+func (response AgentsCreate201JSONResponse) VisitAgentsCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsCreate400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response AgentsCreate400ApplicationProblemPlusJSONResponse) VisitAgentsCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsCreate401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response AgentsCreate401ApplicationProblemPlusJSONResponse) VisitAgentsCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsCreate403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response AgentsCreate403ApplicationProblemPlusJSONResponse) VisitAgentsCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsCreate409ApplicationProblemPlusJSONResponse Conflict
+
+func (response AgentsCreate409ApplicationProblemPlusJSONResponse) VisitAgentsCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsCreate422ApplicationProblemPlusJSONResponse UnprocessableContent
+
+func (response AgentsCreate422ApplicationProblemPlusJSONResponse) VisitAgentsCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsCreate500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response AgentsCreate500ApplicationProblemPlusJSONResponse) VisitAgentsCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsGetRequestObject struct {
+	AgentId string `json:"agentId"`
+}
+
+type AgentsGetResponseObject interface {
+	VisitAgentsGetResponse(w http.ResponseWriter) error
+}
+
+type AgentsGet200JSONResponse Agent
+
+func (response AgentsGet200JSONResponse) VisitAgentsGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsGet400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response AgentsGet400ApplicationProblemPlusJSONResponse) VisitAgentsGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsGet401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response AgentsGet401ApplicationProblemPlusJSONResponse) VisitAgentsGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsGet403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response AgentsGet403ApplicationProblemPlusJSONResponse) VisitAgentsGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsGet404ApplicationProblemPlusJSONResponse NotFound
+
+func (response AgentsGet404ApplicationProblemPlusJSONResponse) VisitAgentsGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsGet500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response AgentsGet500ApplicationProblemPlusJSONResponse) VisitAgentsGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsUpdateRequestObject struct {
+	AgentId string `json:"agentId"`
+	Body    *AgentsUpdateJSONRequestBody
+}
+
+type AgentsUpdateResponseObject interface {
+	VisitAgentsUpdateResponse(w http.ResponseWriter) error
+}
+
+type AgentsUpdate200JSONResponse Agent
+
+func (response AgentsUpdate200JSONResponse) VisitAgentsUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsUpdate400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response AgentsUpdate400ApplicationProblemPlusJSONResponse) VisitAgentsUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsUpdate401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response AgentsUpdate401ApplicationProblemPlusJSONResponse) VisitAgentsUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsUpdate403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response AgentsUpdate403ApplicationProblemPlusJSONResponse) VisitAgentsUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsUpdate404ApplicationProblemPlusJSONResponse NotFound
+
+func (response AgentsUpdate404ApplicationProblemPlusJSONResponse) VisitAgentsUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsUpdate409ApplicationProblemPlusJSONResponse Conflict
+
+func (response AgentsUpdate409ApplicationProblemPlusJSONResponse) VisitAgentsUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentsUpdate500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response AgentsUpdate500ApplicationProblemPlusJSONResponse) VisitAgentsUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesListRequestObject struct {
+	AgentId string `json:"agentId"`
+	Params  AgentRolesListParams
+}
+
+type AgentRolesListResponseObject interface {
+	VisitAgentRolesListResponse(w http.ResponseWriter) error
+}
+
+type AgentRolesList200JSONResponse RoleAssignmentPage
+
+func (response AgentRolesList200JSONResponse) VisitAgentRolesListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesList400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response AgentRolesList400ApplicationProblemPlusJSONResponse) VisitAgentRolesListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesList401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response AgentRolesList401ApplicationProblemPlusJSONResponse) VisitAgentRolesListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesList403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response AgentRolesList403ApplicationProblemPlusJSONResponse) VisitAgentRolesListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesList404ApplicationProblemPlusJSONResponse NotFound
+
+func (response AgentRolesList404ApplicationProblemPlusJSONResponse) VisitAgentRolesListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesList500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response AgentRolesList500ApplicationProblemPlusJSONResponse) VisitAgentRolesListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesRemoveRequestObject struct {
+	AgentId string  `json:"agentId"`
+	Role    RoleRef `json:"role"`
+}
+
+type AgentRolesRemoveResponseObject interface {
+	VisitAgentRolesRemoveResponse(w http.ResponseWriter) error
+}
+
+type AgentRolesRemove204Response struct {
+}
+
+func (response AgentRolesRemove204Response) VisitAgentRolesRemoveResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type AgentRolesRemove400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response AgentRolesRemove400ApplicationProblemPlusJSONResponse) VisitAgentRolesRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesRemove401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response AgentRolesRemove401ApplicationProblemPlusJSONResponse) VisitAgentRolesRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesRemove403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response AgentRolesRemove403ApplicationProblemPlusJSONResponse) VisitAgentRolesRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesRemove404ApplicationProblemPlusJSONResponse NotFound
+
+func (response AgentRolesRemove404ApplicationProblemPlusJSONResponse) VisitAgentRolesRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesRemove500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response AgentRolesRemove500ApplicationProblemPlusJSONResponse) VisitAgentRolesRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesAssignRequestObject struct {
+	AgentId string  `json:"agentId"`
+	Role    RoleRef `json:"role"`
+}
+
+type AgentRolesAssignResponseObject interface {
+	VisitAgentRolesAssignResponse(w http.ResponseWriter) error
+}
+
+type AgentRolesAssign200JSONResponse RoleAssignment
+
+func (response AgentRolesAssign200JSONResponse) VisitAgentRolesAssignResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesAssign400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response AgentRolesAssign400ApplicationProblemPlusJSONResponse) VisitAgentRolesAssignResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesAssign401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response AgentRolesAssign401ApplicationProblemPlusJSONResponse) VisitAgentRolesAssignResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesAssign403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response AgentRolesAssign403ApplicationProblemPlusJSONResponse) VisitAgentRolesAssignResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesAssign404ApplicationProblemPlusJSONResponse NotFound
+
+func (response AgentRolesAssign404ApplicationProblemPlusJSONResponse) VisitAgentRolesAssignResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesAssign422ApplicationProblemPlusJSONResponse UnprocessableContent
+
+func (response AgentRolesAssign422ApplicationProblemPlusJSONResponse) VisitAgentRolesAssignResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AgentRolesAssign500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response AgentRolesAssign500ApplicationProblemPlusJSONResponse) VisitAgentRolesAssignResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApiTokensRevokeRequestObject struct {
+	TokenId string `json:"tokenId"`
+}
+
+type ApiTokensRevokeResponseObject interface {
+	VisitApiTokensRevokeResponse(w http.ResponseWriter) error
+}
+
+type ApiTokensRevoke204Response struct {
+}
+
+func (response ApiTokensRevoke204Response) VisitApiTokensRevokeResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type ApiTokensRevoke400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response ApiTokensRevoke400ApplicationProblemPlusJSONResponse) VisitApiTokensRevokeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApiTokensRevoke401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response ApiTokensRevoke401ApplicationProblemPlusJSONResponse) VisitApiTokensRevokeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApiTokensRevoke403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response ApiTokensRevoke403ApplicationProblemPlusJSONResponse) VisitApiTokensRevokeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApiTokensRevoke404ApplicationProblemPlusJSONResponse NotFound
+
+func (response ApiTokensRevoke404ApplicationProblemPlusJSONResponse) VisitApiTokensRevokeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApiTokensRevoke500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response ApiTokensRevoke500ApplicationProblemPlusJSONResponse) VisitApiTokensRevokeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type ClientsListRequestObject struct {
@@ -4431,6 +6310,272 @@ func (response MeGet500ApplicationProblemPlusJSONResponse) VisitMeGetResponse(w 
 	return err
 }
 
+type MeApiTokensListRequestObject struct {
+	Params MeApiTokensListParams
+}
+
+type MeApiTokensListResponseObject interface {
+	VisitMeApiTokensListResponse(w http.ResponseWriter) error
+}
+
+type MeApiTokensList200JSONResponse ApiTokenPage
+
+func (response MeApiTokensList200JSONResponse) VisitMeApiTokensListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensList400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response MeApiTokensList400ApplicationProblemPlusJSONResponse) VisitMeApiTokensListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensList401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response MeApiTokensList401ApplicationProblemPlusJSONResponse) VisitMeApiTokensListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensList403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response MeApiTokensList403ApplicationProblemPlusJSONResponse) VisitMeApiTokensListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensList500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response MeApiTokensList500ApplicationProblemPlusJSONResponse) VisitMeApiTokensListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensCreateRequestObject struct {
+	Body *MeApiTokensCreateJSONRequestBody
+}
+
+type MeApiTokensCreateResponseObject interface {
+	VisitMeApiTokensCreateResponse(w http.ResponseWriter) error
+}
+
+type MeApiTokensCreate201ResponseHeaders struct {
+	CacheControl string
+	Pragma       string
+}
+
+type MeApiTokensCreate201JSONResponse struct {
+	Body    ApiTokenCreated
+	Headers MeApiTokensCreate201ResponseHeaders
+}
+
+func (response MeApiTokensCreate201JSONResponse) VisitMeApiTokensCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", fmt.Sprint(response.Headers.CacheControl))
+	w.Header().Set("Pragma", fmt.Sprint(response.Headers.Pragma))
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensCreate400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response MeApiTokensCreate400ApplicationProblemPlusJSONResponse) VisitMeApiTokensCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensCreate401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response MeApiTokensCreate401ApplicationProblemPlusJSONResponse) VisitMeApiTokensCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensCreate403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response MeApiTokensCreate403ApplicationProblemPlusJSONResponse) VisitMeApiTokensCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensCreate422ApplicationProblemPlusJSONResponse UnprocessableContent
+
+func (response MeApiTokensCreate422ApplicationProblemPlusJSONResponse) VisitMeApiTokensCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensCreate500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response MeApiTokensCreate500ApplicationProblemPlusJSONResponse) VisitMeApiTokensCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensRevokeRequestObject struct {
+	TokenId string `json:"tokenId"`
+}
+
+type MeApiTokensRevokeResponseObject interface {
+	VisitMeApiTokensRevokeResponse(w http.ResponseWriter) error
+}
+
+type MeApiTokensRevoke204Response struct {
+}
+
+func (response MeApiTokensRevoke204Response) VisitMeApiTokensRevokeResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type MeApiTokensRevoke400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response MeApiTokensRevoke400ApplicationProblemPlusJSONResponse) VisitMeApiTokensRevokeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensRevoke401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response MeApiTokensRevoke401ApplicationProblemPlusJSONResponse) VisitMeApiTokensRevokeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensRevoke403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response MeApiTokensRevoke403ApplicationProblemPlusJSONResponse) VisitMeApiTokensRevokeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensRevoke404ApplicationProblemPlusJSONResponse NotFound
+
+func (response MeApiTokensRevoke404ApplicationProblemPlusJSONResponse) VisitMeApiTokensRevokeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensRevoke500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response MeApiTokensRevoke500ApplicationProblemPlusJSONResponse) VisitMeApiTokensRevokeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type PermissionManifestsListRequestObject struct {
 	Params PermissionManifestsListParams
 }
@@ -5343,6 +7488,99 @@ func (response UsersUpdate500ApplicationProblemPlusJSONResponse) VisitUsersUpdat
 	return err
 }
 
+type UserApiTokensListRequestObject struct {
+	UserId string `json:"userId"`
+	Params UserApiTokensListParams
+}
+
+type UserApiTokensListResponseObject interface {
+	VisitUserApiTokensListResponse(w http.ResponseWriter) error
+}
+
+type UserApiTokensList200JSONResponse ApiTokenPage
+
+func (response UserApiTokensList200JSONResponse) VisitUserApiTokensListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserApiTokensList400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response UserApiTokensList400ApplicationProblemPlusJSONResponse) VisitUserApiTokensListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserApiTokensList401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response UserApiTokensList401ApplicationProblemPlusJSONResponse) VisitUserApiTokensListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserApiTokensList403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response UserApiTokensList403ApplicationProblemPlusJSONResponse) VisitUserApiTokensListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserApiTokensList404ApplicationProblemPlusJSONResponse NotFound
+
+func (response UserApiTokensList404ApplicationProblemPlusJSONResponse) VisitUserApiTokensListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserApiTokensList500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response UserApiTokensList500ApplicationProblemPlusJSONResponse) VisitUserApiTokensListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type InvitesCreateRequestObject struct {
 	UserId string `json:"userId"`
 }
@@ -5954,6 +8192,9 @@ type StrictServerInterface interface {
 	// (GET /oauth/end_session)
 	OAuthEndSession(ctx context.Context, request OAuthEndSessionRequestObject) (OAuthEndSessionResponseObject, error)
 
+	// (POST /oauth/introspect)
+	OAuthIntrospect(ctx context.Context, request OAuthIntrospectRequestObject) (OAuthIntrospectResponseObject, error)
+
 	// (POST /oauth/revoke)
 	OAuthRevoke(ctx context.Context, request OAuthRevokeRequestObject) (OAuthRevokeResponseObject, error)
 
@@ -5962,6 +8203,30 @@ type StrictServerInterface interface {
 
 	// (GET /oauth/userinfo)
 	OAuthUserinfo(ctx context.Context, request OAuthUserinfoRequestObject) (OAuthUserinfoResponseObject, error)
+
+	// (GET /v1/agents)
+	AgentsList(ctx context.Context, request AgentsListRequestObject) (AgentsListResponseObject, error)
+
+	// (POST /v1/agents)
+	AgentsCreate(ctx context.Context, request AgentsCreateRequestObject) (AgentsCreateResponseObject, error)
+
+	// (GET /v1/agents/{agentId})
+	AgentsGet(ctx context.Context, request AgentsGetRequestObject) (AgentsGetResponseObject, error)
+
+	// (PATCH /v1/agents/{agentId})
+	AgentsUpdate(ctx context.Context, request AgentsUpdateRequestObject) (AgentsUpdateResponseObject, error)
+
+	// (GET /v1/agents/{agentId}/roles)
+	AgentRolesList(ctx context.Context, request AgentRolesListRequestObject) (AgentRolesListResponseObject, error)
+
+	// (DELETE /v1/agents/{agentId}/roles/{role})
+	AgentRolesRemove(ctx context.Context, request AgentRolesRemoveRequestObject) (AgentRolesRemoveResponseObject, error)
+
+	// (PUT /v1/agents/{agentId}/roles/{role})
+	AgentRolesAssign(ctx context.Context, request AgentRolesAssignRequestObject) (AgentRolesAssignResponseObject, error)
+
+	// (DELETE /v1/api-tokens/{tokenId})
+	ApiTokensRevoke(ctx context.Context, request ApiTokensRevokeRequestObject) (ApiTokensRevokeResponseObject, error)
 
 	// (GET /v1/clients)
 	ClientsList(ctx context.Context, request ClientsListRequestObject) (ClientsListResponseObject, error)
@@ -5993,6 +8258,15 @@ type StrictServerInterface interface {
 	// (GET /v1/me)
 	MeGet(ctx context.Context, request MeGetRequestObject) (MeGetResponseObject, error)
 
+	// (GET /v1/me/api-tokens)
+	MeApiTokensList(ctx context.Context, request MeApiTokensListRequestObject) (MeApiTokensListResponseObject, error)
+
+	// (POST /v1/me/api-tokens)
+	MeApiTokensCreate(ctx context.Context, request MeApiTokensCreateRequestObject) (MeApiTokensCreateResponseObject, error)
+
+	// (DELETE /v1/me/api-tokens/{tokenId})
+	MeApiTokensRevoke(ctx context.Context, request MeApiTokensRevokeRequestObject) (MeApiTokensRevokeResponseObject, error)
+
 	// (GET /v1/permission-manifests)
 	PermissionManifestsList(ctx context.Context, request PermissionManifestsListRequestObject) (PermissionManifestsListResponseObject, error)
 
@@ -6022,6 +8296,9 @@ type StrictServerInterface interface {
 
 	// (PATCH /v1/users/{userId})
 	UsersUpdate(ctx context.Context, request UsersUpdateRequestObject) (UsersUpdateResponseObject, error)
+
+	// (GET /v1/users/{userId}/api-tokens)
+	UserApiTokensList(ctx context.Context, request UserApiTokensListRequestObject) (UserApiTokensListResponseObject, error)
 
 	// (POST /v1/users/{userId}/invites)
 	InvitesCreate(ctx context.Context, request InvitesCreateRequestObject) (InvitesCreateResponseObject, error)
@@ -6181,6 +8458,41 @@ func (sh *strictHandler) OAuthEndSession(w http.ResponseWriter, r *http.Request,
 	}
 }
 
+// OAuthIntrospect operation middleware
+func (sh *strictHandler) OAuthIntrospect(w http.ResponseWriter, r *http.Request) {
+	var request OAuthIntrospectRequestObject
+
+	if err := r.ParseForm(); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode formdata: %w", err))
+		return
+	}
+	var body OAuthIntrospectFormdataRequestBody
+	if err := runtime.BindForm(&body, r.Form, nil, nil); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't bind formdata: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.OAuthIntrospect(ctx, request.(OAuthIntrospectRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "OAuthIntrospect")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(OAuthIntrospectResponseObject); ok {
+		if err := validResponse.VisitOAuthIntrospectResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // OAuthRevoke operation middleware
 func (sh *strictHandler) OAuthRevoke(w http.ResponseWriter, r *http.Request) {
 	var request OAuthRevokeRequestObject
@@ -6268,6 +8580,229 @@ func (sh *strictHandler) OAuthUserinfo(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(OAuthUserinfoResponseObject); ok {
 		if err := validResponse.VisitOAuthUserinfoResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AgentsList operation middleware
+func (sh *strictHandler) AgentsList(w http.ResponseWriter, r *http.Request, params AgentsListParams) {
+	var request AgentsListRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AgentsList(ctx, request.(AgentsListRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AgentsList")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AgentsListResponseObject); ok {
+		if err := validResponse.VisitAgentsListResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AgentsCreate operation middleware
+func (sh *strictHandler) AgentsCreate(w http.ResponseWriter, r *http.Request) {
+	var request AgentsCreateRequestObject
+
+	var body AgentsCreateJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AgentsCreate(ctx, request.(AgentsCreateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AgentsCreate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AgentsCreateResponseObject); ok {
+		if err := validResponse.VisitAgentsCreateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AgentsGet operation middleware
+func (sh *strictHandler) AgentsGet(w http.ResponseWriter, r *http.Request, agentId string) {
+	var request AgentsGetRequestObject
+
+	request.AgentId = agentId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AgentsGet(ctx, request.(AgentsGetRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AgentsGet")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AgentsGetResponseObject); ok {
+		if err := validResponse.VisitAgentsGetResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AgentsUpdate operation middleware
+func (sh *strictHandler) AgentsUpdate(w http.ResponseWriter, r *http.Request, agentId string) {
+	var request AgentsUpdateRequestObject
+
+	request.AgentId = agentId
+
+	var body AgentsUpdateJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AgentsUpdate(ctx, request.(AgentsUpdateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AgentsUpdate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AgentsUpdateResponseObject); ok {
+		if err := validResponse.VisitAgentsUpdateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AgentRolesList operation middleware
+func (sh *strictHandler) AgentRolesList(w http.ResponseWriter, r *http.Request, agentId string, params AgentRolesListParams) {
+	var request AgentRolesListRequestObject
+
+	request.AgentId = agentId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AgentRolesList(ctx, request.(AgentRolesListRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AgentRolesList")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AgentRolesListResponseObject); ok {
+		if err := validResponse.VisitAgentRolesListResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AgentRolesRemove operation middleware
+func (sh *strictHandler) AgentRolesRemove(w http.ResponseWriter, r *http.Request, agentId string, role RoleRef) {
+	var request AgentRolesRemoveRequestObject
+
+	request.AgentId = agentId
+	request.Role = role
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AgentRolesRemove(ctx, request.(AgentRolesRemoveRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AgentRolesRemove")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AgentRolesRemoveResponseObject); ok {
+		if err := validResponse.VisitAgentRolesRemoveResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AgentRolesAssign operation middleware
+func (sh *strictHandler) AgentRolesAssign(w http.ResponseWriter, r *http.Request, agentId string, role RoleRef) {
+	var request AgentRolesAssignRequestObject
+
+	request.AgentId = agentId
+	request.Role = role
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AgentRolesAssign(ctx, request.(AgentRolesAssignRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AgentRolesAssign")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AgentRolesAssignResponseObject); ok {
+		if err := validResponse.VisitAgentRolesAssignResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ApiTokensRevoke operation middleware
+func (sh *strictHandler) ApiTokensRevoke(w http.ResponseWriter, r *http.Request, tokenId string) {
+	var request ApiTokensRevokeRequestObject
+
+	request.TokenId = tokenId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ApiTokensRevoke(ctx, request.(ApiTokensRevokeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ApiTokensRevoke")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ApiTokensRevokeResponseObject); ok {
+		if err := validResponse.VisitApiTokensRevokeResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -6556,6 +9091,89 @@ func (sh *strictHandler) MeGet(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// MeApiTokensList operation middleware
+func (sh *strictHandler) MeApiTokensList(w http.ResponseWriter, r *http.Request, params MeApiTokensListParams) {
+	var request MeApiTokensListRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.MeApiTokensList(ctx, request.(MeApiTokensListRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "MeApiTokensList")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(MeApiTokensListResponseObject); ok {
+		if err := validResponse.VisitMeApiTokensListResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// MeApiTokensCreate operation middleware
+func (sh *strictHandler) MeApiTokensCreate(w http.ResponseWriter, r *http.Request) {
+	var request MeApiTokensCreateRequestObject
+
+	var body MeApiTokensCreateJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.MeApiTokensCreate(ctx, request.(MeApiTokensCreateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "MeApiTokensCreate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(MeApiTokensCreateResponseObject); ok {
+		if err := validResponse.VisitMeApiTokensCreateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// MeApiTokensRevoke operation middleware
+func (sh *strictHandler) MeApiTokensRevoke(w http.ResponseWriter, r *http.Request, tokenId string) {
+	var request MeApiTokensRevokeRequestObject
+
+	request.TokenId = tokenId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.MeApiTokensRevoke(ctx, request.(MeApiTokensRevokeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "MeApiTokensRevoke")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(MeApiTokensRevokeResponseObject); ok {
+		if err := validResponse.VisitMeApiTokensRevokeResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // PermissionManifestsList operation middleware
 func (sh *strictHandler) PermissionManifestsList(w http.ResponseWriter, r *http.Request, params PermissionManifestsListParams) {
 	var request PermissionManifestsListRequestObject
@@ -6828,6 +9446,33 @@ func (sh *strictHandler) UsersUpdate(w http.ResponseWriter, r *http.Request, use
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UsersUpdateResponseObject); ok {
 		if err := validResponse.VisitUsersUpdateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UserApiTokensList operation middleware
+func (sh *strictHandler) UserApiTokensList(w http.ResponseWriter, r *http.Request, userId string, params UserApiTokensListParams) {
+	var request UserApiTokensListRequestObject
+
+	request.UserId = userId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UserApiTokensList(ctx, request.(UserApiTokensListRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UserApiTokensList")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UserApiTokensListResponseObject); ok {
+		if err := validResponse.VisitUserApiTokensListResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
