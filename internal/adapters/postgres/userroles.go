@@ -94,14 +94,23 @@ func (r *UserRoles) Page(ctx context.Context, userID string, after *domain.RoleR
 }
 
 // GrantedPermissions returns the permissions of the roles that exist and that
-// the user has. The join to role_permissions drops a pending assignment.
-func (r *UserRoles) GrantedPermissions(ctx context.Context, userID string) ([]string, error) {
+// the user has, and of the implicit roles. The join to role_permissions drops a
+// pending assignment, because a pending role has no row there.
+func (r *UserRoles) GrantedPermissions(ctx context.Context, userID string, implicit ...domain.RoleRef) ([]string, error) {
+	apps := make([]string, 0, len(implicit))
+	roles := make([]string, 0, len(implicit))
+	for _, ref := range implicit {
+		apps = append(apps, ref.App)
+		roles = append(roles, ref.Role)
+	}
 	rows, err := clientspg.Conn(ctx, r.pool).Query(ctx, `
 		SELECT DISTINCT rp.permission
 		FROM role_permissions rp
-		JOIN user_roles ur ON ur.app = rp.app AND ur.role = rp.role
-		WHERE ur.user_id = $1
-		ORDER BY rp.permission`, userID)
+		WHERE EXISTS (SELECT 1 FROM user_roles ur
+		              WHERE ur.user_id = $1 AND ur.app = rp.app AND ur.role = rp.role)
+		   OR EXISTS (SELECT 1 FROM unnest($2::text[], $3::text[]) AS i (app, role)
+		              WHERE i.app = rp.app AND i.role = rp.role)
+		ORDER BY rp.permission`, userID, apps, roles)
 	if err != nil {
 		return nil, fmt.Errorf("list granted permissions: %w", err)
 	}

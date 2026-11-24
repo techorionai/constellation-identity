@@ -156,12 +156,13 @@ func (r *UserRoles) Page(ctx context.Context, userID string, after *domain.RoleR
 }
 
 // GrantedPermissions returns the permissions of the roles of a user. The map
-// Perms gives the permissions of a role. A role with no entry is pending.
-func (r *UserRoles) GrantedPermissions(_ context.Context, userID string) ([]string, error) {
+// Perms gives the permissions of a role. A role with no entry is pending. The
+// implicit roles count like assigned roles.
+func (r *UserRoles) GrantedPermissions(_ context.Context, userID string, implicit ...domain.RoleRef) ([]string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []string
-	for _, ref := range r.Rows[userID] {
+	for _, ref := range append(slices.Clone(r.Rows[userID]), implicit...) {
 		for _, p := range r.Perms[ref] {
 			if !slices.Contains(out, p) {
 				out = append(out, p)
