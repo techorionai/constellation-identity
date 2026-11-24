@@ -20,6 +20,7 @@ type DiscoveryResult struct {
 	UserinfoEndpoint                           string
 	EndSessionEndpoint                         string
 	RevocationEndpoint                         string
+	IntrospectionEndpoint                      string
 	JWKSURI                                    string
 	ScopesSupported                            []string
 	ResponseTypesSupported                     []string
@@ -53,6 +54,7 @@ func (q *GetDiscoveryQuery) Execute(context.Context, GetDiscovery) (DiscoveryRes
 		UserinfoEndpoint:                           base + "/oauth/userinfo",
 		EndSessionEndpoint:                         base + "/oauth/end_session",
 		RevocationEndpoint:                         base + "/oauth/revoke",
+		IntrospectionEndpoint:                      base + "/oauth/introspect",
 		JWKSURI:                                    base + "/.well-known/jwks.json",
 		ScopesSupported:                            append([]string{}, domain.OIDCScopes...),
 		ResponseTypesSupported:                     []string{"code"},

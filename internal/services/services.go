@@ -334,11 +334,24 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	getRole := withObservability(queries.NewGetRole(manifestRepo), "GetRole", log)
 	// The revoke endpoint authenticates a service client with the same checks.
 	users.oidc.SetServiceAuthenticator(issueCmd)
+	introspectCmd, err := commands.NewIntrospect(commands.IntrospectDeps{
+		Auth: issueCmd, Tokens: users.apiTokenRepo, UserRoles: users.userRoles, Log: log, Now: o.clock,
+	})
+	if err != nil {
+		return nil, err
+	}
+	// The command checks the caller and the token. It has no logging decorator,
+	// because a log record must not have the token.
+	introspect := decorators.ApplyTracing(introspectCmd, "Introspect",
+		decorators.WithErrorClassifier(func(err error) bool {
+			oe, ok := apperrors.AsOAuthError(err)
+			return !ok || oe.Code == apperrors.OAuthServerError || oe.Code == apperrors.OAuthTemporarilyUnavailable
+		}))
 	api := httpapi.New(httpapi.Deps{
 		JWKS: jwks, Discovery: discovery, IssueToken: issue, PublishManifest: publish,
 		ListManifests: listManifests, GetManifest: getManifest, ListRoles: listRoles, GetRole: getRole,
 		ExchangeCode: users.exchangeCode, RefreshTokens: users.refreshTokens, RevokeToken: users.revokeToken, UserInfo: users.userInfo,
-		Admin: users.admin, CreateUser: users.createUser, CreateInvite: users.createInvite, CORSOrigins: users.cors,
+		Admin: users.admin, APITokens: users.apiTokens, Introspect: introspect, CreateUser: users.createUser, CreateInvite: users.createInvite, CORSOrigins: users.cors,
 		Verifier: a.verify, Scopes: scopes, Log: log,
 	})
 	// RedactToken is outside the tracing handler, so no span has a secret value
