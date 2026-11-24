@@ -415,7 +415,7 @@ func TestIssue4CodeFlowIntegration(t *testing.T) {
 	t.Run("I16_discovery", func(t *testing.T) {
 		_, b := f.a.Get(t, "/.well-known/openid-configuration")
 		m := decode(t, b)
-		if !slices.Equal(toStrings(m["grant_types_supported"]), []string{"client_credentials", "authorization_code", "refresh_token"}) ||
+		if !slices.Equal(toStrings(m["grant_types_supported"]), []string{"client_credentials", "authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"}) ||
 			!slices.Equal(toStrings(m["scopes_supported"]), []string{"openid", "profile", "email", "offline_access"}) ||
 			!slices.Equal(toStrings(m["token_endpoint_auth_methods_supported"]), []string{"private_key_jwt", "none"}) {
 			t.Fatalf("discovery = %v", m)

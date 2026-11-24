@@ -186,7 +186,7 @@ func TestIssue9_U15_DiscoveryIntrospection(t *testing.T) {
 	if doc["introspection_endpoint"] != "https://id.example.com/oauth/introspect" {
 		t.Fatalf("introspection_endpoint = %v", doc["introspection_endpoint"])
 	}
-	if l, ok := doc["grant_types_supported"].([]any); !ok || len(l) != 3 {
+	if l, ok := doc["grant_types_supported"].([]any); !ok || len(l) != 4 {
 		t.Fatalf("grant_types_supported = %v", doc["grant_types_supported"])
 	}
 }
