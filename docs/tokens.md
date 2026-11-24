@@ -141,6 +141,61 @@ A personal API token is a long-lived credential of one user. A user makes, lists
 - Each create and each revoke writes the `info` record `identity.api_token.change` with `actor_id`, `operation` (`create` or `revoke`), and `token_id`.
 - The retention job `api_tokens` removes a row `IDENTITY_RETENTION__API_TOKENS__PERIOD` after it expired or was revoked.
 
+## Token exchange
+
+The grant `urn:ietf:params:oauth:grant-type:token-exchange` (RFC 8693) lets a service client get a short token for a user, and for an agent that acts for the user. The result has `sub` = the user. With an agent, it has `act` = `{"sub": <agent ID>, "principal_type": "agent"}`. VISION 6.5 and 6.6 describe the use.
+
+### Request
+
+`POST /oauth/token` with a form. The client authenticates with `private_key_jwt` as for the client credentials grant.
+
+| Field | Rule |
+| ----- | ---- |
+| `subject_token` | Required. An access token of a user that the code flow issued. |
+| `subject_token_type` | Required. `urn:ietf:params:oauth:token-type:access_token`. |
+| `audience` | Required. One app key with a manifest. Not `identity`. |
+| `scope` | Required. Permission keys of the audience. |
+| `actor_token` and `actor_token_type` | Optional. They appear together. The token is the ID of an agent, not a signed token. The type is `urn:constellation:params:oauth:token-type:agent-id`. |
+| `requested_token_type` | Optional. Only the access token URI. |
+
+Each field has one value. A repeated field gives `invalid_request`.
+
+### Order of the checks
+
+1. A repeated field, a `client_secret` field, an `Authorization: Basic` header, a missing or wrong `client_assertion_type`, or an empty `client_assertion` gives `invalid_request`.
+2. Client authentication. Each failure of the client gives 401 `invalid_client`. A failure of the `jti` store gives 503 `temporarily_unavailable`.
+3. The client needs the permission `identity:token:exchange` through its roles (the role `identity:admin` has it). Else `unauthorized_client`. This check comes before the check of the parameters.
+4. A missing `subject_token`, `subject_token_type`, `audience`, or `scope` (spaces only is missing), or an `actor_token` without `actor_token_type` (or the reverse), gives `invalid_request`.
+5. A wrong `subject_token_type`, `requested_token_type`, or `actor_token_type` gives `unsupported_token_type`.
+6. An `audience` that is not an app key, that has no manifest, or that is `identity` gives `invalid_target`.
+7. The subject token. Each failure gives `invalid_grant` with the same text. The token must have a valid signature, the issuer of the service, and `typ` `at+jwt`. It must not be expired and must not be valid in the future (`nbf`). `principal_type` must be `user`. The `act` member must not be present in any form. `client_id` must name an existing, enabled public client, so an exchanged token (it has the `client_id` of a service client), a service token, and an API token (`cpat_`) are refused. `aud` must be one value that is equal to the `app` of the authenticated client, so a client can exchange only user tokens that were issued for its own app. The user must exist and have the status `active`. The token must have at least 10 seconds of life left.
+8. The actor token. It must be a UUID. The agent must exist, be enabled, and belong to the authenticated client. A value that is not a UUID, an unknown agent, a disabled agent, and an agent of another client all give `invalid_grant` with the same text. A value that is not a UUID does not query the database.
+9. The scope. The granted scope is the permissions of the user, with the implicit role `identity:user`. With an actor, it is the intersection with the permissions of the agent. A pending role of the agent gives no permission. A requested scope that is not granted, an OIDC scope, and a scope that does not start with `<audience>:` give `invalid_scope`.
+
+### Result
+
+- Claims: `iss`, `sub` (the user), `aud` (the audience), `client_id` (the authenticated client), `scope`, `principal_type` `user`, `jti`, `iat`, `nbf`, `exp`, and `act` if there is an actor.
+- `exp` is the lower value of `iat` + 5 minutes and the `exp` of the subject token. `expires_in` is at least 10.
+- The response has `access_token`, `token_type` `Bearer`, `expires_in`, `scope`, and `issued_token_type`. It has no `refresh_token` and no `id_token`. It has `Cache-Control: no-store` and `Pragma: no-cache`.
+- An exchanged token is not valid at `/oauth/userinfo` (401). It cannot call `/v1`, because its audience is never `identity`.
+
+### Errors
+
+| Code | Cause |
+| ---- | ----- |
+| `invalid_request` | A repeated or missing parameter, a second client authentication method, an actor token without its type. |
+| `invalid_client` (401) | The client authentication failed. |
+| `unauthorized_client` | The client does not have `identity:token:exchange`. |
+| `unsupported_token_type` | A token type is not the expected URI. |
+| `invalid_target` | The audience is not valid. |
+| `invalid_grant` | The subject token or the agent is not valid. |
+| `invalid_scope` | A scope is not in the granted set. |
+| `temporarily_unavailable` (503) | The `jti` store or the key cache is not available. |
+
+### Telemetry
+
+`identity.tokens.issued` has `grant_type` `token_exchange`, `principal_type` `user`, and `with_agent`. `identity.token.errors` has `error` and `with_agent`. A user ID or an agent ID is never a metric attribute. Each success writes one `info` record `identity.token.exchange` with `client.id`, `user_id`, `agent_id` (empty without an actor), `audience`, `scope`, and `jti`. Until R09 this record is the only delegation trace. No token, assertion, or actor value is in a log record, a span, or a metric.
+
 ## Token introspection
 
 `POST /oauth/introspect` (RFC 7662) tells a service if an API token is active, and for which scopes. The service sends a form.
@@ -156,4 +211,4 @@ A personal API token is a long-lived credential of one user. A user makes, lists
 
 ### Telemetry
 
-`identity.tokens.issued` has the `grant_type` values `client_credentials`, `authorization_code`, and `refresh_token`. The counters `identity.code.reuse` and `identity.refresh_token.reuse` count the reuse cases. The values `code`, `code_verifier`, `refresh_token`, `id_token_hint`, `authRequest`, `state`, `nonce`, and `token` are `REDACTED` in the query of a logged or traced URL.
+`identity.tokens.issued` has the `grant_type` values `client_credentials`, `authorization_code`, `refresh_token`, and `token_exchange`. The counters `identity.code.reuse` and `identity.refresh_token.reuse` count the reuse cases. The values `code`, `code_verifier`, `refresh_token`, `id_token_hint`, `authRequest`, `state`, `nonce`, and `token` are `REDACTED` in the query of a logged or traced URL.

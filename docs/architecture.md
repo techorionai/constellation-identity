@@ -49,6 +49,7 @@ The `.golangci.yml` file has `depguard` rules for the import table of the guide.
 | Refresh token families and tokens | `internal/ports/refreshtokens` | `internal/adapters/postgres` |
 | Token verifier (own tokens) | `internal/ports/tokenverifier` | `internal/adapters/jose` |
 | Personal API tokens (table `api_tokens`) | `internal/ports/apitokens` | `internal/adapters/postgres` |
+| Agents (table `agents`) and agent roles (table `agent_roles`) | `internal/ports/agents`, `internal/ports/agentroles` | `internal/adapters/postgres` |
 | Admin change lock | `internal/ports/adminlock` | `internal/adapters/postgres` (`pg_advisory_xact_lock`) |
 
 The ports of the sessions, users, user roles, clients, and client roles have the methods that the code flow and the admin API need: the session `Reauthenticate` and `RevokeCascade`, the lists with a cursor, the role `Page`, and the client create, update, and key methods.
@@ -67,7 +68,7 @@ The token endpoint is the use case `IssueServiceToken` in `internal/app/commands
 | ----- | ----- |
 | `GET /.well-known/jwks.json` | Implemented. `Cache-Control: public, max-age=300`. |
 | `GET /.well-known/openid-configuration` | Implemented. `Cache-Control: public, max-age=3600`. |
-| `POST /oauth/token` | The grants `client_credentials`, `authorization_code`, and `refresh_token`. Another grant gives 400 `unsupported_grant_type`. |
+| `POST /oauth/token` | The grants `client_credentials`, `authorization_code`, `refresh_token`, and `urn:ietf:params:oauth:grant-type:token-exchange`. Another grant gives 400 `unsupported_grant_type`. |
 | `GET /oauth/authorize`, `GET /oauth/end_session` | HTML pages on the pages router, because they need the raw query, the cookie, and pages. The generated operations answer 501 if a request ever reaches them. |
 | `GET /oauth/authorize/continue`, `POST /oauth/end_session` | Page routes that are not in the OpenAPI file. |
 | `GET /oauth/userinfo`, `POST /oauth/revoke` | Implemented. CORS for registered origins. |
@@ -81,6 +82,8 @@ The pages are on a router in front of the generated router. The chain is `Redact
 The use cases of the users are in `internal/app/commands/` (`EnsureSetupToken`, `ReplaceSetupToken`, `CompleteSetup`, `CreateUser`, `CreateInvite`, `AcceptInvite`, `Login`, `Logout`, `TouchSession`) and `internal/app/queries/` (`SessionFromCookie`, `CheckOneTimeToken`). The code flow is in `internal/app/commands/oidc.go` (`OIDC`: `StartAuthorization`, `CompleteAuthorization`, `ExchangeCode`, `RefreshTokens`, `RevokeToken`, `StartEndSession`, `ConfirmEndSession`, `GetUserInfo`). The admin API is in `internal/app/commands/admin.go` (`Admin`) and calls `CreateUser` and `CreateInvite`. The CORS origin query is in `internal/app/queries/cors.go`. The `Login` command keeps the session at a re-login of the same user.
 
 ### Lock order
+
+The table `agents` has the columns `id`, `name` (unique), `client_id` (foreign key to `clients`), `enabled`, `created_at`, and `updated_at`. The table `agent_roles` has the key (`agent_id`, `app`, `role`) and `source`. It has no foreign key to `roles`, so a role that leaves a manifest stays as a pending assignment. The migration `0011` only adds tables. The token exchange is the use case `TokenExchange` in `internal/app/commands/token_exchange.go`. See [tokens.md](tokens.md).
 
 The create of an API token locks the user row (`SELECT ... FOR UPDATE`) in its own transaction, checks the status and the two limits, and inserts the row into the table `api_tokens`. The disable of a user holds the user row lock too, so a create and a disable cannot both pass. The disable revokes the API tokens in the same transaction as the sessions.
 
