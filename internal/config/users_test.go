@@ -175,8 +175,8 @@ func TestIssue9_U14_APITokenSettings(t *testing.T) {
 				t.Fatalf("err = %v", err)
 			case !tt.ok && err == nil:
 				t.Fatal("want an error")
-			case !tt.ok && !strings.Contains(err.Error(), strings.TrimPrefix(tt.name[:strings.LastIndex(tt.name, "__")], "IDENTITY_")):
-				t.Fatalf("the error must name the variable: %v", err)
+			case !tt.ok && !strings.Contains(err.Error(), wantName(tt.name)):
+				t.Fatalf("the error must contain %q: %v", wantName(tt.name), err)
 			}
 		})
 	}
@@ -188,4 +188,14 @@ func TestIssue9_U14_APITokenSettings(t *testing.T) {
 			t.Fatalf("error = %v", err)
 		}
 	})
+}
+
+// wantName gives the text that the error of a bad variable must contain. The
+// API token variables have their full name. The retention variables of the API
+// tokens are in one error that names the group with a wildcard.
+func wantName(env string) string {
+	if strings.HasPrefix(env, "IDENTITY_RETENTION__API_TOKENS__") {
+		return "RETENTION__API_TOKENS__"
+	}
+	return env
 }
