@@ -20,6 +20,8 @@ import (
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/adminlock"
+	"github.com/techorionai/constellation-identity/internal/ports/agentroles"
+	"github.com/techorionai/constellation-identity/internal/ports/agents"
 	"github.com/techorionai/constellation-identity/internal/ports/apitokens"
 	"github.com/techorionai/constellation-identity/internal/ports/clientroles"
 	"github.com/techorionai/constellation-identity/internal/ports/clients"
@@ -38,6 +40,8 @@ type AdminDeps struct {
 	Sessions    sessions.Repository
 	Clients     clients.Repository
 	ClientRoles clientroles.Repository
+	Agents      agents.Repository
+	AgentRoles  agentroles.Repository
 	Manifests   manifests.Repository
 	Tokens      onetimetokens.Repository
 	Refresh     refreshtokens.Repository

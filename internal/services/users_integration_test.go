@@ -117,6 +117,9 @@ type secretLedger struct {
 	flow []string
 	// apiTokens has the values of the personal API tokens.
 	apiTokens []string
+	// exchange has the subject tokens and the exchanged tokens of the token
+	// exchange tests.
+	exchange []string
 }
 
 func (l *secretLedger) add(dst *[]string, v string) {

@@ -247,6 +247,16 @@ func TokenForm(assertion, audience, scope string) url.Values {
 	return v
 }
 
+// ExchangeForm makes the form of a token exchange request with a subject token
+// of the type access token. It has no actor token.
+func ExchangeForm(assertion, audience, scope, subjectToken string) url.Values {
+	v := TokenForm(assertion, audience, scope)
+	v.Set("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
+	v.Set("subject_token", subjectToken)
+	v.Set("subject_token_type", "urn:ietf:params:oauth:token-type:access_token")
+	return v
+}
+
 // PostToken sends a token request with a form.
 func (s *Server) PostToken(t testing.TB, form url.Values) (Response, []byte) {
 	t.Helper()

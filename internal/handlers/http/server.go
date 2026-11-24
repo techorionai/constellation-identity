@@ -56,6 +56,7 @@ type Deps struct {
 	ListRoles       executor.ExecutorWithReturn[queries.ListRoles, queries.ListRolesResult]
 	GetRole         executor.ExecutorWithReturn[queries.GetRole, domain.Role]
 	// The use cases of the code flow, userinfo, and revoke.
+	ExchangeToken executor.ExecutorWithReturn[commands.TokenExchange, commands.TokenExchangeResult]
 	ExchangeCode  executor.ExecutorWithReturn[commands.ExchangeCode, commands.UserTokenResult]
 	RefreshTokens executor.ExecutorWithReturn[commands.RefreshTokens, commands.UserTokenResult]
 	RevokeToken   executor.Executor[commands.RevokeToken]
@@ -149,7 +150,8 @@ func captureTokenRequest(f gen.StrictHandlerFunc, operation string) gen.StrictHa
 			authorization:        r.Header.Get("Authorization"),
 		}
 		for _, name := range []string{"grant_type", "client_assertion_type", "client_assertion", "client_id", "audience", "scope",
-			"code", "code_verifier", "redirect_uri", "refresh_token", "token", "token_type_hint"} {
+			"code", "code_verifier", "redirect_uri", "refresh_token", "token", "token_type_hint",
+			"subject_token", "subject_token_type", "actor_token", "actor_token_type", "requested_token_type"} {
 			if len(r.Form[name]) > 1 {
 				tr.repeated = true
 			}
@@ -261,6 +263,29 @@ func (s *Server) OAuthToken(ctx context.Context, _ gen.OAuthTokenRequestObject) 
 			return nil, err
 		}
 		return userTokenResponse(res), nil
+	case domain.GrantTypeTokenExchange:
+		res, err := s.d.ExchangeToken.Execute(ctx, commands.TokenExchange{
+			AssertionType: field("client_assertion_type"), Assertion: field("client_assertion"), ClientID: field("client_id"),
+			SubjectToken: field("subject_token"), SubjectTokenType: field("subject_token_type"),
+			ActorToken: field("actor_token"), ActorTokenType: field("actor_token_type"),
+			RequestedTokenType: field("requested_token_type"), Audience: field("audience"), Scope: field("scope"),
+			SecondAuthentication: tr.secondAuthentication, RepeatedParameter: tr.repeated,
+		})
+		if err != nil {
+			return nil, err
+		}
+		var issuedType gen.TokenType
+		_ = issuedType.FromTokenType0(gen.TokenType0(res.IssuedTokenType))
+		return gen.OAuthToken200JSONResponse{
+			Body: gen.TokenResponse{
+				AccessToken:     res.AccessToken,
+				ExpiresIn:       int32(res.ExpiresIn), //nolint:gosec // The lifetime is a small value.
+				Scope:           res.Scope,
+				TokenType:       gen.Bearer,
+				IssuedTokenType: &issuedType,
+			},
+			Headers: gen.OAuthToken200ResponseHeaders{CacheControl: "no-store", Pragma: "no-cache"},
+		}, nil
 	case "refresh_token":
 		res, err := s.d.RefreshTokens.Execute(ctx, commands.RefreshTokens{
 			ClientID: field("client_id"), RefreshToken: field("refresh_token"), Scope: field("scope"),

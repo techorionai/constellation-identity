@@ -106,7 +106,7 @@ func TestU10_Discovery(t *testing.T) {
 	if l := list("scopes_supported"); len(l) != 4 {
 		t.Errorf("scopes_supported = %v", l)
 	}
-	if l, ok := doc["grant_types_supported"].([]any); !ok || len(l) != 3 || l[0] != "client_credentials" || l[1] != "authorization_code" || l[2] != "refresh_token" {
+	if l, ok := doc["grant_types_supported"].([]any); !ok || len(l) != 4 || l[0] != "client_credentials" || l[1] != "authorization_code" || l[2] != "refresh_token" || l[3] != "urn:ietf:params:oauth:grant-type:token-exchange" {
 		t.Errorf("grant_types_supported = %v", doc["grant_types_supported"])
 	}
 }

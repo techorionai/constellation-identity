@@ -828,7 +828,9 @@ type UserInfoResult struct {
 type UserInfo struct{ AccessToken string }
 
 // GetUserInfo checks the access token and returns the claims of its user. It
-// accepts any audience. An ID token is not valid here.
+// accepts any audience, but only a token of the code flow: a token with act, or
+// with the client ID of something other than an enabled public client, is not
+// valid. An ID token is not valid here.
 func (o *OIDC) GetUserInfo(ctx context.Context, in UserInfo) (UserInfoResult, error) {
 	c, err := o.verifyOwn(in.AccessToken, domain.AccessTokenType)
 	if err != nil {
@@ -839,6 +841,16 @@ func (o *OIDC) GetUserInfo(ctx context.Context, in UserInfo) (UserInfoResult, er
 	}
 	if c.PrincipalType != domain.PrincipalUser {
 		return UserInfoResult{}, ErrInsufficientScope
+	}
+	// An exchanged token is for another app. It has act, or it has the client
+	// ID of a service client. It must not read the profile of the user.
+	if c.HasAct {
+		return UserInfoResult{}, ErrInvalidToken
+	}
+	if _, ok, err := o.publicClient(ctx, c.ClientID); err != nil {
+		return UserInfoResult{}, fmt.Errorf("get the client: %w", err)
+	} else if !ok {
+		return UserInfoResult{}, ErrInvalidToken
 	}
 	u, err := o.d.Users.GetByID(ctx, c.Subject)
 	if errors.Is(err, users.ErrNotFound) {

@@ -26,6 +26,7 @@ type rawClaims struct {
 	Sub       string          `json:"sub"`
 	Aud       json.RawMessage `json:"aud"`
 	Exp       *float64        `json:"exp"`
+	Nbf       *float64        `json:"nbf"`
 	ClientID  string          `json:"client_id"`
 	Scope     string          `json:"scope"`
 	Principal string          `json:"principal_type"`
@@ -82,6 +83,14 @@ func (Verifier) Verify(token string, keys []domain.PublicJWK) (tokenverifier.Cla
 	}
 	if rc.Exp != nil && *rc.Exp > 0 && *rc.Exp < math.MaxInt32*4 {
 		out.ExpiresAt = time.Unix(int64(*rc.Exp), 0).UTC()
+	}
+	if rc.Nbf != nil && *rc.Nbf > 0 && *rc.Nbf < math.MaxInt32*4 {
+		out.NotBefore = time.Unix(int64(*rc.Nbf), 0).UTC()
+	}
+	// The member act has any JSON type. Only its presence matters.
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &members); err == nil {
+		_, out.HasAct = members["act"]
 	}
 	return out, nil
 }

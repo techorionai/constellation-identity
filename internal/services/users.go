@@ -149,7 +149,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	st.oidc = oidc
 	st.admin = commands.NewAdmin(commands.AdminDeps{
 		Users: userRepo, UserRoles: roles, Sessions: sessionRepo, Clients: clientRepo,
-		ClientRoles: postgres.NewClientRoles(pool), Manifests: postgres.NewManifests(pool), Tokens: tokens,
+		ClientRoles: postgres.NewClientRoles(pool), Agents: postgres.NewAgents(pool), AgentRoles: postgres.NewAgentRoles(pool), Manifests: postgres.NewManifests(pool), Tokens: tokens,
 		Refresh: refreshRepo, APITokens: apiTokenRepo, Lock: postgres.NewAdminLock(pool), Tx: tx, Log: log, Now: clock,
 	})
 	st.apiTokenRepo, st.userRoles = apiTokenRepo, roles

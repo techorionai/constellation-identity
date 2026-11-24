@@ -238,6 +238,44 @@ func TestIssue2_TokenEndpointResponses(t *testing.T) {
 	}
 }
 
+// Issue10_U11a_U12: the handler sets RepeatedParameter for each repeated field
+// of a token exchange request.
+func TestIssue10_U11a_U12_RepeatedFields(t *testing.T) {
+	var seen commands.TokenExchange
+	h := httpapi.New(httpapi.Deps{
+		ExchangeToken: executor.FuncWithReturn[commands.TokenExchange, commands.TokenExchangeResult](
+			func(_ context.Context, in commands.TokenExchange) (commands.TokenExchangeResult, error) {
+				seen = in
+				return commands.TokenExchangeResult{AccessToken: "tok", ExpiresIn: 300, Scope: "mail:message:read", IssuedTokenType: domain.TokenTypeAccessToken}, nil
+			}),
+	}).Handler()
+	form := url.Values{
+		"grant_type": {domain.GrantTypeTokenExchange}, "client_assertion_type": {domain.AssertionType},
+		"client_assertion": {"a.b.c"}, "audience": {"mail"}, "scope": {"mail:message:read"},
+		"subject_token": {"s"}, "subject_token_type": {domain.TokenTypeAccessToken},
+		"actor_token": {"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, "actor_token_type": {domain.TokenTypeAgentID},
+	}
+	if rec := get(h, http.MethodPost, "/oauth/token", form.Encode()); rec.Code != http.StatusOK || seen.RepeatedParameter {
+		t.Fatalf("base request: status %d %s, input %+v", rec.Code, rec.Body.String(), seen)
+	}
+	other := map[string]string{
+		"audience": "other", "scope": "mail:message:read", "subject_token": "t",
+		"actor_token": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+	}
+	for _, name := range []string{"audience", "scope", "subject_token", "actor_token"} {
+		seen = commands.TokenExchange{}
+		get(h, http.MethodPost, "/oauth/token", form.Encode()+"&"+name+"="+other[name])
+		if !seen.RepeatedParameter {
+			t.Errorf("repeated %s was not seen: %+v", name, seen)
+		}
+	}
+	seen = commands.TokenExchange{}
+	get(h, http.MethodPost, "/oauth/token", form.Encode()+"&client_secret=x")
+	if !seen.SecondAuthentication {
+		t.Errorf("client_secret was not seen: %+v", seen)
+	}
+}
+
 // The service rejects an Authorization header with the scheme Basic only. A
 // header with another scheme does not change the result.
 func TestIssue2_U12e_AuthorizationHeaderScheme(t *testing.T) {

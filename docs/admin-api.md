@@ -1,6 +1,6 @@
 # Admin API
 
-The `/v1` operations for users, invites, role assignments, clients, client keys, and sessions. The contract is in `constellation-contracts`. A caller needs an access token for the audience `identity` with the scopes of the operation. See [tokens.md](tokens.md). An admin UI is a public client with `app: identity`. It gets the token with the code flow.
+The `/v1` operations for users, invites, role assignments, clients, client keys, agents, and sessions. The contract is in `constellation-contracts`. A caller needs an access token for the audience `identity` with the scopes of the operation. See [tokens.md](tokens.md). An admin UI is a public client with `app: identity`. It gets the token with the code flow.
 
 Each change writes one `info` log record (`identity.admin.change`) with `actor_id`, `operation`, and `target_id`. The record has no secret value. Audit entries come with R08 and R09.
 
@@ -10,8 +10,10 @@ Each change writes one `info` log record (`identity.admin.change`) with `actor_i
 | --------- | ----- |
 | `Users_list`, `Users_get` | `identity:user:read` |
 | `Users_create`, `Users_update`, `Invites_create` | `identity:user:write` |
-| `UserRoles_list`, `ClientRoles_list` | `identity:role:read` |
-| `UserRoles_assign`, `UserRoles_remove`, `ClientRoles_assign`, `ClientRoles_remove` | `identity:role:assign` |
+| `UserRoles_list`, `ClientRoles_list`, `AgentRoles_list` | `identity:role:read` |
+| `UserRoles_assign`, `UserRoles_remove`, `ClientRoles_assign`, `ClientRoles_remove`, `AgentRoles_assign`, `AgentRoles_remove` | `identity:role:assign` |
+| `Agents_list`, `Agents_get` | `identity:agent:read` |
+| `Agents_create`, `Agents_update` | `identity:agent:write` and `identity:admin` |
 | `Clients_list`, `Clients_get` | `identity:client:read` |
 | `Clients_create`, `Clients_update`, `ClientKeys_add`, `ClientKeys_remove` | `identity:client:write` and `identity:admin` |
 | `UserApiTokens_list` | `identity:api_token:read` |
@@ -52,6 +54,29 @@ The self-service operations are in [tokens.md](tokens.md).
 - `UserApiTokens_list` lists the tokens of one user (active, expired, and revoked), newest first, with the same pages as the other lists. An unknown user, or a `userId` that is not a UUID, gives 404 `user_not_found`. No response has the token value or the hash.
 - `ApiTokens_revoke` revokes the token of any user. An unknown ID, or an ID that is not a UUID, gives 404 `api_token_not_found`. A revoke of a token that is revoked already gives 204. The log record is `identity.admin.change` with `operation` `api_token.revoke`.
 - `Users_update` with `disabled` `true` also revokes all active API tokens of the user, in the same transaction. The `identity.admin.change` record of the disable has `api_tokens_revoked` with the number of tokens. An enable does not restore the tokens.
+
+## Agents
+
+An agent is a principal with roles. It belongs to one service client. The client can exchange a user token for a token with `act` = the agent. See [tokens.md](tokens.md).
+
+| Operation | Success | Error codes |
+| --------- | ------- | ----------- |
+| `Agents_create` | 201 `Agent` | 400 `invalid_request` (bad name or body), 409 `agent_name_taken`, 422 `client_not_found`, 422 `client_not_service` |
+| `Agents_list` | 200 `AgentPage` | 400 for a bad `pageSize` or `pageToken` |
+| `Agents_get` | 200 `Agent` | 404 `agent_not_found` |
+| `Agents_update` | 200 `Agent` | 400 `invalid_request`, 404 `agent_not_found`, 409 `agent_name_taken` |
+| `AgentRoles_list` | 200 `RoleAssignmentPage` | 404 `agent_not_found` |
+| `AgentRoles_assign` | 200 `RoleAssignment` | 404 `agent_not_found`, 422 `role_unknown` |
+| `AgentRoles_remove` | 204 | 404 `agent_not_found` |
+
+- The name is unique and case-sensitive. The service trims it. It must be valid UTF-8, have no control character, and have 1 to 100 characters. A parallel create with the same name gives one 201 and one 409, because the table has a unique constraint.
+- `clientId` must name a service client. A disabled service client is allowed, because client authentication refuses it at the exchange. The client of an agent does not change. A new agent is enabled.
+- `Agents_update` changes `name` and `enabled`. An empty body changes nothing and returns 200. A disabled agent cannot act. A disable does not revoke tokens that exist. An exchanged token lives 5 minutes at most.
+- An `agentId` that is not a UUID gives 404 `agent_not_found` in each operation, with no database query.
+- `AgentRoles_assign` is idempotent. The role must be in a published manifest (422 `role_unknown`). The error for an unknown agent comes before the error for an unknown role. `AgentRoles_remove` of a role that the agent does not have gives 204 (`ClientRoles_remove` gives 404). `AgentRoles_*` have no `identity:admin` scope. An agent has no implicit role. The list is in order of `app` and `role`.
+- An assignment of a role that leaves the manifest stays and is `pending`. A pending role gives no permission.
+- The log records are `identity.admin.change` with the operations `Agents_create`, `Agents_update`, `AgentRoles_assign`, and `AgentRoles_remove`.
+- To let a client use the token exchange grant, assign a role with the permission `identity:token:exchange` to the client with `ClientRoles_assign`. In this version only the role `identity:admin` has it, for example `PUT /v1/clients/<client ID>/roles/identity:admin`.
 
 ## Clients
 

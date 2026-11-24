@@ -56,6 +56,13 @@ type fixture struct {
 // of the app demo.
 func newFixture(t *testing.T, h *harness, opts ...testserver.Option) *fixture {
 	t.Helper()
+	return newFixtureOn(t, h.start, opts...)
+}
+
+// newFixtureOn is newFixture with the function that starts the server. A test
+// can start the server with an own Valkey container.
+func newFixtureOn(t *testing.T, start func(*testing.T, ...testserver.Option) *app, opts ...testserver.Option) *fixture {
+	t.Helper()
 	clock := testserver.NewClock()
 	demo := testserver.NewServiceClient(t, "demo", "demo")
 	extra := testserver.NewServiceClient(t, "extra", "extra")
@@ -63,7 +70,7 @@ func newFixture(t *testing.T, h *harness, opts ...testserver.Option) *fixture {
 		testserver.WithPublicClients(t, []testserver.PublicClient{demoUI, loopbackUI, adminUI}, demo, extra),
 		testserver.WithClock(clock), testserver.WithCORSCacheTTL(0),
 	}, opts...)
-	a := h.start(t, all...)
+	a := start(t, all...)
 	f := &fixture{t: t, a: a, clock: clock, serviceClient: demo, extraClient: extra}
 	web, resp := a.completeSetup(t, a.setupLink(t), "admin@example.com", "Admin", adminPassword)
 	status(t, resp, http.StatusSeeOther, "setup")

@@ -67,6 +67,17 @@ The client IP is the remote address of the connection. If the remote address is 
 - Create takes the lock of the user row and checks that the user is `active`. A user who is disabled cannot make a token with an access token that is not expired. A disable revokes all tokens of the user. An enable does not restore them.
 - A token cannot have a key of the app `identity`. The limit of the number of rows of a user (10 times `API_TOKEN__MAX_PER_USER`) stops a loop of create and revoke. The rate limits of `/oauth/introspect` and of create come with milestone M2.
 
+## Agents and token exchange
+
+- An agent belongs to one service client. The exchange accepts an agent ID only from that client, and only if the agent is enabled. An unknown agent, a disabled agent, an agent of another client, and a value that is not a UUID give the same `invalid_grant` text. The actor token is an ID, not a signed token. The security comes from the client authentication and from this binding. A stolen client key lets an attacker act as each agent of that client, but only with user tokens that were issued for the app of that client.
+- The scope of a token with an agent is the intersection of the scopes of the user and of the agent. A pending role of the agent gives no permission.
+- There are no `act` chains. A subject token with `act` (in any JSON form) is refused. An exchanged token is refused as a subject token, because its `client_id` is a service client. A service token and an API token are refused too.
+- A subject token must come from an enabled public client, for the app of the authenticated client, for an `active` user, with at least 10 seconds of life left. Thus a holder of a client key cannot move a user token of another app.
+- The audience `identity` is refused, so no exchanged token can call the `/v1` API of the identity service.
+- `/oauth/userinfo` refuses a token with `act` and a token whose `client_id` is not an enabled public client. An exchanged token for another app cannot read the email or the name of the user.
+- An exchanged token lives 5 minutes at most and never longer than its subject token. It has no refresh token. The service does not revoke it. A disable of an agent or a user stops new exchanges only.
+- The `info` record `identity.token.exchange` (client, user, agent, audience, scope, and `jti`) is the only delegation trace until R09. It has no token, assertion, or actor value.
+
 ## Not in this version
 
 General rate limits on other endpoints, MFA, passkeys, and upstream OIDC come with R07. Password reset by email needs R12. Audit entries for logins, for admin changes, and for token issue come with R08 and R09. Rate limits for the public endpoints `/oauth/*` come with milestone M2. Until then the structured log records (`identity.login.ok`, `identity.login.failed`, and others) are the only record.
