@@ -59,7 +59,7 @@ func (q *GetDiscoveryQuery) Execute(context.Context, GetDiscovery) (DiscoveryRes
 		ScopesSupported:                            append([]string{}, domain.OIDCScopes...),
 		ResponseTypesSupported:                     []string{"code"},
 		SubjectTypesSupported:                      []string{"public"},
-		GrantTypesSupported:                        []string{"client_credentials", "authorization_code", "refresh_token"},
+		GrantTypesSupported:                        []string{"client_credentials", "authorization_code", "refresh_token", domain.GrantTypeTokenExchange},
 		CodeChallengeMethodsSupported:              []string{"S256"},
 		IDTokenSigningAlgValuesSupported:           []string{domain.AlgES256},
 		TokenEndpointAuthMethodsSupported:          []string{"private_key_jwt", "none"},

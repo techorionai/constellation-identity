@@ -347,8 +347,24 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 			oe, ok := apperrors.AsOAuthError(err)
 			return !ok || oe.Code == apperrors.OAuthServerError || oe.Code == apperrors.OAuthTemporarilyUnavailable
 		}))
+	exchangeCmd, err := commands.NewTokenExchange(commands.TokenExchangeDeps{
+		Issuer: cfg.Issuer, Auth: issueCmd, Clients: clientRepo, ClientRoles: postgres.NewClientRoles(a.db.Pool),
+		Manifests: manifestRepo, Users: postgres.NewUsers(a.db.Pool), UserRoles: users.userRoles,
+		Agents: postgres.NewAgents(a.db.Pool), AgentRoles: postgres.NewAgentRoles(a.db.Pool),
+		Keys: a.cache, Signer: adapterjose.Signer{}, Verifier: adapterjose.Verifier{}, Log: log, Now: o.clock,
+	})
+	if err != nil {
+		return nil, err
+	}
+	// The command writes its own failure log, so it has no logging decorator.
+	exchange := decorators.ApplyTracing(exchangeCmd, "TokenExchange",
+		decorators.WithErrorClassifier(func(err error) bool {
+			oe, ok := apperrors.AsOAuthError(err)
+			return !ok || oe.Code == apperrors.OAuthServerError || oe.Code == apperrors.OAuthTemporarilyUnavailable
+		}))
 	api := httpapi.New(httpapi.Deps{
-		JWKS: jwks, Discovery: discovery, IssueToken: issue, PublishManifest: publish,
+		ExchangeToken: exchange,
+		JWKS:          jwks, Discovery: discovery, IssueToken: issue, PublishManifest: publish,
 		ListManifests: listManifests, GetManifest: getManifest, ListRoles: listRoles, GetRole: getRole,
 		ExchangeCode: users.exchangeCode, RefreshTokens: users.refreshTokens, RevokeToken: users.revokeToken, UserInfo: users.userInfo,
 		Admin: users.admin, APITokens: users.apiTokens, Introspect: introspect, CreateUser: users.createUser, CreateInvite: users.createInvite, CORSOrigins: users.cors,

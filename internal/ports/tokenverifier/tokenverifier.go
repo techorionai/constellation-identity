@@ -26,6 +26,10 @@ type Claims struct {
 	PrincipalType string
 	SessionID     string
 	ExpiresAt     time.Time
+	// NotBefore is the nbf claim. It is zero if the claim is missing.
+	NotBefore time.Time
+	// HasAct is true if the payload has the member act, in any JSON form.
+	HasAct bool
 }
 
 // Verifier checks the signature with the keys.
