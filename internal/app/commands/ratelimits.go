@@ -76,11 +76,35 @@ func (r *RateLimits) CheckOpen(ctx context.Context, bucket, key string) error {
 	return r.check(ctx, bucket, key, true)
 }
 
+// CoarseFactor is the multiplier of the limit of a bucket for a coarse key.
+// A coarse key is the /48 prefix of an IPv6 client.
+const CoarseFactor = 16
+
+// CheckIP counts one request of a client IP. The key is the key of the client
+// (an IPv4 address or an IPv6 /64 prefix). The coarse key is the IPv6 /48
+// prefix, or an empty string. The coarse key has a limit that is CoarseFactor
+// times the limit of the bucket. It is checked first. A request over the coarse
+// limit gets the error and does not make a new key for its /64 prefix. Thus one
+// /48 prefix can make only a limited number of keys in one window.
+func (r *RateLimits) CheckIP(ctx context.Context, bucket, key, coarseKey string, failOpen bool) error {
+	if coarseKey != "" {
+		if err := r.checkRule(ctx, bucket, coarseKey, failOpen, CoarseFactor); err != nil {
+			return err
+		}
+	}
+	return r.checkRule(ctx, bucket, key, failOpen, 1)
+}
+
 func (r *RateLimits) check(ctx context.Context, bucket, key string, failOpen bool) error {
+	return r.checkRule(ctx, bucket, key, failOpen, 1)
+}
+
+func (r *RateLimits) checkRule(ctx context.Context, bucket, key string, failOpen bool, factor int64) error {
 	if r == nil {
 		return nil
 	}
 	rule := r.d.Rules[bucket]
+	rule.Limit *= factor
 	dec, err := r.d.Limiter.Allow(ctx, rule, key)
 	if err != nil {
 		// The log record has the bucket and the error. It has no key.

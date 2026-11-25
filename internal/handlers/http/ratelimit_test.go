@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/auth"
+
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/app/queries"
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
@@ -124,5 +126,46 @@ func TestU7_MiddlewareLimiterError(t *testing.T) {
 func TestRateLimitedErrorHeaders(t *testing.T) {
 	if apperrors.RetryAfterSeconds(1500*time.Millisecond) != 2 || apperrors.RetryAfterSeconds(0) != 0 {
 		t.Fatal("RetryAfterSeconds rounds up")
+	}
+}
+
+type bothScopes struct{}
+
+func (bothScopes) Verify(_ context.Context, token string) (auth.Principal, error) {
+	if token != "ok" {
+		return auth.Principal{}, auth.ErrInvalidToken
+	}
+	return auth.Principal{ID: testUser, Type: auth.PrincipalUser, Audience: "identity",
+		Scopes: []string{"identity:api_token:manage_own", "identity:manifest:publish"}}, nil
+}
+
+// R2 (U14, I14): with a failing limiter, the operations that use a limiter in
+// the use case give a Problem 503 "unavailable" with Retry-After 5.
+func TestR2_ProblemUnavailableWithRetryAfter(t *testing.T) {
+	limits, err := commands.NewRateLimits(commands.RateLimitsDeps{
+		Limiter: &mock.RateLimiter{Err: errors.New("down")}, Rules: config.DefaultRateRules()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := mock.NewUsers()
+	tokens := commands.NewAPITokens(commands.APITokensDeps{
+		Tokens: mock.NewAPITokens(users), Users: users, UserRoles: mock.NewUserRoles(users), Tx: mock.Tx{}, Now: time.Now,
+		Settings:   commands.APITokenSettings{DefaultTTLDays: 90, MaxTTLDays: 365, MaxPerUser: 5},
+		RateLimits: limits,
+	})
+	h := httpapi.New(httpapi.Deps{
+		JWKS: queries.NewGetJWKS(fakeKeys{}), Discovery: queries.NewGetDiscovery("https://id.example.com"),
+		Verifier: bothScopes{}, Scopes: realScopes(t), APITokens: tokens,
+		PublishManifest: commands.NewPublishManifest(nil, nil, nil).WithRateLimits(limits),
+	}).Handler()
+	for name, op := range map[string]struct{ method, path, body string }{
+		"MeApiTokens_create":          {http.MethodPost, "/v1/me/api-tokens", createBody},
+		"PermissionManifests_publish": {http.MethodPut, "/v1/permission-manifests/demo", `{"app":"demo","permissions":[],"defaultRoles":[]}`},
+	} {
+		rec := call(h, op.method, op.path, "ok", op.body)
+		if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "5" ||
+			rec.Header().Get("Content-Type") != "application/problem+json" || code(t, rec) != "unavailable" {
+			t.Errorf("%s: status %d, headers %v, body %s", name, rec.Code, rec.Header(), rec.Body)
+		}
 	}
 }

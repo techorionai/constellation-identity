@@ -68,8 +68,12 @@ type Login struct {
 	IP string
 	// IPKey is the key of the client for the login counter. The handler makes it
 	// from the IP with the /64 rule for IPv6. If it is empty, the counter uses IP.
-	IPKey     string
-	UserAgent string
+	IPKey string
+	// IPCoarseKey is the coarse key of the client network (the IPv6 /48 prefix).
+	// It is empty for an IPv4 address. The coarse counter has a limit that is
+	// CoarseFactor times MaxFailuresPerIP, and it counts all attempts.
+	IPCoarseKey string
+	UserAgent   string
 	// PreviousToken is the session cookie value of the request. A login of the
 	// same user keeps a valid previous session and gives it a new cookie value
 	// and a new auth time. In all other cases the login revokes that session
@@ -116,7 +120,16 @@ func (c *LoginCommand) Execute(ctx context.Context, in Login) (IssuedSession, er
 		c.d.Log.ErrorContext(ctx, "identity.login.limiter_unavailable", "event", "identity.login.limiter_unavailable", "error", err)
 		return IssuedSession{}, ErrLimiterUnavailable
 	}
-	if emailAttempts > c.d.Limits.MaxFailuresPerEmail || ipAttempts > c.d.Limits.MaxFailuresPerIP {
+	var coarseAttempts int64
+	if in.IPCoarseKey != "" {
+		coarseAttempts, err = c.d.Limiter.ReserveCoarse(ctx, in.IPCoarseKey)
+		if err != nil {
+			c.d.Log.ErrorContext(ctx, "identity.login.limiter_unavailable", "event", "identity.login.limiter_unavailable", "error", err)
+			return IssuedSession{}, ErrLimiterUnavailable
+		}
+	}
+	if emailAttempts > c.d.Limits.MaxFailuresPerEmail || ipAttempts > c.d.Limits.MaxFailuresPerIP ||
+		coarseAttempts > c.d.Limits.MaxFailuresPerIP*CoarseFactor {
 		c.count(ctx, OutcomeLimited)
 		c.d.Log.InfoContext(ctx, "identity.login.limited", "event", "identity.login.limited")
 		return IssuedSession{}, ErrTooManyAttempts

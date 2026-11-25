@@ -225,3 +225,22 @@ func TestRecordSuccessParallel(t *testing.T) {
 		t.Fatalf("IP counter = %d, %v, want 0 or more", got, err)
 	}
 }
+
+// R11: the coarse counter counts each call, has a TTL, and does not change the
+// counters of the email and of the IP.
+func TestR11_ReserveCoarse(t *testing.T) {
+	c := limiterEnv(t)
+	l := NewLoginLimiter(c, testKeys{}, time.Minute)
+	for want := int64(1); want <= 3; want++ {
+		got, err := l.ReserveCoarse(context.Background(), "2001:db8:1::/48")
+		if err != nil || got != want {
+			t.Fatalf("ReserveCoarse = %d, %v, want %d", got, err, want)
+		}
+	}
+	if got := ttlMillis(t, c, l.coarseKey("2001:db8:1::/48")); got <= 0 || got > 60_000 {
+		t.Fatalf("TTL = %d ms, want 1 to 60000", got)
+	}
+	if got := ttlMillis(t, c, l.ipKey("2001:db8:1::/48")); got != -2 {
+		t.Fatalf("IP counter TTL = %d, want -2 (no key)", got)
+	}
+}

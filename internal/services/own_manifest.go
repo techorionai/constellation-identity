@@ -10,8 +10,11 @@ import (
 	"github.com/techorionai/constellation-platform-go/manifest"
 
 	"github.com/techorionai/constellation-identity/api/openapi"
+	"github.com/techorionai/constellation-identity/internal/app/commands"
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
 	"github.com/techorionai/constellation-identity/internal/domain"
+	"github.com/techorionai/constellation-identity/internal/ports/clients"
+	"github.com/techorionai/constellation-identity/internal/ports/manifests"
 )
 
 // loadOwnManifest reads the embedded copy of services/identity/manifest.json
@@ -58,6 +61,29 @@ func errorLevel(err error) slog.Level {
 func withObservability[P, R any](e executor.ExecutorWithReturn[P, R], name string, log *slog.Logger) executor.ExecutorWithReturn[P, R] {
 	return decorators.ApplyTracing(decorators.ApplyLogging(e, name,
 		decorators.WithLogger(log), decorators.WithErrorLevel(errorLevel)), name)
+}
+
+// newPublishAPI makes the publish of the HTTP API. It has the rate limit, the
+// logging, and the tracing. A request that the rate limit stops is not an
+// error log record and not a span error. The own publish of the service does
+// not use it.
+func newPublishAPI(repo manifests.Repository, cl clients.Repository, limits *commands.RateLimits, log *slog.Logger) executor.ExecutorWithReturn[commands.PublishManifest, domain.PublishedManifest] {
+	return decorators.ApplyTracing(decorators.ApplyLogging(
+		commands.NewPublishManifest(repo, cl, log).WithRateLimits(limits), "PublishManifest",
+		decorators.WithLogger(log), decorators.WithErrorLevel(errorLevel)), "PublishManifest",
+		decorators.WithErrorClassifier(rateLimitClassifier))
+}
+
+// traceIssue adds tracing to the client credentials grant. The command writes
+// its own failure log.
+func traceIssue[P, R any](e executor.ExecutorWithReturn[P, R]) executor.ExecutorWithReturn[P, R] {
+	return decorators.ApplyTracing(e, "IssueServiceToken", decorators.WithErrorClassifier(issueSpanError))
+}
+
+// traceOAuth adds tracing to the introspection and to the token exchange. The
+// command writes its own failure log.
+func traceOAuth[P, R any](e executor.ExecutorWithReturn[P, R], name string) executor.ExecutorWithReturn[P, R] {
+	return decorators.ApplyTracing(e, name, decorators.WithErrorClassifier(oauthSpanError))
 }
 
 // rateLimitClassifier tells the tracing decorator that a request that a rate

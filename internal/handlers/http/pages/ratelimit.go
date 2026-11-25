@@ -32,7 +32,18 @@ func (h *Handler) rateLimit(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		err := h.d.RateLimits.Check(r.Context(), bucket, clientip.Key(h.clientIP(r)))
+		// A cross-site request that is not a navigation to the setup or invite
+		// page is never a use of the page. It gets 403 and does not use the
+		// bucket of the victim. A cross-site POST is refused before this
+		// handler runs. The OAuth pages can load in a frame of a client, so
+		// they are not in this rule.
+		if bucket == ratelimit.BucketSetupInvite && r.Header.Get("Sec-Fetch-Site") == "cross-site" &&
+			r.Header.Get("Sec-Fetch-Dest") != "document" {
+			h.message(w, r, http.StatusForbidden, "Request not allowed", "This request is not allowed.")
+			return
+		}
+		ip := h.clientIP(r)
+		err := h.d.RateLimits.CheckIP(r.Context(), bucket, clientip.Key(ip), clientip.CoarseKey(ip), false)
 		if err == nil {
 			next.ServeHTTP(w, r)
 			return

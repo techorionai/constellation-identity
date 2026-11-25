@@ -18,7 +18,7 @@ internal/app/{commands,queries} Use cases with platform-go executors and decorat
 internal/app/keys/              Key manager and in-memory key cache
 internal/handlers/http/         Generated server (gen/), handlers
 internal/handlers/http/pages/   HTML pages: login, logout, setup, invite (templates, CSS, headers)
-internal/handlers/http/clientip/   Client IP and the rate limit key of a client (IPv6 /64)
+internal/handlers/http/clientip/   Client IP and the rate limit key of a client (IPv6 /64 and /48)
 internal/common/errors/         AppError
 internal/config/                Config struct and the clients file parser
 internal/services/              Composition root

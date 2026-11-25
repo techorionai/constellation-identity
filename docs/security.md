@@ -16,11 +16,11 @@ This page describes how the service protects passwords, logins, sessions, and on
 - An unknown email counts in the same way as a known email. A failed login does not show if the email exists. For an unknown email, the service hashes a constant dummy password, so the response time is about the same.
 - A good login deletes the email counter and decreases the IP counter by 1. Thus the IP counter counts failures only, and users behind one NAT address do not lock each other out with good logins. The decrease uses `WATCH` and one `MULTI`/`EXEC` transaction. It never makes the counter less than 0, it never makes a new counter, and it keeps the life of the counter. The attempt stays reserved before the hash, so parallel requests still cannot pass the limit.
 - If Valkey is not available, the login fails closed with status 503. No hash runs and no session starts.
-- A person can lock out a user with failed logins for the email of that user. The lock ends after the window, or when an operator runs `identity unlock-login <email>`. See "Unlock a login". For IPv6, the IP counter uses the /64 prefix of the address.
+- A person can lock out a user with failed logins for the email of that user. The lock ends after the window, or when an operator runs `identity unlock-login <email>`. See "Unlock a login". For IPv6, the IP counter uses the /64 prefix of the address. A second counter uses the /48 prefix. It counts all attempts and has a limit of 16 times the IP limit.
 
 ## Rate limits
 
-The service counts requests in Valkey, so all instances use the same counters. Each bucket has a key, a limit, and a window. A window is a fixed period that starts at the first request. The key of a client bucket is the client ID of a verified client assertion. The key of an IP bucket is the client IP. For IPv6, the key is the /64 prefix of the address. The Valkey key name has a hash of the key (`identity:rl:<bucket>:<sha256>`). Each key has a life, so the keys cannot fill the memory of Valkey.
+The service counts requests in Valkey, so all instances use the same counters. Each bucket has a key, a limit, and a window. A window is a fixed period that starts at the first request. The key of a client bucket is the client ID of a verified client assertion. The key of an IP bucket is the client IP. For IPv6, the key is the /64 prefix of the address. A second, coarse key is the /48 prefix. It has a limit of 16 times the limit of the bucket, and it is checked first. A request over the coarse limit gets the error and does not make a key for its /64 prefix. Thus one /48 network cannot get more than 16 times the limit of a bucket, and it can make only a limited number of keys in one window. The Valkey key name has a hash of the key (`identity:rl:<bucket>:<sha256>`). Each key has a life, but the life does not limit the number of keys. An attacker with many /48 networks can make many keys, and with the Valkey policy `noeviction` a full Valkey makes all buckets that fail closed, and the login, give 503. Set `maxmemory` of Valkey with a large margin and monitor `used_memory` and the counter `identity.rate_limit.decisions` with the outcome `error`.
 
 | Bucket | Endpoints | Key | Default limit | When Valkey is down |
 | ------ | --------- | --- | ------------- | ------------------- |
@@ -33,14 +33,15 @@ The service counts requests in Valkey, so all instances use the same counters. E
 | `introspect_client` | `/oauth/introspect` | Verified client ID | 6000 per 1 minute | Fail closed |
 | `setup_invite` | `GET` and `POST` of `/setup` and `/invite` | IP | 10 per 15 minutes | Fail closed |
 | `api_token_create` | `POST /v1/me/api-tokens` | User ID | 20 per 1 hour | Fail closed |
-| `manifest_publish` | `PUT /v1/permission-manifests/{app}` | Client ID of the caller | 60 per 1 hour | Fail closed |
+| `manifest_publish` | `PUT /v1/permission-manifests/{app}` | Client ID of a service caller, or user ID of a user caller | 60 per 1 hour | Fail closed |
 
 - The IP buckets run before any database call, hash, or token check. The client buckets run after the signature check of the client assertion. Thus a caller who names a client ID with a bad signature cannot use the budget of that client.
 - The grants `client_credentials` and token exchange use one bucket for each client ID, `token_client`. The token source of `constellation-platform-go` uses one wait time for both grants.
 - `POST /oauth/introspect` has its own IP bucket. A caller with no credential can send random API tokens to a service, and the service sends one introspection call for each token. With one shared IP bucket, these calls would use up the token budget of the service.
+- A cross-site request to `/setup` or `/invite` that is not a navigation (`Sec-Fetch-Site: cross-site` and a `Sec-Fetch-Dest` value that is not `document`) gets 403 and is not counted. The page limit runs after the cross-origin check, so a cross-site page cannot use up the bucket of a victim.
 - The own publish of the manifest of the identity service at start is not counted. A CORS preflight request (`OPTIONS`) is not counted.
 - Fail open means that the request passes when Valkey does not answer. Fail closed means that the request gets a 503 response with `Retry-After: 5`.
-- The login limiter (5 failures for each email and 50 failures for each IP in 15 minutes) is a separate limit. Its IP counter also uses the /64 key for IPv6.
+- The login limiter (5 failures for each email and 50 failures for each IP in 15 minutes) is a separate limit. Its IP counter also uses the /64 key for IPv6, and a second counter uses the /48 prefix.
 
 Responses:
 
@@ -70,6 +71,8 @@ The command normalizes the email in the same way as the login. It deletes the fa
 ## Client IP and trusted proxies
 
 The client IP is the remote address of the connection. If the remote address is in a range of `IDENTITY_HTTP__TRUSTED_PROXIES`, the client IP is the last address of `X-Forwarded-For` that is not in a trusted range. A client can add addresses in front of the header, so the service does not use the first address. Without trusted proxies, the service ignores the header.
+
+Each trusted proxy must append the address of its peer to `X-Forwarded-For`. It must not send a value of the client unchanged, and it must not replace the header with another header, for example `X-Real-IP`. If a trusted proxy sends the header of the client unchanged, the client chooses its own IP address, and it can pass all IP limits or use up the bucket of another address. In nginx, use `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`.
 
 ## Sessions and cookies
 

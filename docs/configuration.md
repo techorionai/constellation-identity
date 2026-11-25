@@ -9,7 +9,7 @@ The service reads its settings from environment variables with the prefix `IDENT
 | `IDENTITY_ISSUER` | required | Absolute URL with no query and no fragment. `https` is required. `http` is accepted only when the host is `localhost`, `127.0.0.1`, or `[::1]`. | Public base URL, for example `https://id.example.com`. It is the `iss` claim of all tokens. |
 | `IDENTITY_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN`, or `ERROR` | Log level. |
 | `IDENTITY_HTTP__ADDR` | `:8080` | | Public listener. |
-| `IDENTITY_HTTP__TRUSTED_PROXIES` | empty | Comma-separated CIDR ranges | Proxies whose `X-Forwarded-For` value the service uses for the client IP. See [security.md](security.md). |
+| `IDENTITY_HTTP__TRUSTED_PROXIES` | empty | Comma-separated CIDR ranges | Proxies whose `X-Forwarded-For` value the service uses for the client IP. Each proxy must append the peer address to `X-Forwarded-For`. See [security.md](security.md). |
 | `IDENTITY_ADMIN__ADDR` | `:9090` | | Listener for `/livez` and `/readyz`. Do not publish it at the edge. |
 | `IDENTITY_ADMIN__CHECK_TIMEOUT` | `2s` | | Time limit of the readiness checks. |
 | `IDENTITY_ADMIN__DRAIN_DELAY` | `5s` | | Time that `/readyz` is 503 before the public server stops. |

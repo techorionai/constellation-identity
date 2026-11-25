@@ -291,3 +291,103 @@ func TestIssue13_UnlockLogin(t *testing.T) {
 		t.Fatal("want an error")
 	}
 }
+
+// R5: a user caller has one publish bucket for each user. An OAuth client of
+// users does not share one bucket for all its users.
+func TestR5_PublishKeyOfUserCaller(t *testing.T) {
+	f := newFixture(t)
+	rl := &mock.RateLimiter{Deny: true}
+	cmd := commands.NewPublishManifest(&publishRepo{}, f.clients, nil).WithRateLimits(newLimits(t, rl))
+	for _, caller := range []string{"user-1", "user-2"} {
+		_, err := cmd.Execute(ctx, commands.PublishManifest{
+			PathApp: "helpdesk", CallerClientID: "web", CallerIsService: false, PublishedBy: caller,
+			Manifest: domain.Manifest{App: "helpdesk"},
+		})
+		requireRateLimited(t, err)
+	}
+	c := rl.CallsOf(ratelimit.BucketManifestPublish)
+	if len(c) != 2 || c[0].Key != "user-1" || c[1].Key != "user-2" {
+		t.Fatalf("calls = %+v, want the keys user-1 and user-2", rl.Calls)
+	}
+}
+
+// countLimiter counts the requests of each rule and key. It denies a request
+// over the limit of the rule.
+type countLimiter struct{ n map[string]int64 }
+
+func (l *countLimiter) Allow(_ context.Context, rule ratelimit.Rule, key string) (ratelimit.Decision, error) {
+	if l.n == nil {
+		l.n = map[string]int64{}
+	}
+	k := rule.Name + "|" + key
+	l.n[k]++
+	return ratelimit.Decision{Allowed: l.n[k] <= rule.Limit, Count: l.n[k], RetryAfter: 7 * time.Second}, nil
+}
+
+// R11: an attacker with many /64 prefixes in one /48 prefix gets the coarse
+// limit, 16 times the limit of the bucket. The request over the coarse limit
+// makes no key for its /64 prefix.
+func TestR11_CoarseIPLimit(t *testing.T) {
+	rules := config.DefaultRateRules()
+	rule := rules[ratelimit.BucketOAuthPublic]
+	rule.Limit = 2
+	rules[ratelimit.BucketOAuthPublic] = rule
+	l := &countLimiter{}
+	limits, err := commands.NewRateLimits(commands.RateLimitsDeps{Limiter: l, Rules: rules})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coarse := "2001:db8:1::/48"
+	allowed := 0
+	for i := range 100 {
+		key := fmt.Sprintf("2001:db8:1:%x::/64", i)
+		if err := limits.CheckIP(ctx, ratelimit.BucketOAuthPublic, key, coarse, false); err == nil {
+			allowed++
+		} else {
+			requireRateLimited(t, err)
+		}
+	}
+	if allowed != 2*commands.CoarseFactor {
+		t.Fatalf("allowed = %d, want %d", allowed, 2*commands.CoarseFactor)
+	}
+	// One counter for the coarse key and one for each /64 prefix that passed.
+	if len(l.n) != 1+allowed {
+		t.Fatalf("counters = %d, want %d", len(l.n), 1+allowed)
+	}
+	// A client with one /64 prefix keeps the normal limit.
+	one := "2001:db8:2:1::/64"
+	for i := range 3 {
+		err := limits.CheckIP(ctx, ratelimit.BucketOAuthPublic, one, "2001:db8:2::/48", false)
+		if (i < 2) != (err == nil) {
+			t.Fatalf("request %d: err = %v", i+1, err)
+		}
+	}
+	// An IPv4 client has no coarse key.
+	if err := limits.CheckIP(ctx, ratelimit.BucketOAuthPublic, "203.0.113.5", "", false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// R11: the coarse login counter stops an attacker with many /64 prefixes in one
+// /48 prefix. The limit is 16 times the limit of the IP counter.
+func TestR11_LoginCoarseCounter(t *testing.T) {
+	e := newEnv()
+	e.addUser("active", "active@example.com", domain.UserActive, "right password 1")
+	cmd := e.login()
+	var limited int
+	const maxIP = 50 // MaxFailuresPerIP of the test environment
+	for i := range maxIP*commands.CoarseFactor + 10 {
+		in := commands.Login{
+			Email: fmt.Sprintf("user%d@example.com", i), Password: "wrong password 1",
+			IP:          fmt.Sprintf("2001:db8:1:%x::1", i),
+			IPKey:       fmt.Sprintf("2001:db8:1:%x::/64", i),
+			IPCoarseKey: "2001:db8:1::/48",
+		}
+		if _, err := cmd.Execute(ctx, in); errors.Is(err, commands.ErrTooManyAttempts) {
+			limited++
+		}
+	}
+	if limited != 10 {
+		t.Fatalf("limited = %d, want 10", limited)
+	}
+}

@@ -265,10 +265,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		commands.NewPublishManifest(manifestRepo, clientRepo, log), "PublishManifest",
 		decorators.WithLogger(log), decorators.WithErrorLevel(errorLevel)), "PublishManifest")
 	// The publish of the HTTP API has the rate limit. The own publish does not.
-	publishAPI := decorators.ApplyTracing(decorators.ApplyLogging(
-		commands.NewPublishManifest(manifestRepo, clientRepo, log).WithRateLimits(limits), "PublishManifest",
-		decorators.WithLogger(log), decorators.WithErrorLevel(errorLevel)), "PublishManifest",
-		decorators.WithErrorClassifier(rateLimitClassifier))
+	publishAPI := newPublishAPI(manifestRepo, clientRepo, limits, log)
 	if _, err := publish.Execute(ctx, commands.PublishManifest{
 		Manifest: ownManifest, PublishedBy: domain.IdentityApp, Internal: true,
 	}); err != nil {
@@ -350,8 +347,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		return nil, err
 	}
 	// The command writes its own failure log, so it has no logging decorator.
-	issue := decorators.ApplyTracing(issueCmd, "IssueServiceToken",
-		decorators.WithErrorClassifier(issueSpanError))
+	issue := traceIssue(issueCmd)
 	listManifests := withObservability(queries.NewListManifests(manifestRepo), "ListManifests", log)
 	getManifest := withObservability(queries.NewGetManifest(manifestRepo), "GetManifest", log)
 	listRoles := withObservability(queries.NewListRoles(manifestRepo), "ListRoles", log)
@@ -366,8 +362,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	}
 	// The command checks the caller and the token. It has no logging decorator,
 	// because a log record must not have the token.
-	introspect := decorators.ApplyTracing(introspectCmd, "Introspect",
-		decorators.WithErrorClassifier(oauthSpanError))
+	introspect := traceOAuth[commands.Introspect, commands.IntrospectResult](introspectCmd, "Introspect")
 	exchangeCmd, err := commands.NewTokenExchange(commands.TokenExchangeDeps{
 		Issuer: cfg.Issuer, Auth: issueCmd, Clients: clientRepo, ClientRoles: postgres.NewClientRoles(a.db.Pool),
 		Manifests: manifestRepo, Users: postgres.NewUsers(a.db.Pool), UserRoles: users.userRoles,
@@ -378,8 +373,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		return nil, err
 	}
 	// The command writes its own failure log, so it has no logging decorator.
-	exchange := decorators.ApplyTracing(exchangeCmd, "TokenExchange",
-		decorators.WithErrorClassifier(oauthSpanError))
+	exchange := traceOAuth(exchangeCmd, "TokenExchange")
 	trustedProxies, err := cfg.HTTP.TrustedProxyPrefixes()
 	if err != nil {
 		return nil, fmt.Errorf("%sHTTP__TRUSTED_PROXIES: %w", config.Prefix, err)

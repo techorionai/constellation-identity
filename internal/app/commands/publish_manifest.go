@@ -61,9 +61,11 @@ func (c *PublishManifestCommand) WithRateLimits(l *RateLimits) *PublishManifestC
 // error is an *apperrors.ValidationError that holds all problems of the keys.
 func (c *PublishManifestCommand) Execute(ctx context.Context, p PublishManifest) (domain.PublishedManifest, error) {
 	if !p.Internal {
-		key := p.CallerClientID
-		if key == "" {
-			key = p.PublishedBy
+		// A service client has one bucket for its client ID. A user has one
+		// bucket for each user, also if the user has an OAuth client.
+		key := p.PublishedBy
+		if p.CallerIsService && p.CallerClientID != "" {
+			key = p.CallerClientID
 		}
 		if err := c.limits.Check(ctx, ratelimit.BucketManifestPublish, key); err != nil {
 			return domain.PublishedManifest{}, err

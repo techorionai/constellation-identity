@@ -139,9 +139,16 @@ func TestRateLimitIntegration(t *testing.T) {
 		spansBefore := len(spanExporter.GetSpans())
 		resp, _ = web.PostForm(t, "/setup", form)
 		status(t, resp, http.StatusTooManyRequests, "limited POST /setup")
+		// The spans of the PostgreSQL driver are the database queries. A limited
+		// request makes no query, also if the query has no use case span.
 		for _, s := range spanExporter.GetSpans()[spansBefore:] {
 			if s.Name == "CompleteSetup" || s.Name == "CheckOneTimeToken" {
 				t.Fatalf("the use case %s ran for a limited request", s.Name)
+			}
+			for _, a := range s.Attributes {
+				if k := string(a.Key); (k == "db.system" || k == "db.system.name") && strings.Contains(a.Value.AsString(), "postg") {
+					t.Fatalf("the limited request made a database span %q", s.Name)
+				}
 			}
 		}
 	})
@@ -269,10 +276,29 @@ func TestRateLimitIntegration(t *testing.T) {
 		if d, ok := manifest.RetryAfter(err); !ok || d <= 0 {
 			t.Fatalf("RetryAfter = %v, %v", d, ok)
 		}
-		// The own publish at the start of the service is not counted.
+		// The own publish at the start of the service is not counted. The
+		// counters of the bucket do not change at a restart, and the own
+		// manifest is stored.
+		before := publishCounters(t, vk)
+		if len(before) == 0 {
+			t.Fatal("no manifest_publish counter before the restart")
+		}
 		db := a.DB
 		a.Stop()
-		_ = h.startOn(t, vk, append(opts, testserver.WithDB(db))...)
+		b := h.startOn(t, vk, append(opts, testserver.WithDB(db))...)
+		after := publishCounters(t, vk)
+		if len(after) != len(before) {
+			t.Fatalf("counters after the restart = %v, before = %v", after, before)
+		}
+		for k, v := range before {
+			if after[k] != v {
+				t.Fatalf("counter %s = %d after the restart, want %d", k, after[k], v)
+			}
+		}
+		var own int
+		if err := b.Pool(t).QueryRow(ctx, `SELECT count(*) FROM apps WHERE key = 'identity'`).Scan(&own); err != nil || own != 1 {
+			t.Fatalf("own manifest rows = %d, err = %v, want 1", own, err)
+		}
 	})
 
 	// I14: the counters are not available.
@@ -430,4 +456,24 @@ func TestRateLimitIntegration(t *testing.T) {
 			t.Fatal("no counter identity.rate_limit.decisions")
 		}
 	})
+}
+
+// publishCounters returns the value of each counter of the bucket
+// manifest_publish in Valkey.
+func publishCounters(t *testing.T, vk *containers.ValkeyInstance) map[string]int64 {
+	t.Helper()
+	admin := vk.Admin(t)
+	keys, err := admin.Do(ctx, admin.B().Keys().Pattern("identity:rl:manifest_publish:*").Build()).AsStrSlice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]int64{}
+	for _, k := range keys {
+		n, err := admin.Do(ctx, admin.B().Get().Key(k).Build()).AsInt64()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[k] = n
+	}
+	return out
 }

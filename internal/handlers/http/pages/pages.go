@@ -98,7 +98,8 @@ func New(d Deps) (*Handler, error) {
 }
 
 // Routes returns the router of the pages. A POST page is behind the cross
-// origin check of the standard library. All pages get the security headers.
+// origin check of the standard library, and the rate limit runs inside this
+// check, so a refused cross-site request does not use a bucket. All pages get the security headers.
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", h.loginForm)
@@ -114,7 +115,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /oauth/authorize/continue", h.authorizeContinue)
 	mux.HandleFunc("GET /oauth/end_session", h.endSession)
 	mux.HandleFunc("POST /oauth/end_session", h.endSessionConfirm)
-	return SecurityHeaders(h.d.Issuer, h.rateLimit(http.NewCrossOriginProtection().Handler(mux)))
+	return SecurityHeaders(h.d.Issuer, http.NewCrossOriginProtection().Handler(h.rateLimit(mux)))
 }
 
 // view is the data of a template.
@@ -265,7 +266,8 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	email := r.PostForm.Get("email")
 	issued, err := h.d.Login.Execute(r.Context(), commands.Login{
 		Email: email, Password: r.PostForm.Get("password"),
-		IP: h.clientIP(r), IPKey: clientip.Key(h.clientIP(r)), UserAgent: r.UserAgent(), PreviousToken: cookieValue(r),
+		IP: h.clientIP(r), IPKey: clientip.Key(h.clientIP(r)),
+		IPCoarseKey: clientip.CoarseKey(h.clientIP(r)), UserAgent: r.UserAgent(), PreviousToken: cookieValue(r),
 	})
 	v := view{Title: "Log in", Email: email, ReturnTo: rt}
 	if err == nil {
