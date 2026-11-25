@@ -321,7 +321,7 @@ func TestIssue9Integration(t *testing.T) {
 			v, err := introspect.New(introspect.Config{
 				Issuer: g.a.Config.Issuer, IntrospectURL: g.a.PublicURL + "/oauth/introspect", Audience: audience,
 				CacheTTL: time.Second, InactiveTTL: 0, CacheSize: 100, InactiveCacheSize: 10, MaxConcurrent: 16,
-				HTTPTimeout: 5 * time.Second, AllowInsecureHTTP: true,
+				HTTPTimeout: 5 * time.Second, AllowInsecureHTTP: true, MaxCallsPerSecond: 100,
 			}, g.a.TokenSource(t, c), introspect.WithClock(now))
 			if err != nil {
 				t.Fatal(err)

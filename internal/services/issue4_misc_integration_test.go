@@ -252,7 +252,8 @@ func TestIssue4ValkeyDownIntegration(t *testing.T) {
 	}
 	// A new authorization request cannot store its state.
 	resp = f.admin.Authorize(t, testserver.AuthorizeQuery("admin-ui", adminRedirect, "openid identity:user:read", p, map[string]string{"prompt": "login"}))
-	if resp.StatusCode != http.StatusInternalServerError {
+	// The bucket oauth_public fails closed, so the page gives 503 before the state is stored.
+	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("authorize with Valkey down: %d", resp.StatusCode)
 	}
 }
