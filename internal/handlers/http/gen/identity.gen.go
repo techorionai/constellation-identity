@@ -839,7 +839,9 @@ type NotFound = Problem
 
 // OAuthError Error body of an OAuth operation (RFC 6749 section 5.2).
 // The status is 400, except for these codes. `invalid_client` is 401.
-// `server_error` is 500. `temporarily_unavailable` is 503.
+// `server_error` is 500. `temporarily_unavailable` is 503 when the service cannot do the request now.
+// `temporarily_unavailable` is 429 for a rate limit (model `OAuthTooManyRequests`).
+// The client can try again after `Retry-After` of a 429 response. A 503 response of this model has no `Retry-After`.
 type OAuthError struct {
 	// Error The error code.
 	Error OAuthErrorCode `json:"error"`
@@ -858,6 +860,29 @@ type OAuthErrorCode0 string
 
 // OAuthErrorCode1 defines model for OAuthErrorCode.1.
 type OAuthErrorCode1 = string
+
+// OAuthServiceUnavailable An OAuth operation cannot do the request now, for example because the rate limiter is not available.
+// The `error` is `temporarily_unavailable`. The body has the same fields as `OAuthError`.
+type OAuthServiceUnavailable struct {
+	// Error The error code. It is `temporarily_unavailable`.
+	Error OAuthErrorCode `json:"error"`
+
+	// ErrorDescription Text for a developer. It has no internal data and no secret.
+	ErrorDescription *string `json:"error_description,omitempty"`
+}
+
+// OAuthTooManyRequests An OAuth operation limits the rate of requests (RFC 6749 section 5.2).
+// The `error` is `temporarily_unavailable`. The client tries again after `Retry-After`.
+// The body has the same fields as `OAuthError`.
+// The status, the body, and `Retry-After` do not change when a `client_id` or a user exists or does not exist.
+// The response does not give the limit key, the limit value, or the remaining requests.
+type OAuthTooManyRequests struct {
+	// Error The error code. It is `temporarily_unavailable`.
+	Error OAuthErrorCode `json:"error"`
+
+	// ErrorDescription Text for a developer. It has no internal data and no secret.
+	ErrorDescription *string `json:"error_description,omitempty"`
+}
 
 // PermissionDefinition One permission that a service defines.
 type PermissionDefinition struct {
@@ -1036,6 +1061,9 @@ type RoleRef = string
 // It holds permission keys only. It never holds an OIDC scope.
 type ScopeString = string
 
+// ServiceUnavailable The service is not available.
+type ServiceUnavailable = Problem
+
 // Session A sign-in session of a user.
 type Session struct {
 	// CreatedAt Time when the session started.
@@ -1165,6 +1193,9 @@ type TokenTypeHint0 string
 
 // TokenTypeHint1 defines model for TokenTypeHint.1.
 type TokenTypeHint1 = string
+
+// TooManyRequests The client sent too many requests.
+type TooManyRequests = Problem
 
 // Unauthorized The request has no valid credentials.
 type Unauthorized = Problem
@@ -4117,6 +4148,28 @@ func (response DiscoveryJwks200JSONResponse) VisitDiscoveryJwksResponse(w http.R
 	return err
 }
 
+type DiscoveryJwks429ResponseHeaders struct {
+	RetryAfter int32
+}
+
+type DiscoveryJwks429ApplicationProblemPlusJSONResponse struct {
+	Body    TooManyRequests
+	Headers DiscoveryJwks429ResponseHeaders
+}
+
+func (response DiscoveryJwks429ApplicationProblemPlusJSONResponse) VisitDiscoveryJwksResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type DiscoveryOpenidConfigurationRequestObject struct {
 }
 
@@ -4134,6 +4187,28 @@ func (response DiscoveryOpenidConfiguration200JSONResponse) VisitDiscoveryOpenid
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DiscoveryOpenidConfiguration429ResponseHeaders struct {
+	RetryAfter int32
+}
+
+type DiscoveryOpenidConfiguration429ApplicationProblemPlusJSONResponse struct {
+	Body    TooManyRequests
+	Headers DiscoveryOpenidConfiguration429ResponseHeaders
+}
+
+func (response DiscoveryOpenidConfiguration429ApplicationProblemPlusJSONResponse) VisitDiscoveryOpenidConfigurationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -4180,6 +4255,60 @@ func (response OAuthAuthorize302Response) VisitOAuthAuthorizeResponse(w http.Res
 	return nil
 }
 
+type OAuthAuthorize429ResponseHeaders struct {
+	RetryAfter int32
+}
+
+type OAuthAuthorize429TexthtmlResponse struct {
+	Body          io.Reader
+	Headers       OAuthAuthorize429ResponseHeaders
+	ContentLength int64
+}
+
+func (response OAuthAuthorize429TexthtmlResponse) VisitOAuthAuthorizeResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/html")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type OAuthAuthorize503ResponseHeaders struct {
+	RetryAfter *int32
+}
+
+type OAuthAuthorize503TexthtmlResponse struct {
+	Body          io.Reader
+	Headers       OAuthAuthorize503ResponseHeaders
+	ContentLength int64
+}
+
+func (response OAuthAuthorize503TexthtmlResponse) VisitOAuthAuthorizeResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/html")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(503)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
 type OAuthEndSessionRequestObject struct {
 	Params OAuthEndSessionParams
 }
@@ -4220,6 +4349,60 @@ func (response OAuthEndSession302Response) VisitOAuthEndSessionResponse(w http.R
 	w.Header().Set("location", fmt.Sprint(response.Headers.Location))
 	w.WriteHeader(302)
 	return nil
+}
+
+type OAuthEndSession429ResponseHeaders struct {
+	RetryAfter int32
+}
+
+type OAuthEndSession429TexthtmlResponse struct {
+	Body          io.Reader
+	Headers       OAuthEndSession429ResponseHeaders
+	ContentLength int64
+}
+
+func (response OAuthEndSession429TexthtmlResponse) VisitOAuthEndSessionResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/html")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type OAuthEndSession503ResponseHeaders struct {
+	RetryAfter *int32
+}
+
+type OAuthEndSession503TexthtmlResponse struct {
+	Body          io.Reader
+	Headers       OAuthEndSession503ResponseHeaders
+	ContentLength int64
+}
+
+func (response OAuthEndSession503TexthtmlResponse) VisitOAuthEndSessionResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/html")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(503)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
 }
 
 type OAuthIntrospectRequestObject struct {
@@ -4278,6 +4461,32 @@ func (response OAuthIntrospect401JSONResponse) VisitOAuthIntrospectResponse(w ht
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OAuthIntrospect429ResponseHeaders struct {
+	CacheControl string
+	Pragma       string
+	RetryAfter   int32
+}
+
+type OAuthIntrospect429JSONResponse struct {
+	Body    OAuthTooManyRequests
+	Headers OAuthIntrospect429ResponseHeaders
+}
+
+func (response OAuthIntrospect429JSONResponse) VisitOAuthIntrospectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", fmt.Sprint(response.Headers.CacheControl))
+	w.Header().Set("Pragma", fmt.Sprint(response.Headers.Pragma))
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -4350,6 +4559,32 @@ func (response OAuthRevoke401JSONResponse) VisitOAuthRevokeResponse(w http.Respo
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OAuthRevoke429ResponseHeaders struct {
+	CacheControl string
+	Pragma       string
+	RetryAfter   int32
+}
+
+type OAuthRevoke429JSONResponse struct {
+	Body    OAuthTooManyRequests
+	Headers OAuthRevoke429ResponseHeaders
+}
+
+func (response OAuthRevoke429JSONResponse) VisitOAuthRevokeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", fmt.Sprint(response.Headers.CacheControl))
+	w.Header().Set("Pragma", fmt.Sprint(response.Headers.Pragma))
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -4442,6 +4677,32 @@ func (response OAuthToken401JSONResponse) VisitOAuthTokenResponse(w http.Respons
 	return err
 }
 
+type OAuthToken429ResponseHeaders struct {
+	CacheControl string
+	Pragma       string
+	RetryAfter   int32
+}
+
+type OAuthToken429JSONResponse struct {
+	Body    OAuthTooManyRequests
+	Headers OAuthToken429ResponseHeaders
+}
+
+func (response OAuthToken429JSONResponse) VisitOAuthTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", fmt.Sprint(response.Headers.CacheControl))
+	w.Header().Set("Pragma", fmt.Sprint(response.Headers.Pragma))
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type OAuthToken500JSONResponse OAuthError
 
 func (response OAuthToken500JSONResponse) VisitOAuthTokenResponse(w http.ResponseWriter) error {
@@ -4527,6 +4788,60 @@ func (response OAuthUserinfo403Response) VisitOAuthUserinfoResponse(w http.Respo
 	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
 	w.WriteHeader(403)
 	return nil
+}
+
+type OAuthUserinfo429ResponseHeaders struct {
+	CacheControl string
+	Pragma       string
+	RetryAfter   int32
+}
+
+type OAuthUserinfo429JSONResponse struct {
+	Body    OAuthTooManyRequests
+	Headers OAuthUserinfo429ResponseHeaders
+}
+
+func (response OAuthUserinfo429JSONResponse) VisitOAuthUserinfoResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", fmt.Sprint(response.Headers.CacheControl))
+	w.Header().Set("Pragma", fmt.Sprint(response.Headers.Pragma))
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OAuthUserinfo503ResponseHeaders struct {
+	CacheControl string
+	Pragma       string
+	RetryAfter   *int32
+}
+
+type OAuthUserinfo503JSONResponse struct {
+	Body    OAuthServiceUnavailable
+	Headers OAuthUserinfo503ResponseHeaders
+}
+
+func (response OAuthUserinfo503JSONResponse) VisitOAuthUserinfoResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", fmt.Sprint(response.Headers.CacheControl))
+	w.Header().Set("Pragma", fmt.Sprint(response.Headers.Pragma))
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type AgentsListRequestObject struct {
@@ -6476,6 +6791,28 @@ func (response MeApiTokensCreate422ApplicationProblemPlusJSONResponse) VisitMeAp
 	return err
 }
 
+type MeApiTokensCreate429ResponseHeaders struct {
+	RetryAfter int32
+}
+
+type MeApiTokensCreate429ApplicationProblemPlusJSONResponse struct {
+	Body    TooManyRequests
+	Headers MeApiTokensCreate429ResponseHeaders
+}
+
+func (response MeApiTokensCreate429ApplicationProblemPlusJSONResponse) VisitMeApiTokensCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type MeApiTokensCreate500ApplicationProblemPlusJSONResponse InternalServerError
 
 func (response MeApiTokensCreate500ApplicationProblemPlusJSONResponse) VisitMeApiTokensCreateResponse(w http.ResponseWriter) error {
@@ -6486,6 +6823,20 @@ func (response MeApiTokensCreate500ApplicationProblemPlusJSONResponse) VisitMeAp
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeApiTokensCreate503ApplicationProblemPlusJSONResponse ServiceUnavailable
+
+func (response MeApiTokensCreate503ApplicationProblemPlusJSONResponse) VisitMeApiTokensCreateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -6825,6 +7176,28 @@ func (response PermissionManifestsPublish422ApplicationProblemPlusJSONResponse) 
 	return err
 }
 
+type PermissionManifestsPublish429ResponseHeaders struct {
+	RetryAfter int32
+}
+
+type PermissionManifestsPublish429ApplicationProblemPlusJSONResponse struct {
+	Body    TooManyRequests
+	Headers PermissionManifestsPublish429ResponseHeaders
+}
+
+func (response PermissionManifestsPublish429ApplicationProblemPlusJSONResponse) VisitPermissionManifestsPublishResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type PermissionManifestsPublish500ApplicationProblemPlusJSONResponse InternalServerError
 
 func (response PermissionManifestsPublish500ApplicationProblemPlusJSONResponse) VisitPermissionManifestsPublishResponse(w http.ResponseWriter) error {
@@ -6835,6 +7208,20 @@ func (response PermissionManifestsPublish500ApplicationProblemPlusJSONResponse) 
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PermissionManifestsPublish503ApplicationProblemPlusJSONResponse ServiceUnavailable
+
+func (response PermissionManifestsPublish503ApplicationProblemPlusJSONResponse) VisitPermissionManifestsPublishResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
 	_, err := buf.WriteTo(w)
 	return err
 }
