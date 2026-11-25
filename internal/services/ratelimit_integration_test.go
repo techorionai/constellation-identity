@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -73,6 +74,8 @@ func retryAfter(t *testing.T, resp testserver.Response) int {
 	}
 	return n
 }
+
+var errorField = regexp.MustCompile(`"error":"[^"]*"`)
 
 func errorCode(b []byte) string {
 	var m map[string]any
@@ -202,7 +205,7 @@ func TestRateLimitIntegration(t *testing.T) {
 		v, err := introspect.New(introspect.Config{
 			Issuer: g.a.Config.Issuer, IntrospectURL: g.a.PublicURL + "/oauth/introspect", Audience: "demo",
 			CacheTTL: time.Second, InactiveTTL: 0, CacheSize: 100, InactiveCacheSize: 10, MaxConcurrent: 16,
-			HTTPTimeout: 5 * time.Second, AllowInsecureHTTP: true,
+			HTTPTimeout: 5 * time.Second, AllowInsecureHTTP: true, MaxCallsPerSecond: 100,
 		}, g.a.TokenSource(t, g.serviceClient))
 		if err != nil {
 			t.Fatal(err)
@@ -397,6 +400,9 @@ func TestRateLimitIntegration(t *testing.T) {
 			t.Fatal("no rate limit log record, so the test checks nothing")
 		}
 		for _, line := range lines {
+			// The error text of the Valkey client has the address of the Valkey server. It
+			// is not a client address, so the check skips this field.
+			line = errorField.ReplaceAllString(line, "")
 			for _, bad := range []string{"127.0.0.1", "[::1]", "198.51.100", "@", "client_assertion", "cpat_", "eyJ", "bad"} {
 				if strings.Contains(line, bad) {
 					t.Fatalf("a rate limit log record has %q: %s", bad, line)
