@@ -15,4 +15,7 @@ type Limiter interface {
 	// failures only. The IP counter never goes below 0, a missing counter stays
 	// missing, and an existing counter keeps its expiry.
 	RecordSuccess(ctx context.Context, email, ip string) error
+	// Unlock deletes the counter of the email. It returns true if a counter
+	// existed. It does not change the counter of any IP.
+	Unlock(ctx context.Context, email string) (bool, error)
 }

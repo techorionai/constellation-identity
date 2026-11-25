@@ -139,3 +139,15 @@ func (l *LoginLimiter) RecordSuccess(ctx context.Context, email, ip string) erro
 	}
 	return nil
 }
+
+// Unlock deletes the counter of the email. It returns true if the counter
+// existed.
+func (l *LoginLimiter) Unlock(ctx context.Context, email string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	n, err := l.client.Do(ctx, l.client.B().Del().Key(l.emailKey(email)).Build()).AsInt64()
+	if err != nil {
+		return false, fmt.Errorf("unlock login: %w", err)
+	}
+	return n > 0, nil
+}

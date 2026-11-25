@@ -20,6 +20,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/app/queries"
 	"github.com/techorionai/constellation-identity/internal/domain"
+	"github.com/techorionai/constellation-identity/internal/handlers/http/clientip"
 )
 
 //go:embed templates/*.html
@@ -170,7 +171,7 @@ func (h *Handler) parseForm(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (h *Handler) clientIP(r *http.Request) string {
-	return ClientIP(r.RemoteAddr, r.Header.Values("X-Forwarded-For"), h.d.TrustedProxies)
+	return clientip.ClientIP(r.RemoteAddr, r.Header.Values("X-Forwarded-For"), h.d.TrustedProxies)
 }
 
 // setCookie sets the session cookie.
@@ -262,7 +263,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	email := r.PostForm.Get("email")
 	issued, err := h.d.Login.Execute(r.Context(), commands.Login{
 		Email: email, Password: r.PostForm.Get("password"),
-		IP: h.clientIP(r), UserAgent: r.UserAgent(), PreviousToken: cookieValue(r),
+		IP: h.clientIP(r), IPKey: clientip.Key(h.clientIP(r)), UserAgent: r.UserAgent(), PreviousToken: cookieValue(r),
 	})
 	v := view{Title: "Log in", Email: email, ReturnTo: rt}
 	if err == nil {

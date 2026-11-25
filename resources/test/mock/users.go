@@ -402,3 +402,15 @@ func (l *Limiter) RecordSuccess(_ context.Context, email, ip string) error {
 	}
 	return nil
 }
+
+// Unlock deletes the counter of the email. It returns true if it existed.
+func (l *Limiter) Unlock(_ context.Context, email string) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.Err != nil {
+		return false, fmt.Errorf("limiter: %w", l.Err)
+	}
+	_, ok := l.Emails[email]
+	delete(l.Emails, email)
+	return ok, nil
+}

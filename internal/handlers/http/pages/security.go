@@ -3,9 +3,7 @@ package pages
 import (
 	"context"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
 )
@@ -164,47 +162,4 @@ func TokenFromRequest(r *http.Request) string {
 		return v
 	}
 	return r.URL.Query().Get("token")
-}
-
-// ClientIP returns the client IP of a request. It is the remote address. If the
-// remote address is in a trusted proxy range, it is the last address of
-// X-Forwarded-For that is not in a trusted range. A value that is not an IP
-// address gives the remote address.
-func ClientIP(remoteAddr string, forwardedFor []string, trusted []netip.Prefix) string {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	remote, err := netip.ParseAddr(host)
-	if err != nil {
-		return host
-	}
-	remote = remote.Unmap()
-	if !isTrusted(remote, trusted) {
-		return remote.String()
-	}
-	var chain []string
-	for _, v := range forwardedFor {
-		chain = append(chain, strings.Split(v, ",")...)
-	}
-	for i := len(chain) - 1; i >= 0; i-- {
-		a, err := netip.ParseAddr(strings.TrimSpace(chain[i]))
-		if err != nil {
-			return remote.String()
-		}
-		a = a.Unmap()
-		if !isTrusted(a, trusted) {
-			return a.String()
-		}
-	}
-	return remote.String()
-}
-
-func isTrusted(a netip.Addr, trusted []netip.Prefix) bool {
-	for _, p := range trusted {
-		if p.Contains(a) {
-			return true
-		}
-	}
-	return false
 }
