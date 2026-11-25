@@ -5,7 +5,7 @@ The service follows the hexagonal architecture guide of the planner repository. 
 ## Layout
 
 ```txt
-cmd/identity/main.go            Starts the service. Subcommands "healthcheck", "rotate-signing-keys", and "setup-link".
+cmd/identity/main.go            Starts the service. Subcommands "healthcheck", "rotate-signing-keys", "setup-link", and "unlock-login".
 api/openapi/                    Constellation.Identity.openapi.yaml, identity-manifest.json, CONTRACTS_VERSION
 internal/domain/                Pure types and rules (signing keys, clients, manifests, roles, assertions, scopes)
 internal/ports/<port>/          Interfaces
@@ -13,11 +13,12 @@ internal/adapters/postgres/     Repositories and the "jtistore" adapter
 internal/adapters/secrets/      Adapter of the port "privatekeys" on platform-go secrets
 internal/adapters/jose/         Adapters of the ports "tokensigner", "tokenverifier", and "assertion" with go-jose
 internal/adapters/argon2/       Adapter of the port "passwordhasher" (argon2id, NFC, hash slots)
-internal/adapters/valkey/       Adapters of the ports "loginlimiter" (login failure counters) and "authflow" (auth requests, codes, used-code markers)
+internal/adapters/valkey/       Adapters of the ports "loginlimiter" (login failure counters), "ratelimit" (request counters), and "authflow" (auth requests, codes, used-code markers)
 internal/app/{commands,queries} Use cases with platform-go executors and decorators
 internal/app/keys/              Key manager and in-memory key cache
 internal/handlers/http/         Generated server (gen/), handlers
 internal/handlers/http/pages/   HTML pages: login, logout, setup, invite (templates, CSS, headers)
+internal/handlers/http/clientip/   Client IP and the rate limit key of a client (IPv6 /64)
 internal/common/errors/         AppError
 internal/config/                Config struct and the clients file parser
 internal/services/              Composition root
@@ -45,6 +46,7 @@ The `.golangci.yml` file has `depguard` rules for the import table of the guide.
 | Session repository | `internal/ports/sessions` | `internal/adapters/postgres` |
 | Password hasher | `internal/ports/passwordhasher` | `internal/adapters/argon2` |
 | Login failure limiter | `internal/ports/loginlimiter` | `internal/adapters/valkey` |
+| Rate limiter | `internal/ports/ratelimit` | `internal/adapters/valkey` (`MULTI`, `INCR`, `PEXPIRE NX`, `PTTL`, `EXEC`) |
 | Auth request store and code store | `internal/ports/authflow` | `internal/adapters/valkey` (`SET`, `GET`, `GETDEL`) |
 | Refresh token families and tokens | `internal/ports/refreshtokens` | `internal/adapters/postgres` |
 | Token verifier (own tokens) | `internal/ports/tokenverifier` | `internal/adapters/jose` |
