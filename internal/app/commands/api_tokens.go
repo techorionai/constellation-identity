@@ -15,6 +15,7 @@ import (
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/apitokens"
+	"github.com/techorionai/constellation-identity/internal/ports/ratelimit"
 	"github.com/techorionai/constellation-identity/internal/ports/userroles"
 	"github.com/techorionai/constellation-identity/internal/ports/users"
 )
@@ -41,12 +42,14 @@ type APITokenSettings struct {
 
 // APITokensDeps are the ports of the API token use cases.
 type APITokensDeps struct {
-	Tokens    apitokens.Repository
-	Users     users.Repository
-	UserRoles userroles.Repository
-	Tx        transaction.Transactor
-	Settings  APITokenSettings
-	Log       *slog.Logger
+	// RateLimits limits the creation of tokens for each user. It can be nil.
+	RateLimits *RateLimits
+	Tokens     apitokens.Repository
+	Users      users.Repository
+	UserRoles  userroles.Repository
+	Tx         transaction.Transactor
+	Settings   APITokenSettings
+	Log        *slog.Logger
 	// Now is the clock. The default is time.Now.
 	Now Clock
 }
@@ -111,6 +114,9 @@ func parseTokenScope(scope string) ([]string, error) {
 // transaction under the lock of the user row: the status of the user, the scope,
 // the limit of active tokens, and the limit of all rows.
 func (a *APITokens) Create(ctx context.Context, in CreateAPIToken) (CreatedAPIToken, error) {
+	if err := a.d.RateLimits.Check(ctx, ratelimit.BucketAPITokenCreate, in.UserID); err != nil {
+		return CreatedAPIToken{}, err
+	}
 	name := strings.TrimSpace(in.Name)
 	if n := utf8.RuneCountInString(name); n < 1 || n > domain.MaxAPITokenNameLength {
 		return CreatedAPIToken{}, apperrors.NewInvalidInput("the name must have 1 to 100 characters")

@@ -34,15 +34,16 @@ import (
 	adapterjose "github.com/techorionai/constellation-identity/internal/adapters/jose"
 	"github.com/techorionai/constellation-identity/internal/adapters/postgres"
 	adaptersecrets "github.com/techorionai/constellation-identity/internal/adapters/secrets"
+	adaptervalkey "github.com/techorionai/constellation-identity/internal/adapters/valkey"
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/app/keys"
 	"github.com/techorionai/constellation-identity/internal/app/queries"
-	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
 	"github.com/techorionai/constellation-identity/internal/config"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	httpapi "github.com/techorionai/constellation-identity/internal/handlers/http"
 	"github.com/techorionai/constellation-identity/internal/handlers/http/pages"
 	"github.com/techorionai/constellation-identity/internal/ports/privatekeys"
+	"github.com/techorionai/constellation-identity/internal/ports/ratelimit"
 	"github.com/techorionai/constellation-identity/migrations"
 )
 
@@ -69,6 +70,10 @@ type options struct {
 	clock func() time.Time
 	// corsCacheTTL is the time of the CORS origin cache. Nil means the default.
 	corsCacheTTL *time.Duration
+	// rateRules replaces rules of the config. A test uses it to set low or high limits.
+	rateRules map[string]ratelimit.Rule
+	// rateLimiter replaces the Valkey rate limiter. A test uses it for a mock.
+	rateLimiter ratelimit.Limiter
 }
 
 // Option changes the composition. The options are for tests. Production code
@@ -108,6 +113,15 @@ func WithClock(now func() time.Time) Option { return func(o *options) { o.clock 
 // origins. A test sets 0 to read the database for each request.
 func WithCORSCacheTTL(ttl time.Duration) Option { return func(o *options) { o.corsCacheTTL = &ttl } }
 
+// WithRateRules replaces the rules of the named buckets. A bucket that is not in
+// the map keeps the rule of the config.
+func WithRateRules(rules map[string]ratelimit.Rule) Option {
+	return func(o *options) { o.rateRules = rules }
+}
+
+// WithRateLimiter replaces the Valkey rate limiter.
+func WithRateLimiter(l ratelimit.Limiter) Option { return func(o *options) { o.rateLimiter = l } }
+
 func newOptions(opts []Option) options {
 	o := options{managerInterval: defaultKeyManagerInterval, cacheInterval: defaultCacheInterval, log: slog.Default()}
 	for _, opt := range opts {
@@ -129,6 +143,7 @@ type App struct {
 	pubL   net.Listener
 	pub    *http.Server
 	mgr    *keys.Manager
+	limits *commands.RateLimits
 	cache  *keys.Cache
 	verify *jwt.Verifier
 	reg    metric.Registration
@@ -193,6 +208,12 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		return nil, fmt.Errorf("make PostgreSQL checker: %w", err)
 	}
 
+	limits, err := newRateLimits(cfg, o, adaptervalkey.NewRateLimiter(a.kv.Raw, a.kv.Keys), log)
+	if err != nil {
+		return nil, err
+	}
+	a.limits = limits
+
 	// 2. Start the admin server. /livez is 200. /readyz is 503.
 	var migrated atomic.Bool
 	secretRepo := secretspg.NewRepository(a.db.Pool)
@@ -243,6 +264,11 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	publish := decorators.ApplyTracing(decorators.ApplyLogging(
 		commands.NewPublishManifest(manifestRepo, clientRepo, log), "PublishManifest",
 		decorators.WithLogger(log), decorators.WithErrorLevel(errorLevel)), "PublishManifest")
+	// The publish of the HTTP API has the rate limit. The own publish does not.
+	publishAPI := decorators.ApplyTracing(decorators.ApplyLogging(
+		commands.NewPublishManifest(manifestRepo, clientRepo, log).WithRateLimits(limits), "PublishManifest",
+		decorators.WithLogger(log), decorators.WithErrorLevel(errorLevel)), "PublishManifest",
+		decorators.WithErrorClassifier(rateLimitClassifier))
 	if _, err := publish.Execute(ctx, commands.PublishManifest{
 		Manifest: ownManifest, PublishedBy: domain.IdentityApp, Internal: true,
 	}); err != nil {
@@ -318,16 +344,14 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		Signer:      adapterjose.Signer{},
 		Parser:      adapterjose.AssertionParser{},
 		Log:         log,
+		RateLimits:  limits,
 	})
 	if err != nil {
 		return nil, err
 	}
 	// The command writes its own failure log, so it has no logging decorator.
 	issue := decorators.ApplyTracing(issueCmd, "IssueServiceToken",
-		decorators.WithErrorClassifier(func(err error) bool {
-			oe, ok := apperrors.AsOAuthError(err)
-			return !ok || oe.Code == apperrors.OAuthServerError
-		}))
+		decorators.WithErrorClassifier(issueSpanError))
 	listManifests := withObservability(queries.NewListManifests(manifestRepo), "ListManifests", log)
 	getManifest := withObservability(queries.NewGetManifest(manifestRepo), "GetManifest", log)
 	listRoles := withObservability(queries.NewListRoles(manifestRepo), "ListRoles", log)
@@ -335,7 +359,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	// The revoke endpoint authenticates a service client with the same checks.
 	users.oidc.SetServiceAuthenticator(issueCmd)
 	introspectCmd, err := commands.NewIntrospect(commands.IntrospectDeps{
-		Auth: issueCmd, Tokens: users.apiTokenRepo, UserRoles: users.userRoles, Log: log, Now: o.clock,
+		Auth: issueCmd, Tokens: users.apiTokenRepo, UserRoles: users.userRoles, Log: log, Now: o.clock, RateLimits: limits,
 	})
 	if err != nil {
 		return nil, err
@@ -343,32 +367,30 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	// The command checks the caller and the token. It has no logging decorator,
 	// because a log record must not have the token.
 	introspect := decorators.ApplyTracing(introspectCmd, "Introspect",
-		decorators.WithErrorClassifier(func(err error) bool {
-			oe, ok := apperrors.AsOAuthError(err)
-			return !ok || oe.Code == apperrors.OAuthServerError || oe.Code == apperrors.OAuthTemporarilyUnavailable
-		}))
+		decorators.WithErrorClassifier(oauthSpanError))
 	exchangeCmd, err := commands.NewTokenExchange(commands.TokenExchangeDeps{
 		Issuer: cfg.Issuer, Auth: issueCmd, Clients: clientRepo, ClientRoles: postgres.NewClientRoles(a.db.Pool),
 		Manifests: manifestRepo, Users: postgres.NewUsers(a.db.Pool), UserRoles: users.userRoles,
 		Agents: postgres.NewAgents(a.db.Pool), AgentRoles: postgres.NewAgentRoles(a.db.Pool),
-		Keys: a.cache, Signer: adapterjose.Signer{}, Verifier: adapterjose.Verifier{}, Log: log, Now: o.clock,
+		Keys: a.cache, Signer: adapterjose.Signer{}, Verifier: adapterjose.Verifier{}, Log: log, Now: o.clock, RateLimits: limits,
 	})
 	if err != nil {
 		return nil, err
 	}
 	// The command writes its own failure log, so it has no logging decorator.
 	exchange := decorators.ApplyTracing(exchangeCmd, "TokenExchange",
-		decorators.WithErrorClassifier(func(err error) bool {
-			oe, ok := apperrors.AsOAuthError(err)
-			return !ok || oe.Code == apperrors.OAuthServerError || oe.Code == apperrors.OAuthTemporarilyUnavailable
-		}))
+		decorators.WithErrorClassifier(oauthSpanError))
+	trustedProxies, err := cfg.HTTP.TrustedProxyPrefixes()
+	if err != nil {
+		return nil, fmt.Errorf("%sHTTP__TRUSTED_PROXIES: %w", config.Prefix, err)
+	}
 	api := httpapi.New(httpapi.Deps{
 		ExchangeToken: exchange,
-		JWKS:          jwks, Discovery: discovery, IssueToken: issue, PublishManifest: publish,
+		JWKS:          jwks, Discovery: discovery, IssueToken: issue, PublishManifest: publishAPI,
 		ListManifests: listManifests, GetManifest: getManifest, ListRoles: listRoles, GetRole: getRole,
 		ExchangeCode: users.exchangeCode, RefreshTokens: users.refreshTokens, RevokeToken: users.revokeToken, UserInfo: users.userInfo,
 		Admin: users.admin, APITokens: users.apiTokens, Introspect: introspect, CreateUser: users.createUser, CreateInvite: users.createInvite, CORSOrigins: users.cors,
-		Verifier: a.verify, Scopes: scopes, Log: log,
+		Verifier: a.verify, Scopes: scopes, Log: log, RateLimits: limits, TrustedProxies: trustedProxies,
 	})
 	// RedactToken is outside the tracing handler, so no span has a secret value
 	// of the query. RestoreQuery puts the real query back for the router.
@@ -524,4 +546,24 @@ func RunMigrations(ctx context.Context, db *clientpg.Client) error {
 		return fmt.Errorf("run the migrations: %w", err)
 	}
 	return nil
+}
+
+// newRateLimits makes the rate limit checker. With the setting
+// RATE_LIMIT__ENABLED=false, it returns nil and writes one warn record, and
+// the service does not call the limiter.
+func newRateLimits(cfg config.Config, o options, limiter ratelimit.Limiter, log *slog.Logger) (*commands.RateLimits, error) {
+	if !cfg.RateLimit.Enabled {
+		log.Warn("identity.rate_limit.disabled: the rate limits of the public endpoints are off",
+			"event", "identity.rate_limit.disabled", "setting", config.Prefix+"RATE_LIMIT__ENABLED")
+		return nil, nil
+	}
+	rules := cfg.RateLimit.Rules()
+	for name, r := range o.rateRules {
+		r.Name = name
+		rules[name] = r
+	}
+	if o.rateLimiter != nil {
+		limiter = o.rateLimiter
+	}
+	return commands.NewRateLimits(commands.RateLimitsDeps{Limiter: limiter, Rules: rules, Log: log})
 }

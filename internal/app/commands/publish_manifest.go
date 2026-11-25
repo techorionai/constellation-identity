@@ -12,6 +12,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/clients"
 	"github.com/techorionai/constellation-identity/internal/ports/manifests"
+	"github.com/techorionai/constellation-identity/internal/ports/ratelimit"
 )
 
 // PublishManifest is the input of a manifest publish.
@@ -36,6 +37,7 @@ type PublishManifestCommand struct {
 	repo    manifests.Repository
 	clients clients.Repository
 	log     *slog.Logger
+	limits  *RateLimits
 }
 
 var _ executor.ExecutorWithReturn[PublishManifest, domain.PublishedManifest] = (*PublishManifestCommand)(nil)
@@ -48,10 +50,24 @@ func NewPublishManifest(repo manifests.Repository, cl clients.Repository, log *s
 	return &PublishManifestCommand{repo: repo, clients: cl, log: log}
 }
 
+// WithRateLimits sets the rate limits of the publish. The own publish of the
+// service (Internal) is not counted.
+func (c *PublishManifestCommand) WithRateLimits(l *RateLimits) *PublishManifestCommand {
+	c.limits = l
+	return c
+}
+
 // Execute checks the caller and the keys, then stores the manifest. A check
 // error is an *apperrors.ValidationError that holds all problems of the keys.
 func (c *PublishManifestCommand) Execute(ctx context.Context, p PublishManifest) (domain.PublishedManifest, error) {
 	if !p.Internal {
+		key := p.CallerClientID
+		if key == "" {
+			key = p.PublishedBy
+		}
+		if err := c.limits.Check(ctx, ratelimit.BucketManifestPublish, key); err != nil {
+			return domain.PublishedManifest{}, err
+		}
 		callerApp, err := c.callerApp(ctx, p)
 		if err != nil {
 			return domain.PublishedManifest{}, err

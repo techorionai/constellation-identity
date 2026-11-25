@@ -61,7 +61,9 @@ type Deps struct {
 	Issuer string
 	// TrustedProxies are the ranges whose X-Forwarded-For header the pages use.
 	TrustedProxies []netip.Prefix
-	Log            *slog.Logger
+	// RateLimits counts the requests of the IP buckets of the pages. It can be nil.
+	RateLimits *commands.RateLimits
+	Log        *slog.Logger
 	// Now is the clock for the cookie. The default is time.Now.
 	Now func() time.Time
 }
@@ -112,7 +114,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /oauth/authorize/continue", h.authorizeContinue)
 	mux.HandleFunc("GET /oauth/end_session", h.endSession)
 	mux.HandleFunc("POST /oauth/end_session", h.endSessionConfirm)
-	return SecurityHeaders(h.d.Issuer, http.NewCrossOriginProtection().Handler(mux))
+	return SecurityHeaders(h.d.Issuer, h.rateLimit(http.NewCrossOriginProtection().Handler(mux)))
 }
 
 // view is the data of a template.

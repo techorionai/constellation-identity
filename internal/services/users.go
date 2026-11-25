@@ -9,6 +9,7 @@ import (
 	"time"
 
 	clientpg "github.com/techorionai/constellation-platform-go/clients/postgres"
+	clientvk "github.com/techorionai/constellation-platform-go/clients/valkey"
 	"github.com/techorionai/constellation-platform-go/decorators"
 	"github.com/techorionai/constellation-platform-go/executor"
 	"github.com/techorionai/constellation-platform-go/retention"
@@ -23,6 +24,7 @@ import (
 	adaptervalkey "github.com/techorionai/constellation-identity/internal/adapters/valkey"
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/app/queries"
+	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
 	"github.com/techorionai/constellation-identity/internal/config"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/handlers/http/pages"
@@ -35,6 +37,7 @@ func expectedUserError(err error) bool {
 		commands.ErrUserNotInvited, commands.ErrBadCredentials, commands.ErrTooManyAttempts, commands.ErrBusy,
 		domain.ErrInvalidEmail, domain.ErrInvalidName, domain.ErrPasswordTooShort, domain.ErrPasswordTooLong,
 		queries.ErrNoSession,
+		apperrors.ErrRateLimited,
 	} {
 		if errors.Is(err, target) {
 			return true
@@ -154,7 +157,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	})
 	st.apiTokenRepo, st.userRoles = apiTokenRepo, roles
 	st.apiTokens = commands.NewAPITokens(commands.APITokensDeps{
-		Tokens: apiTokenRepo, Users: userRepo, UserRoles: roles, Tx: tx, Log: log, Now: clock,
+		Tokens: apiTokenRepo, Users: userRepo, UserRoles: roles, Tx: tx, Log: log, Now: clock, RateLimits: a.limits,
 		Settings: commands.APITokenSettings{
 			DefaultTTLDays: cfg.APIToken.DefaultTTLDays, MaxTTLDays: cfg.APIToken.MaxTTLDays, MaxPerUser: cfg.APIToken.MaxPerUser,
 		},
@@ -192,6 +195,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		Now:               clock,
 		Issuer:            cfg.Issuer,
 		TrustedProxies:    trusted,
+		RateLimits:        a.limits,
 		Log:               log,
 	})
 	if err != nil {
@@ -292,4 +296,16 @@ func SetupLink(ctx context.Context, cfg config.Config, log *slog.Logger) (string
 		return "", err
 	}
 	return link.URL, nil
+}
+
+// UnlockLogin removes the login lock of one email. It uses Valkey only. The
+// result is true if the email had a failure counter.
+func UnlockLogin(ctx context.Context, cfg config.Config, email string, log *slog.Logger) (bool, error) {
+	kv, err := clientvk.New(ctx, cfg.Valkey)
+	if err != nil {
+		return false, fmt.Errorf("connect to Valkey: %w", err)
+	}
+	defer kv.Close()
+	limiter := adaptervalkey.NewLoginLimiter(kv.Raw, kv.Keys, cfg.Login.FailureWindow)
+	return commands.NewUnlockLogin(limiter, log).Execute(ctx, commands.UnlockLogin{Email: email})
 }

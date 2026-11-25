@@ -23,6 +23,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/ports/clients"
 	"github.com/techorionai/constellation-identity/internal/ports/jtistore"
 	"github.com/techorionai/constellation-identity/internal/ports/manifests"
+	"github.com/techorionai/constellation-identity/internal/ports/ratelimit"
 	"github.com/techorionai/constellation-identity/internal/ports/tokensigner"
 )
 
@@ -59,6 +60,8 @@ type KeySource interface {
 
 // IssueServiceTokenDeps are the ports of the command.
 type IssueServiceTokenDeps struct {
+	// RateLimits limits the requests of one verified client. It can be nil.
+	RateLimits  *RateLimits
 	Issuer      string
 	Clients     clients.Repository
 	ClientRoles clientroles.Repository
@@ -130,6 +133,10 @@ func (c *IssueServiceTokenCommand) Execute(ctx context.Context, in IssueServiceT
 		if st.verified {
 			field = "client.id"
 		}
+		if oe, ok := apperrors.AsOAuthError(err); ok && oe.RateLimited {
+			c.d.Log.InfoContext(ctx, "token request limited", "error_code", code, field, truncate(st.clientID, 64))
+			return IssueServiceTokenResult{}, err
+		}
 		c.d.Log.WarnContext(ctx, "token request failed", "error_code", code, field, truncate(st.clientID, 64))
 		return IssueServiceTokenResult{}, err
 	}
@@ -163,6 +170,11 @@ func (c *IssueServiceTokenCommand) issue(ctx context.Context, in IssueServiceTok
 	// 2 to 6. The client authentication.
 	client, err := c.authenticate(ctx, in.AssertionType, in.Assertion, in.ClientID, st)
 	if err != nil {
+		return IssueServiceTokenResult{}, err
+	}
+	// The limit uses the client ID of the verified assertion, not the form value.
+	// One bucket counts the client credentials grant and the token exchange.
+	if err := oauthRateError(c.d.RateLimits.Check(ctx, ratelimit.BucketTokenClient, client.ID)); err != nil {
 		return IssueServiceTokenResult{}, err
 	}
 	now := c.d.Now()

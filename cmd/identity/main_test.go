@@ -78,3 +78,16 @@ func TestUnknownCommand(t *testing.T) {
 		t.Fatalf("exit = %d, want 2", got)
 	}
 }
+
+// U11: unlock-login needs exactly one argument.
+func TestU11_UnlockLoginArguments(t *testing.T) {
+	for _, args := range [][]string{{"unlock-login"}, {"unlock-login", "a@example.com", "b@example.com"}} {
+		var out, errOut bytes.Buffer
+		if got := run(args, &out, &errOut); got != 2 {
+			t.Fatalf("%v: exit = %d, want 2", args, got)
+		}
+		if !strings.Contains(errOut.String(), "usage: identity unlock-login <email>") {
+			t.Fatalf("%v: stderr = %q", args, errOut.String())
+		}
+	}
+}

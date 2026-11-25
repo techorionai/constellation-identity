@@ -21,6 +21,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/ports/clientroles"
 	"github.com/techorionai/constellation-identity/internal/ports/clients"
 	"github.com/techorionai/constellation-identity/internal/ports/manifests"
+	"github.com/techorionai/constellation-identity/internal/ports/ratelimit"
 	"github.com/techorionai/constellation-identity/internal/ports/tokensigner"
 	"github.com/techorionai/constellation-identity/internal/ports/tokenverifier"
 	"github.com/techorionai/constellation-identity/internal/ports/userroles"
@@ -64,7 +65,9 @@ type TokenExchangeResult struct {
 
 // TokenExchangeDeps are the ports of the command.
 type TokenExchangeDeps struct {
-	Issuer string
+	// RateLimits limits the requests of one verified client. It can be nil.
+	RateLimits *RateLimits
+	Issuer     string
 	// Auth checks the client authentication of the caller.
 	Auth        ServiceAuthenticator
 	Clients     clients.Repository
@@ -139,6 +142,10 @@ func (c *TokenExchangeCommand) Execute(ctx context.Context, in TokenExchange) (T
 		if st.verified {
 			field = "client.id"
 		}
+		if oe, ok := apperrors.AsOAuthError(err); ok && oe.RateLimited {
+			c.d.Log.InfoContext(ctx, "token request limited", "error_code", code, "grant_type", "token_exchange", field, truncate(st.clientID, 64))
+			return TokenExchangeResult{}, err
+		}
 		c.d.Log.WarnContext(ctx, "token request failed", "error_code", code, "grant_type", "token_exchange", field, truncate(st.clientID, 64))
 		return TokenExchangeResult{}, err
 	}
@@ -163,6 +170,9 @@ func (c *TokenExchangeCommand) exchange(ctx context.Context, in TokenExchange, s
 		return TokenExchangeResult{}, err
 	}
 	st.clientID, st.verified = client.ID, true
+	if err := oauthRateError(c.d.RateLimits.Check(ctx, ratelimit.BucketTokenClient, client.ID)); err != nil {
+		return TokenExchangeResult{}, err
+	}
 	now := c.d.Now().UTC()
 
 	// 3. The permission of the client.

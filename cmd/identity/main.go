@@ -6,6 +6,7 @@
 //	identity healthcheck                  Exit 0 if /readyz of the admin port is 200.
 //	identity rotate-signing-keys --force  Replace all signing keys.
 //	identity setup-link                   Print a new first-admin setup link.
+//	identity unlock-login <email>         Remove the login lock of one email.
 package main
 
 import (
@@ -46,6 +47,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runRotate(args[1:], stdout, stderr)
 	case "setup-link":
 		return runSetupLink(stdout, stderr)
+	case "unlock-login":
+		return runUnlockLogin(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		return 2

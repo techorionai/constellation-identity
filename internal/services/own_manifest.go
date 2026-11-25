@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -40,6 +41,9 @@ func OwnManifest(m manifest.PermissionManifest) domain.Manifest {
 
 // errorLevel logs an error that the caller caused at the info level.
 func errorLevel(err error) slog.Level {
+	if errors.Is(err, apperrors.ErrRateLimited) {
+		return slog.LevelInfo
+	}
 	if _, ok := apperrors.AsValidationError(err); ok {
 		return slog.LevelInfo
 	}
@@ -54,4 +58,35 @@ func errorLevel(err error) slog.Level {
 func withObservability[P, R any](e executor.ExecutorWithReturn[P, R], name string, log *slog.Logger) executor.ExecutorWithReturn[P, R] {
 	return decorators.ApplyTracing(decorators.ApplyLogging(e, name,
 		decorators.WithLogger(log), decorators.WithErrorLevel(errorLevel)), name)
+}
+
+// rateLimitClassifier tells the tracing decorator that a request that a rate
+// limit stops is not a failure of the service.
+func rateLimitClassifier(err error) bool { return !errors.Is(err, apperrors.ErrRateLimited) }
+
+// oauthSpanError tells the tracing decorator which errors of the introspection
+// and of the token exchange are failures. A request that a rate limit stops is
+// not a failure. An unavailable store or limiter is a failure.
+func oauthSpanError(err error) bool {
+	oe, ok := apperrors.AsOAuthError(err)
+	if !ok {
+		return true
+	}
+	if oe.RateLimited {
+		return false
+	}
+	return oe.Code == apperrors.OAuthServerError || oe.Code == apperrors.OAuthTemporarilyUnavailable
+}
+
+// issueSpanError is the classifier of the client credentials grant. An
+// unavailable limiter is a failure. A request that a rate limit stops is not.
+func issueSpanError(err error) bool {
+	oe, ok := apperrors.AsOAuthError(err)
+	if !ok {
+		return true
+	}
+	if oe.RateLimited {
+		return false
+	}
+	return oe.Code == apperrors.OAuthServerError || errors.Is(err, apperrors.ErrRateLimiterUnavailable)
 }
