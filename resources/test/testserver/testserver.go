@@ -26,6 +26,7 @@ import (
 
 	"github.com/techorionai/constellation-identity/internal/config"
 	"github.com/techorionai/constellation-identity/internal/domain"
+	"github.com/techorionai/constellation-identity/internal/ports/ratelimit"
 	"github.com/techorionai/constellation-identity/internal/services"
 )
 
@@ -88,6 +89,8 @@ type settings struct {
 	retentionAfter  func(time.Duration) <-chan time.Time
 	clock           *Clock
 	corsCacheTTL    *time.Duration
+	rateRules       map[string]ratelimit.Rule
+	rateLimiter     ratelimit.Limiter
 }
 
 // Option changes a test server.
@@ -140,6 +143,27 @@ func WithClock(c *Clock) Option { return func(s *settings) { s.clock = c } }
 // for each request.
 func WithCORSCacheTTL(ttl time.Duration) Option { return func(s *settings) { s.corsCacheTTL = &ttl } }
 
+// WithRateLimits sets the rule of the named buckets. The test server sets the
+// limit of each other bucket to HighRateLimit, so that a test that does not test
+// the limits gets no 429. A rule with no window keeps the default window.
+func WithRateLimits(rules map[string]ratelimit.Rule) Option {
+	return func(s *settings) {
+		if s.rateRules == nil {
+			s.rateRules = map[string]ratelimit.Rule{}
+		}
+		for k, v := range rules {
+			s.rateRules[k] = v
+		}
+	}
+}
+
+// WithRateLimiter replaces the Valkey rate limiter, for example with a mock.
+func WithRateLimiter(l ratelimit.Limiter) Option { return func(s *settings) { s.rateLimiter = l } }
+
+// HighRateLimit is the limit of each bucket in a test that does not test the
+// limits.
+const HighRateLimit = 1000000
+
 // Server is a running service.
 type Server struct {
 	App       *services.App
@@ -186,6 +210,10 @@ func (e *Env) TryStart(t testing.TB, opts ...Option) (*Server, error) {
 	}
 	if s.managerInterval > 0 {
 		svcOpts = append(svcOpts, services.WithKeyIntervals(s.managerInterval, s.cacheInterval))
+	}
+	svcOpts = append(svcOpts, services.WithRateRules(s.rules()))
+	if s.rateLimiter != nil {
+		svcOpts = append(svcOpts, services.WithRateLimiter(s.rateLimiter))
 	}
 	app, err := services.Start(context.Background(), cfg, svcOpts...)
 	if err != nil {
@@ -307,6 +335,7 @@ func (e *Env) buildConfig(t testing.TB, opts []Option) (config.Config, *settings
 		},
 		APIToken:    config.APIToken{DefaultTTLDays: 90, MaxTTLDays: 365, MaxPerUser: 50},
 		OIDC:        config.OIDC{AuthRequestTTL: 10 * time.Minute, CodeTTL: time.Minute, UserTokenTTL: 15 * time.Minute},
+		RateLimit:   config.RateLimit{Enabled: true},
 		ClientsFile: s.clientsFile,
 	}
 	for _, f := range s.configure {
@@ -322,4 +351,23 @@ func freePort() (int, error) {
 	}
 	defer func() { _ = l.Close() }()
 	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+// rules returns the rule of each bucket: the high limit and the default
+// window, with the rules of WithRateLimits on top.
+func (s *settings) rules() map[string]ratelimit.Rule {
+	rules := config.DefaultRateRules()
+	for name, r := range rules {
+		r.Limit = HighRateLimit
+		rules[name] = r
+	}
+	for name, r := range s.rateRules {
+		d := rules[name]
+		if r.Window == 0 {
+			r.Window = d.Window
+		}
+		r.Name = name
+		rules[name] = r
+	}
+	return rules
 }
