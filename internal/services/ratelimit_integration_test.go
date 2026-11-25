@@ -84,13 +84,6 @@ func errorCode(b []byte) string {
 	return s
 }
 
-func problemCode(b []byte) string {
-	var m map[string]any
-	_ = json.Unmarshal(b, &m)
-	s, _ := m["code"].(string)
-	return s
-}
-
 func tokenRequest(a *app, t *testing.T, c testserver.ServiceClient) (testserver.Response, []byte) {
 	t.Helper()
 	return a.PostToken(t, testserver.TokenForm(a.Assertion(t, c, nil), "identity", "identity:manifest:publish"))
