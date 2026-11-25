@@ -48,6 +48,10 @@ func (l *LoginLimiter) ipKey(ip string) string {
 	return l.keys.Key("login", "fail", "ip", digest(ip))
 }
 
+func (l *LoginLimiter) coarseKey(key string) string {
+	return l.keys.Key("login", "fail", "ipc", digest(key))
+}
+
 func digest(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
@@ -91,6 +95,37 @@ func (l *LoginLimiter) Reserve(ctx context.Context, email, ip string) (int64, in
 		return 0, 0, fmt.Errorf("reserve login attempt: %w", err)
 	}
 	return emailN, ipN, nil
+}
+
+// ReserveCoarse adds one attempt to the coarse counter in one MULTI/EXEC
+// transaction. EXPIRE with NX sets the life at the first attempt of the window.
+func (l *LoginLimiter) ReserveCoarse(ctx context.Context, key string) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	seconds := max(int64(l.window/time.Second), 1)
+	k := l.coarseKey(key)
+	res := l.client.DoMulti(ctx,
+		l.client.B().Multi().Build(),
+		l.client.B().Incr().Key(k).Build(),
+		l.client.B().Expire().Key(k).Seconds(seconds).Nx().Build(),
+		l.client.B().Exec().Build())
+	for _, r := range res {
+		if err := r.Error(); err != nil {
+			return 0, fmt.Errorf("reserve coarse login attempt: %w", err)
+		}
+	}
+	replies, err := res[len(res)-1].ToArray()
+	if err != nil {
+		return 0, fmt.Errorf("reserve coarse login attempt: %w", err)
+	}
+	if len(replies) != 2 {
+		return 0, fmt.Errorf("reserve coarse login attempt: %d replies, want 2", len(replies))
+	}
+	n, err := replies[0].AsInt64()
+	if err != nil {
+		return 0, fmt.Errorf("reserve coarse login attempt: %w", err)
+	}
+	return n, nil
 }
 
 // successTries is the number of tries of RecordSuccess when WATCH shows a
@@ -138,4 +173,16 @@ func (l *LoginLimiter) RecordSuccess(ctx context.Context, email, ip string) erro
 		return fmt.Errorf("record login success: %w", err)
 	}
 	return nil
+}
+
+// Unlock deletes the counter of the email. It returns true if the counter
+// existed.
+func (l *LoginLimiter) Unlock(ctx context.Context, email string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	n, err := l.client.Do(ctx, l.client.B().Del().Key(l.emailKey(email)).Build()).AsInt64()
+	if err != nil {
+		return false, fmt.Errorf("unlock login: %w", err)
+	}
+	return n > 0, nil
 }

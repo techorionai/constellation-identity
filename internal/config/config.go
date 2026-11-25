@@ -176,6 +176,7 @@ type Config struct {
 	Retention   Retention       `envPrefix:"RETENTION__"`
 	OIDC        OIDC            `envPrefix:"OIDC__"`
 	APIToken    APIToken        `envPrefix:"API_TOKEN__"`
+	RateLimit   RateLimit       `envPrefix:"RATE_LIMIT__"`
 	ClientsFile string          `env:"CLIENTS_FILE"`
 }
 
@@ -200,6 +201,7 @@ func (c Config) Validate() error {
 	}
 	errs = append(errs, c.Keys.Validate()...)
 	errs = append(errs, c.validateUsers()...)
+	errs = append(errs, c.RateLimit.Validate()...)
 	return errors.Join(errs...)
 }
 

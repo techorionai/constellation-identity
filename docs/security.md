@@ -16,11 +16,63 @@ This page describes how the service protects passwords, logins, sessions, and on
 - An unknown email counts in the same way as a known email. A failed login does not show if the email exists. For an unknown email, the service hashes a constant dummy password, so the response time is about the same.
 - A good login deletes the email counter and decreases the IP counter by 1. Thus the IP counter counts failures only, and users behind one NAT address do not lock each other out with good logins. The decrease uses `WATCH` and one `MULTI`/`EXEC` transaction. It never makes the counter less than 0, it never makes a new counter, and it keeps the life of the counter. The attempt stays reserved before the hash, so parallel requests still cannot pass the limit.
 - If Valkey is not available, the login fails closed with status 503. No hash runs and no session starts.
-- A person can lock out a user with failed logins for the email of that user. The lock ends after the window. The roadmap tracks a subcommand `identity unlock-login <email>` and an IP rate limit on `/setup` and `/invite` with R07. General rate limits on other endpoints also come with R07.
+- A person can lock out a user with failed logins for the email of that user. The lock ends after the window, or when an operator runs `identity unlock-login <email>`. See "Unlock a login". For IPv6, the IP counter uses the /64 prefix of the address. A second counter uses the /48 prefix. It counts all attempts and has a limit of 16 times the IP limit.
+
+## Rate limits
+
+The service counts requests in Valkey, so all instances use the same counters. Each bucket has a key, a limit, and a window. A window is a fixed period that starts at the first request. The key of a client bucket is the client ID of a verified client assertion. The key of an IP bucket is the client IP. For IPv6, the key is the /64 prefix of the address. A second, coarse key is the /48 prefix. It has a limit of 16 times the limit of the bucket, and it is checked first. A request over the coarse limit gets the error and does not make a key for its /64 prefix. Thus one /48 network cannot get more than 16 times the limit of a bucket, and it can make only a limited number of keys in one window. The Valkey key name has a hash of the key (`identity:rl:<bucket>:<sha256>`). Each key has a life, but the life does not limit the number of keys. An attacker with many /48 networks can make many keys, and with the Valkey policy `noeviction` a full Valkey makes all buckets that fail closed, and the login, give 503. Set `maxmemory` of Valkey with a large margin and monitor `used_memory` and the counter `identity.rate_limit.decisions` with the outcome `error`.
+
+| Bucket | Endpoints | Key | Default limit | When Valkey is down |
+| ------ | --------- | --- | ------------- | ------------------- |
+| `public_meta` | `GET /.well-known/jwks.json`, `GET /.well-known/openid-configuration` | IP | 300 per 1 minute | Fail open |
+| `oauth_public` | `/oauth/authorize`, `/oauth/authorize/continue`, `/oauth/end_session` | IP | 60 per 1 minute | Fail closed |
+| `oauth_backend_ip` | `POST /oauth/revoke`, `/oauth/userinfo` | IP | 600 per 1 minute | Fail closed |
+| `token_ip` | `POST /oauth/token` | IP | 600 per 1 minute | Fail closed |
+| `introspect_ip` | `POST /oauth/introspect` | IP | 6000 per 1 minute | Fail closed |
+| `token_client` | `/oauth/token` with `client_credentials` or token exchange | Verified client ID | 300 per 1 minute | Fail closed |
+| `introspect_client` | `/oauth/introspect` | Verified client ID | 6000 per 1 minute | Fail closed |
+| `setup_invite` | `GET` and `POST` of `/setup` and `/invite` | IP | 10 per 15 minutes | Fail closed |
+| `api_token_create` | `POST /v1/me/api-tokens` | User ID | 20 per 1 hour | Fail closed |
+| `manifest_publish` | `PUT /v1/permission-manifests/{app}` | Client ID of a service caller, or user ID of a user caller | 60 per 1 hour | Fail closed |
+
+- The IP buckets run before any database call, hash, or token check. The client buckets run after the signature check of the client assertion. Thus a caller who names a client ID with a bad signature cannot use the budget of that client.
+- The grants `client_credentials` and token exchange use one bucket for each client ID, `token_client`. The token source of `constellation-platform-go` uses one wait time for both grants.
+- `POST /oauth/introspect` has its own IP bucket. A caller with no credential can send random API tokens to a service, and the service sends one introspection call for each token. With one shared IP bucket, these calls would use up the token budget of the service.
+- A cross-site request to `/setup` or `/invite` that is not a navigation (`Sec-Fetch-Site: cross-site` and a `Sec-Fetch-Dest` value that is not `document`) gets 403 and is not counted. The page limit runs after the cross-origin check, so a cross-site page cannot use up the bucket of a victim.
+- The own publish of the manifest of the identity service at start is not counted. A CORS preflight request (`OPTIONS`) is not counted.
+- Fail open means that the request passes when Valkey does not answer. Fail closed means that the request gets a 503 response with `Retry-After: 5`.
+- The login limiter (5 failures for each email and 50 failures for each IP in 15 minutes) is a separate limit. Its IP counter also uses the /64 key for IPv6, and a second counter uses the /48 prefix.
+
+Responses:
+
+| Family | 429 | 503 (Valkey not available) |
+| ------ | --- | -------------------------- |
+| `/oauth/token`, `/oauth/introspect`, `/oauth/revoke`, `/oauth/userinfo` | OAuth JSON `temporarily_unavailable`, `Retry-After`, `Cache-Control: no-store`, `Pragma: no-cache` | The same body, `Retry-After: 5` |
+| Pages (`/oauth/authorize`, `/oauth/end_session`, `/setup`, `/invite`) | HTML "Too many requests. Try again later.", `Retry-After`, the security headers of the pages | HTML "The service is not available. Try again later.", `Retry-After: 5` |
+| Discovery and JWKS | Problem `rate_limited`, `Retry-After` | Not applicable (fail open) |
+| `POST /v1/me/api-tokens`, `PUT /v1/permission-manifests/{app}` | Problem `rate_limited`, `Retry-After` | Problem `unavailable`, `Retry-After: 5` |
+
+The 429 of an API route has the CORS headers, so a browser can read it. The metric `identity.rate_limit.decisions` counts each decision with the attributes `bucket` and `outcome` (`allowed`, `limited`, `error`, `fail_open`). A rate limit log record has the bucket only. It has no key, IP, email, or user.
+
+A service that uses the introspection verifier of `constellation-platform-go` has a local limit (`MaxCallsPerSecond`) for each process. The identity buckets count the calls of all instances. Thus this rule applies: `MaxCallsPerSecond` x 60 x the number of service instances must be below `introspect_client` and `introspect_ip`. With the default of 20 calls per second (1200 per minute), the defaults of 6000 per minute permit 5 instances. An operator with more instances must increase both limits or decrease `MaxCallsPerSecond`.
+
+Many services behind one NAT share the `token_ip` bucket and the `introspect_ip` bucket. A wrong `IDENTITY_HTTP__TRUSTED_PROXIES` setting puts all users behind one proxy into one IP bucket. A gateway that exchanges one token for each user must increase `token_client`. See [configuration.md](configuration.md) for the variables.
+
+## Unlock a login
+
+A person can lock out a user with failed logins for the email of that user. An operator removes the lock of one email with the subcommand:
+
+```sh
+identity unlock-login <email>
+```
+
+The command normalizes the email in the same way as the login. It deletes the failure counter of the email in Valkey and does not change the counters of the IPs. It writes `unlocked` or `not locked` to standard output and exits with code 0. A Valkey error gives exit code 1. A wrong number of arguments gives exit code 2. The command writes the log event `identity.login.unlocked` with no email.
 
 ## Client IP and trusted proxies
 
 The client IP is the remote address of the connection. If the remote address is in a range of `IDENTITY_HTTP__TRUSTED_PROXIES`, the client IP is the last address of `X-Forwarded-For` that is not in a trusted range. A client can add addresses in front of the header, so the service does not use the first address. Without trusted proxies, the service ignores the header.
+
+Each trusted proxy must append the address of its peer to `X-Forwarded-For`. It must not send a value of the client unchanged, and it must not replace the header with another header, for example `X-Real-IP`. If a trusted proxy sends the header of the client unchanged, the client chooses its own IP address, and it can pass all IP limits or use up the bucket of another address. In nginx, use `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`.
 
 ## Sessions and cookies
 
@@ -56,7 +108,7 @@ The client IP is the remote address of the connection. If the remote address is 
 - The values `code`, `code_verifier`, `refresh_token`, `id_token_hint`, `authRequest`, `state`, `nonce`, and `token` are `REDACTED` in the query that logs and traces see. The handlers read the real query. The service never logs the form body of an `/oauth/*` request.
 - The login page of an auth request adds the origin of the redirect URI to the CSP `form-action`. The service checks the host of each redirect URI, so the origin cannot add a directive. No other page has an extra origin.
 - `POST /oauth/end_session` takes the session from the cookie only and ignores the body. A valid `id_token_hint` with another `sid` does not log out the cookie session without the confirmation form.
-- The endpoints `/oauth/*` have no IP rate limit in this version. The login failure limit still applies to the login form.
+- The endpoints `/oauth/*` have IP and client rate limits. See "Rate limits".
 
 ## Personal API tokens
 
@@ -65,7 +117,7 @@ The client IP is the remote address of the connection. If the remote address is 
 - The service checks the format of a value before it looks it up. A value that is longer than 512 bytes or does not have the format `cpat_` and 43 base64url characters is not active and does not query the database.
 - A revoke or a disable takes effect at the next introspection. A service keeps a result in memory for 60 seconds or less, so a revoked token can work in a service for this time. Revocation events come later.
 - Create takes the lock of the user row and checks that the user is `active`. A user who is disabled cannot make a token with an access token that is not expired. A disable revokes all tokens of the user. An enable does not restore them.
-- A token cannot have a key of the app `identity`. The limit of the number of rows of a user (10 times `API_TOKEN__MAX_PER_USER`) stops a loop of create and revoke. The rate limits of `/oauth/introspect` and of create come with milestone M2.
+- A token cannot have a key of the app `identity`. The limit of the number of rows of a user (10 times `API_TOKEN__MAX_PER_USER`) stops a loop of create and revoke. The buckets `introspect_ip`, `introspect_client`, and `api_token_create` limit the introspection and the create. See "Rate limits".
 
 ## Agents and token exchange
 
@@ -80,4 +132,4 @@ The client IP is the remote address of the connection. If the remote address is 
 
 ## Not in this version
 
-General rate limits on other endpoints, MFA, passkeys, and upstream OIDC come with R07. Password reset by email needs R12. Audit entries for logins, for admin changes, and for token issue come with R08 and R09. Rate limits for the public endpoints `/oauth/*` come with milestone M2. Until then the structured log records (`identity.login.ok`, `identity.login.failed`, and others) are the only record.
+MFA, passkeys, and upstream OIDC come with R07. Password reset by email needs R12. Audit entries for logins, for admin changes, for token issue, and for the unlock command come with R08 and R09. Until then the structured log records (`identity.login.ok`, `identity.login.failed`, and others) are the only record.

@@ -9,7 +9,7 @@ The service reads its settings from environment variables with the prefix `IDENT
 | `IDENTITY_ISSUER` | required | Absolute URL with no query and no fragment. `https` is required. `http` is accepted only when the host is `localhost`, `127.0.0.1`, or `[::1]`. | Public base URL, for example `https://id.example.com`. It is the `iss` claim of all tokens. |
 | `IDENTITY_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN`, or `ERROR` | Log level. |
 | `IDENTITY_HTTP__ADDR` | `:8080` | | Public listener. |
-| `IDENTITY_HTTP__TRUSTED_PROXIES` | empty | Comma-separated CIDR ranges | Proxies whose `X-Forwarded-For` value the service uses for the client IP. See [security.md](security.md). |
+| `IDENTITY_HTTP__TRUSTED_PROXIES` | empty | Comma-separated CIDR ranges | Proxies whose `X-Forwarded-For` value the service uses for the client IP. Each proxy must append the peer address to `X-Forwarded-For`. See [security.md](security.md). |
 | `IDENTITY_ADMIN__ADDR` | `:9090` | | Listener for `/livez` and `/readyz`. Do not publish it at the edge. |
 | `IDENTITY_ADMIN__CHECK_TIMEOUT` | `2s` | | Time limit of the readiness checks. |
 | `IDENTITY_ADMIN__DRAIN_DELAY` | `5s` | | Time that `/readyz` is 503 before the public server stops. |
@@ -30,6 +30,9 @@ The service reads its settings from environment variables with the prefix `IDENT
 | `IDENTITY_LOGIN__MAX_FAILURES_PER_EMAIL` | `5` | 1 to 100 | Login attempts for one email in the window. The attempt after the limit gets status 429. |
 | `IDENTITY_LOGIN__MAX_FAILURES_PER_IP` | `50` | 1 to 10000 | Failed login attempts from one client IP in the window. A good login takes back its attempt. The attempt after the limit gets status 429. |
 | `IDENTITY_LOGIN__FAILURE_WINDOW` | `15m` | 1 minute to 24 hours | Life of the failure counters. |
+| `IDENTITY_RATE_LIMIT__ENABLED` | `true` | `true` or `false` | Turns the rate limits of the public endpoints on or off. With `false`, the service does not call the limiter and writes one `warn` log record at start. The login limiter does not use this setting. |
+| `IDENTITY_RATE_LIMIT__<BUCKET>__LIMIT` | See [security.md](security.md) | 1 to 1000000 | Requests that one key can send in the window. `<BUCKET>` is the bucket name in upper case, for example `IDENTITY_RATE_LIMIT__TOKEN_IP__LIMIT`. The buckets are `PUBLIC_META`, `OAUTH_PUBLIC`, `OAUTH_BACKEND_IP`, `TOKEN_IP`, `INTROSPECT_IP`, `TOKEN_CLIENT`, `INTROSPECT_CLIENT`, `SETUP_INVITE`, `API_TOKEN_CREATE`, and `MANIFEST_PUBLISH`. |
+| `IDENTITY_RATE_LIMIT__<BUCKET>__WINDOW` | See [security.md](security.md) | 1 second to 24 hours | Length of the window of the bucket. |
 | `IDENTITY_RETENTION__TOKENS__PERIOD`, `IDENTITY_RETENTION__SESSIONS__PERIOD`, `IDENTITY_RETENTION__REFRESH_TOKENS__PERIOD`, `IDENTITY_RETENTION__REFRESH_TOKEN_FAMILIES__PERIOD` | `168h` | | Age after which the service deletes ended tokens, sessions, refresh tokens, and refresh token families. Also `INTERVAL` and `BATCH_SIZE`. The refresh token job deletes a token only after it expired, so a used token stays until its session expires and a replay still starts the reuse detection. See `retention` in `constellation-platform-go`. |
 | `IDENTITY_API_TOKEN__DEFAULT_TTL_DAYS` | `90` | 1 to `API_TOKEN__MAX_TTL_DAYS` | Life of a personal API token when the request has no `expiresInDays`. |
 | `IDENTITY_API_TOKEN__MAX_TTL_DAYS` | `365` | 1 to 365 | Largest `expiresInDays` of a personal API token. |
@@ -39,6 +42,8 @@ The service reads its settings from environment variables with the prefix `IDENT
 | `IDENTITY_OIDC__CODE_TTL` | `60s` | 10 seconds to 10 minutes | Life of an authorization code. |
 | `IDENTITY_OIDC__USER_TOKEN_TTL` | `15m` | 1 to 60 minutes | Life of the access tokens and the ID tokens of users. |
 | `IDENTITY_CLIENTS_FILE` | empty | | Path of the clients file. Empty means no config clients. |
+
+A service that uses the introspection verifier of `constellation-platform-go` has the setting `MaxCallsPerSecond` (default 20). The identity buckets count the calls of all instances. Thus `MaxCallsPerSecond` x 60 x the number of service instances must be below `introspect_client` and `introspect_ip`. With the defaults (1200 calls per minute for each instance and 6000 per minute for the buckets), 5 instances are possible. An operator with more instances must increase both limits or decrease `MaxCallsPerSecond`.
 
 Telemetry uses the standard `OTEL_*` variables. See the `telemetry` package of `constellation-platform-go`.
 
@@ -133,3 +138,5 @@ The command uses the same environment variables as the service. It deletes all s
 | `identity` | Starts the server. |
 | `identity healthcheck` | Sends `GET /readyz` to `127.0.0.1` on the port of `IDENTITY_ADMIN__ADDR`. Exit code 0 on 200, 1 in all other cases. The image has no shell, so Compose uses this command. |
 | `identity rotate-signing-keys --force` | Replaces all signing keys. |
+| `identity setup-link` | Prints a new first-admin setup link. |
+| `identity unlock-login <email>` | Removes the login lock of one email. Prints `unlocked` or `not locked`. It connects to Valkey only. Exit code 1 on an error, 2 for a wrong number of arguments. |

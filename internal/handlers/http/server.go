@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 
@@ -73,9 +74,13 @@ type Deps struct {
 	// Verifier checks the bearer token of each /v1 request. Scopes gives the
 	// scopes of each /v1 operation. Without them, each /v1 request fails with
 	// a 500 Problem, because the service fails closed.
-	Verifier auth.Verifier
-	Scopes   ScopeTable
-	Log      *slog.Logger
+	// RateLimits counts the requests of the IP buckets. It can be nil.
+	RateLimits *commands.RateLimits
+	// TrustedProxies are the ranges whose X-Forwarded-For header the service uses.
+	TrustedProxies []netip.Prefix
+	Verifier       auth.Verifier
+	Scopes         ScopeTable
+	Log            *slog.Logger
 }
 
 // New makes the server.
@@ -104,7 +109,7 @@ func (s *Server) Handler() http.Handler {
 		ErrorHandlerFunc: s.requestError,
 		Middlewares:      []gen.MiddlewareFunc{s.protect},
 	})
-	h := cors(s.d.CORSOrigins, router)
+	h := cors(s.d.CORSOrigins, s.rateLimit(router))
 	return http.MaxBytesHandler(h, maxBodyBytes)
 }
 
@@ -417,6 +422,7 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 			// The cause can hold internal data. It goes to the log only.
 			s.log.ErrorContext(r.Context(), "token request failed", "error", err)
 		}
+		setRetryAfter(w, oe.RetryAfter)
 		s.writeOAuthErrorCode(w, oe.Status(), oe.Code, oe.Description)
 		return
 	}
@@ -424,7 +430,18 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 		s.writeValidation(w, r, ve)
 		return
 	}
+	if re, ok := apperrors.AsRateLimited(err); ok {
+		setRetryAfter(w, re.RetryAfter)
+		s.writeProblem(w, r, http.StatusTooManyRequests, "rate_limited", "Too many requests", "Too many requests. Try again later.")
+		return
+	}
+	if errors.Is(err, apperrors.ErrRateLimiterUnavailable) {
+		setRetryAfter(w, apperrors.DefaultUnavailableRetryAfter)
+		s.writeProblem(w, r, http.StatusServiceUnavailable, "unavailable", "Service unavailable", "The service is not available.")
+		return
+	}
 	if pe, ok := apperrors.AsProblem(err); ok {
+		setRetryAfter(w, pe.RetryAfter)
 		s.writeProblem(w, r, pe.Status, pe.Code, http.StatusText(pe.Status), pe.Detail)
 		return
 	}

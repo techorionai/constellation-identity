@@ -3,6 +3,7 @@ package errors
 import (
 	stderrors "errors"
 	"net/http"
+	"time"
 )
 
 // ProblemError is an error that a handler shows as a Problem with a status and
@@ -11,6 +12,9 @@ type ProblemError struct {
 	Status int
 	Code   string
 	Detail string
+	// RetryAfter is the wait time for the header Retry-After. It is 0 if the
+	// error has no header.
+	RetryAfter time.Duration
 }
 
 // Error returns the code and the detail.

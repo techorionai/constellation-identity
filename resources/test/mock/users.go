@@ -367,6 +367,8 @@ type Limiter struct {
 	mu     sync.Mutex
 	Emails map[string]int64
 	IPs    map[string]int64
+	// Coarse has the coarse counters of the client networks.
+	Coarse map[string]int64
 	// Err is returned by every call when it is set.
 	Err error
 	// SuccessErr is returned by RecordSuccess when it is set.
@@ -388,6 +390,21 @@ func (l *Limiter) Reserve(_ context.Context, email, ip string) (int64, int64, er
 	return l.Emails[email], l.IPs[ip], nil
 }
 
+// ReserveCoarse adds an attempt to the coarse counter and returns the new
+// count.
+func (l *Limiter) ReserveCoarse(_ context.Context, key string) (int64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.Err != nil {
+		return 0, fmt.Errorf("limiter: %w", l.Err)
+	}
+	if l.Coarse == nil {
+		l.Coarse = map[string]int64{}
+	}
+	l.Coarse[key]++
+	return l.Coarse[key], nil
+}
+
 // RecordSuccess deletes the counter of the email and decreases the counter of
 // the IP, but not below 0.
 func (l *Limiter) RecordSuccess(_ context.Context, email, ip string) error {
@@ -401,4 +418,16 @@ func (l *Limiter) RecordSuccess(_ context.Context, email, ip string) error {
 		l.IPs[ip]--
 	}
 	return nil
+}
+
+// Unlock deletes the counter of the email. It returns true if it existed.
+func (l *Limiter) Unlock(_ context.Context, email string) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.Err != nil {
+		return false, fmt.Errorf("limiter: %w", l.Err)
+	}
+	_, ok := l.Emails[email]
+	delete(l.Emails, email)
+	return ok, nil
 }

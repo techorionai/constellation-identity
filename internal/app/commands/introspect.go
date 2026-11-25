@@ -14,6 +14,7 @@ import (
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/apitokens"
+	"github.com/techorionai/constellation-identity/internal/ports/ratelimit"
 	"github.com/techorionai/constellation-identity/internal/ports/userroles"
 )
 
@@ -51,6 +52,8 @@ type IntrospectResult struct {
 
 // IntrospectDeps are the ports of the introspection.
 type IntrospectDeps struct {
+	// RateLimits limits the requests of one verified client. It can be nil.
+	RateLimits *RateLimits
 	// Auth checks the client authentication of the caller.
 	Auth      ServiceAuthenticator
 	Tokens    apitokens.Repository
@@ -109,6 +112,9 @@ func (c *IntrospectCommand) introspect(ctx context.Context, in Introspect) (Intr
 	client, err := c.d.Auth.AuthenticateService(ctx, in.AssertionType, in.Assertion, in.ClientID)
 	if err != nil {
 		return IntrospectResult{}, mapIntrospectAuthError(err)
+	}
+	if err := oauthRateError(c.d.RateLimits.Check(ctx, ratelimit.BucketIntrospectClient, client.ID)); err != nil {
+		return IntrospectResult{}, err
 	}
 	callerApp := client.App
 
