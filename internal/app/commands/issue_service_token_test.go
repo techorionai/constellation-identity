@@ -625,12 +625,20 @@ func TestIssue20_U4_BadApp(t *testing.T) {
 			c := f.clients.clients["helpdesk"]
 			c.App = app
 			f.clients.clients["helpdesk"] = c
-			res, err := f.cmd.Execute(context.Background(), request(f.assertion(t, nil)))
+			assertion := f.assertion(t, nil)
+			res, err := f.cmd.Execute(context.Background(), request(assertion))
 			if oauthCode(t, err) != "server_error" {
 				t.Fatalf("error = %v", err)
 			}
 			if res.AccessToken != "" || f.signer.calls != 0 {
 				t.Fatalf("token = %q, signer calls = %d", res.AccessToken, f.signer.calls)
+			}
+			// The failure does not use the assertion. After the fix of the data,
+			// a retry with the same assertion gives a token.
+			c.App = "helpdesk"
+			f.clients.clients["helpdesk"] = c
+			if _, err := f.cmd.Execute(context.Background(), request(assertion)); err != nil {
+				t.Fatalf("retry error = %v", err)
 			}
 			logText := f.log.String()
 			if !strings.Contains(logText, "level=WARN") || !strings.Contains(logText, "error_code=server_error") || !strings.Contains(logText, "client.id=helpdesk") {

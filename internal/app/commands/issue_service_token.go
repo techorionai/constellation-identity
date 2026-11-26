@@ -168,7 +168,7 @@ func (c *IssueServiceTokenCommand) issue(ctx context.Context, in IssueServiceTok
 	}
 
 	// 2 to 6. The client authentication.
-	client, err := c.authenticate(ctx, in.AssertionType, in.Assertion, in.ClientID, st)
+	client, err := c.authenticate(ctx, in.AssertionType, in.Assertion, in.ClientID, true, st)
 	if err != nil {
 		return IssueServiceTokenResult{}, err
 	}
@@ -201,12 +201,6 @@ func (c *IssueServiceTokenCommand) issue(ctx context.Context, in IssueServiceTok
 		return IssueServiceTokenResult{}, fail(apperrors.OAuthInvalidScope, "The scope is required. Each scope must be a permission of the audience that the client has.", err)
 	}
 
-	// The app of the client goes into the token. A bad app is a data fault: no
-	// service accepts the token, so the service does not issue it.
-	if !domain.ValidAppKey(client.App) {
-		return IssueServiceTokenResult{}, fail(apperrors.OAuthServerError, "The server has an internal error.", errors.New("the client has no valid app"))
-	}
-
 	key, err := c.d.Keys.ActiveKey()
 	if err != nil {
 		return IssueServiceTokenResult{}, fail(apperrors.OAuthTemporarilyUnavailable, "The service is not available. Try again.", err)
@@ -235,7 +229,7 @@ func (c *IssueServiceTokenCommand) AuthenticateService(ctx context.Context, asse
 	if assertionType != domain.AssertionType || assertionValue == "" {
 		return domain.Client{}, fail(apperrors.OAuthInvalidRequest, "The client_assertion_type and the client_assertion are required.", nil)
 	}
-	client, err := c.authenticate(ctx, assertionType, assertionValue, formClientID, &st)
+	client, err := c.authenticate(ctx, assertionType, assertionValue, formClientID, false, &st)
 	if err != nil {
 		code := apperrors.OAuthServerError
 		if oe, ok := apperrors.AsOAuthError(err); ok {
@@ -246,7 +240,7 @@ func (c *IssueServiceTokenCommand) AuthenticateService(ctx context.Context, asse
 	return client, err
 }
 
-func (c *IssueServiceTokenCommand) authenticate(ctx context.Context, assertionType, assertionValue, formClientID string, st *requestState) (domain.Client, error) {
+func (c *IssueServiceTokenCommand) authenticate(ctx context.Context, assertionType, assertionValue, formClientID string, requireApp bool, st *requestState) (domain.Client, error) {
 	// 2. The assertion header.
 	a, err := c.d.Parser.Parse(assertionValue)
 	if err != nil {
@@ -294,6 +288,13 @@ func (c *IssueServiceTokenCommand) authenticate(ctx context.Context, assertionTy
 	}
 	if formClientID != "" && formClientID != claims.Subject {
 		return domain.Client{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("client_id is not equal to sub"))
+	}
+
+	// The app of the client goes into the token. A bad app is a data fault: no
+	// service accepts the token, so the service does not issue it. The check is
+	// before the one-time jti, so the failure does not use the assertion.
+	if requireApp && !domain.ValidAppKey(client.App) {
+		return domain.Client{}, fail(apperrors.OAuthServerError, "The server has an internal error.", errors.New("the client has no valid app"))
 	}
 
 	// 6. Replay protection. A store error means no token (fail closed).
