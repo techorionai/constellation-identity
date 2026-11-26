@@ -20,6 +20,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/authflow"
 	"github.com/techorionai/constellation-identity/internal/ports/clients"
+	"github.com/techorionai/constellation-identity/internal/ports/mfa"
 	"github.com/techorionai/constellation-identity/internal/ports/refreshtokens"
 	"github.com/techorionai/constellation-identity/internal/ports/sessions"
 	"github.com/techorionai/constellation-identity/internal/ports/tokensigner"
@@ -41,24 +42,29 @@ type ServiceAuthenticator interface {
 
 // OIDCDeps are the ports and the settings of the code flow use cases.
 type OIDCDeps struct {
-	Issuer         string
-	Clients        clients.Repository
-	Users          users.Repository
-	UserRoles      userroles.Repository
-	Sessions       sessions.Repository
-	Refresh        refreshtokens.Repository
-	AuthRequests   authflow.AuthRequests
-	Codes          authflow.Codes
-	Keys           OIDCKeys
-	Signer         tokensigner.Signer
-	Verifier       tokenverifier.Verifier
-	ServiceAuth    ServiceAuthenticator
-	Tx             transaction.Transactor
-	Policy         domain.SessionPolicy
-	AuthRequestTTL time.Duration
-	CodeTTL        time.Duration
-	UserTokenTTL   time.Duration
-	Log            *slog.Logger
+	Issuer       string
+	Clients      clients.Repository
+	Users        users.Repository
+	UserRoles    userroles.Repository
+	Sessions     sessions.Repository
+	Refresh      refreshtokens.Repository
+	AuthRequests authflow.AuthRequests
+	Codes        authflow.Codes
+	Keys         OIDCKeys
+	Signer       tokensigner.Signer
+	Verifier     tokenverifier.Verifier
+	ServiceAuth  ServiceAuthenticator
+	Tx           transaction.Transactor
+	Policy       domain.SessionPolicy
+	// MFA reads the second factors of a user. It can be nil. A nil value means
+	// that no user has a second factor.
+	MFA mfa.Repository
+	// RequireMFAForAdmins is the setting IDENTITY_MFA__REQUIRE_FOR_ADMINS.
+	RequireMFAForAdmins bool
+	AuthRequestTTL      time.Duration
+	CodeTTL             time.Duration
+	UserTokenTTL        time.Duration
+	Log                 *slog.Logger
 	// Now is the clock. The default is time.Now.
 	Now Clock
 }
@@ -142,6 +148,9 @@ const (
 	// AuthorizeLogin means the handler redirects to the login page with the
 	// auth request.
 	AuthorizeLogin
+	// AuthorizeSetupMFA means the handler redirects to the TOTP setup page. The
+	// user needs MFA and has no second factor.
+	AuthorizeSetupMFA
 )
 
 // AuthorizeOutcome is the result of an authorization step.
@@ -358,6 +367,11 @@ func (o *OIDC) complete(ctx context.Context, req domain.AuthRequest, sess domain
 	if len(selected) == 0 {
 		return redirectError(req.RedirectURI, req.State, apperrors.OAuthInvalidScope, "The user has no permission for the requested scope."), nil
 	}
+	// The rule "MFA for admins": a user that needs MFA and has a session with no
+	// mfa gets no code.
+	if domain.NeedsMFA(o.d.RequireMFAForAdmins, granted) && !domain.HasMFA(sess.AuthMethods) {
+		return o.mfaGate(ctx, req, user)
+	}
 	code, hash, err := domain.NewSecret()
 	if err != nil {
 		return AuthorizeOutcome{}, err
@@ -365,12 +379,38 @@ func (o *OIDC) complete(ctx context.Context, req domain.AuthRequest, sess domain
 	rec := domain.AuthCode{
 		ClientID: client.ID, RedirectURI: req.RedirectURI, CodeChallenge: req.CodeChallenge, Nonce: req.Nonce,
 		SessionID: sess.ID, UserID: user.ID, Scope: selected, OIDCScopes: req.OIDCScopes, AuthTime: sess.AuthTime,
+		AuthMethods: sess.AuthMethods,
 	}
 	if err := o.d.Codes.Put(ctx, hash, rec, o.d.CodeTTL); err != nil {
 		return AuthorizeOutcome{}, fmt.Errorf("store the code: %w", err)
 	}
 	return AuthorizeOutcome{Kind: AuthorizeRedirect, Location: redirectWith(req.RedirectURI,
 		[2]string{"code", code}, [2]string{"state", req.State})}, nil
+}
+
+// mfaGate is the answer for a user that needs MFA and has a session with no
+// mfa. A user with no second factor goes to the TOTP setup page. A user with a
+// second factor logs in again, and the login asks for the second factor.
+func (o *OIDC) mfaGate(ctx context.Context, req domain.AuthRequest, user domain.User) (AuthorizeOutcome, error) {
+	if o.d.MFA != nil {
+		state, err := o.d.MFA.State(ctx, user.ID)
+		if err != nil {
+			return AuthorizeOutcome{}, fmt.Errorf("read the MFA state: %w", err)
+		}
+		if state.Enabled() {
+			req.FreshLoginRequired = true
+			req.CreatedAt = o.now()
+			id, _, err := domain.NewSecret()
+			if err != nil {
+				return AuthorizeOutcome{}, err
+			}
+			if err := o.d.AuthRequests.Put(ctx, id, req, o.d.AuthRequestTTL); err != nil {
+				return AuthorizeOutcome{}, fmt.Errorf("store the auth request: %w", err)
+			}
+			return AuthorizeOutcome{Kind: AuthorizeLogin, AuthRequestID: id}, nil
+		}
+	}
+	return AuthorizeOutcome{Kind: AuthorizeSetupMFA}, nil
 }
 
 // AuthRequestInfo is what the login page needs from an auth request.
@@ -514,7 +554,7 @@ func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode) (UserTokenResu
 	}
 	// 7. The tokens are signed before the code is claimed. If the key or the
 	// signer fails, the code stays valid and the client can try again.
-	access, idToken, err := o.mint(client, user, rec.Scope, rec.OIDCScopes, &idTokenInput{
+	access, idToken, err := o.mint(client, user, rec.Scope, rec.OIDCScopes, tokenAuth{AuthTime: rec.AuthTime, Methods: rec.AuthMethods}, &idTokenInput{
 		Nonce: rec.Nonce, AuthTime: rec.AuthTime, SessionID: sess.ID,
 	})
 	if err != nil {
@@ -541,6 +581,7 @@ func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode) (UserTokenResu
 		fam := domain.RefreshFamily{
 			ID: newUUID(), SessionID: sess.ID, ClientID: client.ID, UserID: user.ID,
 			Scope: rec.Scope, OIDCScopes: rec.OIDCScopes, CreatedAt: now,
+			AuthTime: rec.AuthTime, AuthMethods: rec.AuthMethods,
 		}
 		tok := domain.RefreshToken{Hash: tokenHash, FamilyID: fam.ID, CreatedAt: now, ExpiresAt: sess.ExpiresAt}
 		inserted, err := o.d.Refresh.InsertFamilyIfSessionValid(ctx, fam, tok, now)
@@ -592,8 +633,15 @@ type idTokenInput struct {
 	SessionID string
 }
 
+// tokenAuth is the login data of a user token: the auth time and the methods.
+// A zero time and an empty list give no claim.
+type tokenAuth struct {
+	AuthTime time.Time
+	Methods  []string
+}
+
 // mint signs the access token, and the ID token if the scope has openid.
-func (o *OIDC) mint(client domain.Client, user domain.User, scopes, oidcScopes []string, idt *idTokenInput) (string, string, error) {
+func (o *OIDC) mint(client domain.Client, user domain.User, scopes, oidcScopes []string, auth tokenAuth, idt *idTokenInput) (string, string, error) {
 	key, err := o.d.Keys.ActiveKey()
 	if err != nil {
 		return "", "", unavailableErr(err)
@@ -602,6 +650,7 @@ func (o *OIDC) mint(client domain.Client, user domain.User, scopes, oidcScopes [
 	access, err := o.d.Signer.Sign(key, domain.UserAccessToken{
 		Issuer: o.d.Issuer, Audience: client.App, UserID: user.ID, ClientID: client.ID,
 		Scopes: scopes, Now: now, TTL: o.d.UserTokenTTL, JTI: newUUID(),
+		AuthMethods: auth.Methods, AuthTime: auth.AuthTime,
 	}.Claims(), map[string]any{"typ": domain.AccessTokenType})
 	if err != nil {
 		return "", "", serverErr(err)
@@ -611,7 +660,7 @@ func (o *OIDC) mint(client domain.Client, user domain.User, scopes, oidcScopes [
 	}
 	t := domain.IDToken{
 		Issuer: o.d.Issuer, UserID: user.ID, ClientID: client.ID, AuthTime: idt.AuthTime, Nonce: idt.Nonce,
-		SessionID: idt.SessionID, Now: now, TTL: o.d.UserTokenTTL,
+		SessionID: idt.SessionID, Now: now, TTL: o.d.UserTokenTTL, AuthMethods: auth.Methods,
 	}
 	if slices.Contains(oidcScopes, domain.ScopeEmail) {
 		email := user.Email
@@ -739,6 +788,11 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 		if len(effective) == 0 {
 			return errRefreshRejected
 		}
+		// The rule "MFA for admins": a family with no mfa in its methods gets no
+		// new token when the user needs MFA.
+		if domain.NeedsMFA(o.d.RequireMFAForAdmins, granted) && !domain.HasMFA(f.AuthMethods) {
+			return errRefreshRejected
+		}
 		// 4. Make the access token before the token is used. If the key or the
 		// signer fails, the transaction rolls back and the old token stays valid.
 		client, ok, err := o.publicClient(ctx, f.ClientID)
@@ -748,7 +802,7 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 		if !ok {
 			return errRefreshRejected
 		}
-		if access, _, mintErr = o.mint(client, u, effective, nil, nil); mintErr != nil {
+		if access, _, mintErr = o.mint(client, u, effective, nil, tokenAuth{AuthTime: f.AuthTime, Methods: f.AuthMethods}, nil); mintErr != nil {
 			return mintErr
 		}
 		// 5. Mark the token as used.

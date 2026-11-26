@@ -66,3 +66,54 @@
 <button type="submit">Log out</button>
 </form>
 {{template "footer" .}}{{end}}
+{{define "mfa"}}{{template "header" .}}
+{{if .Recovery}}<p>Enter one of your recovery codes.</p>
+<form method="post" action="/login/mfa">
+<input type="hidden" name="recovery" value="1">
+<label for="code">Recovery code</label>
+<input id="code" name="code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" required maxlength="32">
+<button type="submit">Log in</button>
+</form>
+<p><a href="/login/mfa">Use a code from your authenticator app</a></p>
+{{else}}<p>Enter the 6-digit code from your authenticator app.</p>
+<form method="post" action="/login/mfa">
+<label for="code">Code</label>
+<input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required maxlength="6">
+<button type="submit">Log in</button>
+</form>
+<p><a href="/login/mfa?recovery=1">Use a recovery code</a></p>
+{{end}}
+{{template "footer" .}}{{end}}
+{{define "account_security"}}{{template "header" .}}
+<p>Account: {{.UserName}}</p>
+{{if .TOTPOn}}<p>TOTP is on. Recovery codes left: {{.CodesLeft}}.</p>
+<form method="post" action="/account/recovery-codes">
+<button type="submit">Make new recovery codes</button>
+</form>
+{{if .MFARequired}}<p>Your account must have MFA. You cannot remove TOTP.</p>
+{{else}}<form method="post" action="/account/totp/remove">
+<button type="submit">Remove TOTP</button>
+</form>{{end}}
+{{else}}<p>TOTP is off.</p>
+<p><a href="/account/totp">Set up TOTP</a></p>
+{{end}}
+{{template "footer" .}}{{end}}
+{{define "account_totp"}}{{template "header" .}}
+{{if .Required}}<p>Your account must have MFA. Set up TOTP to continue.</p>{{end}}
+<p>Scan the QR code with your authenticator app.</p>
+<img src="{{.QR}}" width="256" height="256" alt="QR code of the TOTP secret">
+<p>If you cannot scan the code, enter this secret in the app: <code>{{.Secret}}</code></p>
+<form method="post" action="/account/totp">
+<label for="code">Code from the app</label>
+<input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required maxlength="6">
+<button type="submit">Turn on TOTP</button>
+</form>
+{{template "footer" .}}{{end}}
+{{define "account_codes"}}{{template "header" .}}
+{{if .Done}}<p>TOTP is on.</p>{{end}}
+<p>Save these recovery codes in a safe place. Each code works one time. You cannot see them again.</p>
+<ul>
+{{range .Codes}}<li><code>{{.}}</code></li>
+{{end}}</ul>
+<p><a href="/account/security">Account security</a></p>
+{{template "footer" .}}{{end}}

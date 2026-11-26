@@ -16,6 +16,7 @@ var pageBuckets = map[string]string{
 	"/oauth/end_session":        ratelimit.BucketOAuthPublic,
 	"/setup":                    ratelimit.BucketSetupInvite,
 	"/invite":                   ratelimit.BucketSetupInvite,
+	"/login/mfa":                ratelimit.BucketMFAVerify,
 }
 
 // rateLimit counts each request of a limited page in its IP bucket. It runs
@@ -28,7 +29,8 @@ func (h *Handler) rateLimit(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bucket, ok := pageBuckets[r.URL.Path]
-		if !ok || r.Method == http.MethodOptions {
+		// The bucket mfa_verify counts the check of a code (POST) only.
+		if !ok || r.Method == http.MethodOptions || (bucket == ratelimit.BucketMFAVerify && r.Method != http.MethodPost) {
 			next.ServeHTTP(w, r)
 			return
 		}

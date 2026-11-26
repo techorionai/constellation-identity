@@ -62,6 +62,18 @@ type IssuedSession struct {
 	SessionID string
 	// AuthTime is the time of the last login of the session.
 	AuthTime time.Time
+	// AuthMethods are the methods of the last login (amr).
+	AuthMethods []string
+	// PendingToken is set when the login needs a second factor. The login made
+	// no session then, and Token is empty. The value is the cookie value of the
+	// pending login. It is a secret.
+	PendingToken string
+	// PendingExpiresAt is the end of the pending login.
+	PendingExpiresAt time.Time
+	// SetupRequired is true when the policy needs MFA for the user, the user has
+	// no second factor, and the session is made. The handler sends the user to
+	// the TOTP setup page.
+	SetupRequired bool
 }
 
 // tokenLink makes a one-time link on the issuer.
@@ -88,19 +100,19 @@ type sessionIssuer struct {
 }
 
 // issue stores a new session for the user and returns the cookie value.
-func (s sessionIssuer) issue(ctx context.Context, userID, userAgent, ip string) (IssuedSession, error) {
+func (s sessionIssuer) issue(ctx context.Context, userID, userAgent, ip string, methods []string) (IssuedSession, error) {
 	value, hash, err := domain.NewSecret()
 	if err != nil {
 		return IssuedSession{}, err
 	}
 	id := newUUID()
-	sess := s.policy.NewSession(userID, s.now().UTC())
+	sess := s.policy.NewSession(userID, s.now().UTC(), methods)
 	sess.ID, sess.TokenHash = id, hash
 	sess.UserAgent, sess.IPAddress = clip(userAgent, 512), clip(ip, 64)
 	if err := s.repo.Create(ctx, sess); err != nil {
 		return IssuedSession{}, err
 	}
-	return IssuedSession{UserID: userID, Token: value, ExpiresAt: sess.ExpiresAt, SessionID: id, AuthTime: sess.AuthTime}, nil
+	return IssuedSession{UserID: userID, Token: value, ExpiresAt: sess.ExpiresAt, SessionID: id, AuthTime: sess.AuthTime, AuthMethods: methods}, nil
 }
 
 func clip(s string, n int) string {
@@ -166,3 +178,62 @@ func useToken(ctx context.Context, repo onetimetokens.Repository, value string, 
 
 // txName gives the transaction a name for the traces.
 func txName(name string) transaction.Option { return transaction.Name(name) }
+
+// sessionStarter applies the re-login rule: a login of the same user keeps a
+// valid previous session and gives it a new cookie value, a new auth time, and
+// the new methods. In all other cases it revokes the previous session and makes
+// a new one.
+type sessionStarter struct {
+	sessionIssuer
+}
+
+// start makes or keeps the session of a login.
+func (s sessionStarter) start(ctx context.Context, userID, previousToken, userAgent, ip string, methods []string) (IssuedSession, error) {
+	if kept, ok, err := s.reauthenticate(ctx, userID, previousToken, userAgent, ip, methods); err != nil {
+		return IssuedSession{}, err
+	} else if ok {
+		return kept, nil
+	}
+	issued, err := s.issue(ctx, userID, userAgent, ip, methods)
+	if err != nil {
+		return IssuedSession{}, fmt.Errorf("make the session: %w", err)
+	}
+	return issued, nil
+}
+
+// reauthenticate keeps the previous session if it is valid and belongs to the
+// user. The cookie value always changes, and the old value stops in the same
+// statement. If the statement changes no row (a parallel logout), or in any
+// other case, it revokes the previous session and the caller makes a new one.
+func (s sessionStarter) reauthenticate(ctx context.Context, userID, previousToken, userAgent, ip string, methods []string) (IssuedSession, bool, error) {
+	if previousToken == "" {
+		return IssuedSession{}, false, nil
+	}
+	now := s.now().UTC()
+	oldHash := domain.HashSecret(previousToken)
+	prev, err := s.repo.GetByTokenHash(ctx, oldHash)
+	if err != nil && !errors.Is(err, sessions.ErrNotFound) {
+		return IssuedSession{}, false, fmt.Errorf("get the previous session: %w", err)
+	}
+	if err == nil && prev.KeepOnRelogin(userID, now) {
+		value, hash, err := domain.NewSecret()
+		if err != nil {
+			return IssuedSession{}, false, err
+		}
+		id, ok, err := s.repo.Reauthenticate(ctx, sessions.Reauth{
+			OldHash: oldHash, NewHash: hash, UserID: userID, Now: now,
+			IdleExpires: s.policy.IdleExpiry(prev, now),
+			UserAgent:   clip(userAgent, 512), IPAddress: clip(ip, 64), Methods: methods,
+		})
+		if err != nil {
+			return IssuedSession{}, false, fmt.Errorf("keep the session: %w", err)
+		}
+		if ok {
+			return IssuedSession{UserID: userID, Token: value, ExpiresAt: prev.ExpiresAt, SessionID: id, AuthTime: now, AuthMethods: methods}, true, nil
+		}
+	}
+	if err := s.repo.RevokeByTokenHash(ctx, oldHash, now); err != nil {
+		return IssuedSession{}, false, fmt.Errorf("revoke the previous session: %w", err)
+	}
+	return IssuedSession{}, false, nil
+}

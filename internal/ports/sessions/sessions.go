@@ -23,6 +23,8 @@ type Reauth struct {
 	IdleExpires time.Time
 	UserAgent   string
 	IPAddress   string
+	// Methods are the methods (amr) of the new login.
+	Methods []string
 }
 
 // Repository stores the sessions. A call joins the transaction in the context.
@@ -44,6 +46,8 @@ type Repository interface {
 	// the time Now. The ID, the creation time, and the absolute expiry do not
 	// change. It returns the session ID and true, or false if no row changed.
 	Reauthenticate(ctx context.Context, r Reauth) (sessionID string, ok bool, err error)
+	// SetMethods replaces the methods (amr) of a session that is not revoked.
+	SetMethods(ctx context.Context, id string, methods []string) error
 	// RevokeByTokenHash revokes a session. It does nothing for a session that
 	// does not exist or is revoked already.
 	RevokeByTokenHash(ctx context.Context, hash string, now time.Time) error

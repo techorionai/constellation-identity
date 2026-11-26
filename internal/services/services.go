@@ -147,6 +147,8 @@ type App struct {
 	cache  *keys.Cache
 	verify *jwt.Verifier
 	reg    metric.Registration
+	// ring is the key ring of the secrets. The TOTP sealer uses it.
+	ring *platformsecrets.KeyRing
 
 	sessionReg    metric.Registration
 	stopRetention context.CancelFunc
@@ -221,6 +223,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	if err != nil {
 		return nil, fmt.Errorf("master key: %w", err)
 	}
+	a.ring = ring
 	store := adaptersecrets.New(platformsecrets.NewService(ring, secretRepo))
 	a.cache = keys.NewCache(postgres.NewSigningKeys(a.db.Pool), store, log)
 	a.state = health.NewState(
@@ -383,7 +386,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		JWKS:          jwks, Discovery: discovery, IssueToken: issue, PublishManifest: publishAPI,
 		ListManifests: listManifests, GetManifest: getManifest, ListRoles: listRoles, GetRole: getRole,
 		ExchangeCode: users.exchangeCode, RefreshTokens: users.refreshTokens, RevokeToken: users.revokeToken, UserInfo: users.userInfo,
-		Admin: users.admin, APITokens: users.apiTokens, Introspect: introspect, CreateUser: users.createUser, CreateInvite: users.createInvite, CORSOrigins: users.cors,
+		Admin: users.admin, APITokens: users.apiTokens, Introspect: introspect, CreateUser: users.createUser, CreateInvite: users.createInvite, CORSOrigins: users.cors, MFA: users.mfa, Now: o.clock,
 		Verifier: a.verify, Scopes: scopes, Log: log, RateLimits: limits, TrustedProxies: trustedProxies,
 	})
 	// RedactToken is outside the tracing handler, so no span has a secret value

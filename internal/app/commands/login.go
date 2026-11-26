@@ -14,8 +14,11 @@ import (
 
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/loginlimiter"
+	"github.com/techorionai/constellation-identity/internal/ports/mfa"
+	"github.com/techorionai/constellation-identity/internal/ports/mfaflow"
 	"github.com/techorionai/constellation-identity/internal/ports/passwordhasher"
 	"github.com/techorionai/constellation-identity/internal/ports/sessions"
+	"github.com/techorionai/constellation-identity/internal/ports/userroles"
 	"github.com/techorionai/constellation-identity/internal/ports/users"
 )
 
@@ -30,6 +33,7 @@ const (
 	OutcomeDisabled       = "disabled"
 	OutcomeLimited        = "limited"
 	OutcomeBusy           = "busy"
+	OutcomeMFAPending     = "mfa_pending"
 )
 
 // LoginLimits are the failure limits of the login.
@@ -47,6 +51,13 @@ type LoginDeps struct {
 	Limits  LoginLimits
 	Policy  domain.SessionPolicy
 	Log     *slog.Logger
+	// MFA, UserRoles, and Pending are the ports of the second factor. A nil MFA
+	// means that no user has a second factor.
+	MFA       mfa.Repository
+	UserRoles userroles.Repository
+	Pending   mfaflow.PendingLogins
+	// RequireMFAForAdmins is the setting IDENTITY_MFA__REQUIRE_FOR_ADMINS.
+	RequireMFAForAdmins bool
 	// Now is the clock. The default is time.Now.
 	Now Clock
 }
@@ -79,6 +90,10 @@ type Login struct {
 	// and a new auth time. In all other cases the login revokes that session
 	// and makes a new one.
 	PreviousToken string
+	// AuthRequest and ReturnTo are the place to go after the login. The pending
+	// login keeps them for the second factor.
+	AuthRequest string
+	ReturnTo    string
 }
 
 // LoginCommand checks the credentials and makes a session.
@@ -160,61 +175,69 @@ func (c *LoginCommand) Execute(ctx context.Context, in Login) (IssuedSession, er
 	if needsRehash {
 		c.rehash(ctx, user.ID, password)
 	}
+	needsMFA, hasFactor, err := c.mfaPolicy(ctx, user.ID)
+	if err != nil {
+		return IssuedSession{}, err
+	}
+	if hasFactor {
+		// The password is the first factor only. The email counter stays until the
+		// second factor is good.
+		return c.startPending(ctx, user.ID, email, in)
+	}
 	if err := c.d.Limiter.RecordSuccess(ctx, email, in.counterKey()); err != nil {
 		c.d.Log.WarnContext(ctx, "identity.login.reset_failed", "event", "identity.login.reset_failed", "error", err)
 	}
-	if kept, ok, err := c.reauthenticate(ctx, user.ID, in); err != nil {
-		return IssuedSession{}, err
-	} else if ok {
-		c.count(ctx, OutcomeOK)
-		c.d.Log.InfoContext(ctx, "identity.login.ok", "event", "identity.login.ok", "user_id", user.ID)
-		return kept, nil
-	}
-	issued, err := sessionIssuer{repo: c.d.Session, policy: c.d.Policy, now: c.d.Now}.issue(ctx, user.ID, in.UserAgent, in.IP)
+	issued, err := sessionStarter{sessionIssuer{repo: c.d.Session, policy: c.d.Policy, now: c.d.Now}}.
+		start(ctx, user.ID, in.PreviousToken, in.UserAgent, in.IP, domain.MethodsPassword())
 	if err != nil {
-		return IssuedSession{}, fmt.Errorf("make the session: %w", err)
+		return IssuedSession{}, err
 	}
+	issued.SetupRequired = needsMFA
 	c.count(ctx, OutcomeOK)
 	c.d.Log.InfoContext(ctx, "identity.login.ok", "event", "identity.login.ok", "user_id", user.ID)
 	return issued, nil
 }
 
-// reauthenticate applies the re-login rule. The previous session is kept if it
-// is valid and belongs to the user. The cookie value always changes, and the
-// old value stops in the same statement. If the statement changes no row (a
-// parallel logout), or in any other case, the command revokes the previous
-// session and the caller makes a new one.
-func (c *LoginCommand) reauthenticate(ctx context.Context, userID string, in Login) (IssuedSession, bool, error) {
-	if in.PreviousToken == "" {
-		return IssuedSession{}, false, nil
+// mfaPolicy reads the MFA data of the user. A command with no MFA ports has no
+// second factor. A read error fails the login (fail closed).
+func (c *LoginCommand) mfaPolicy(ctx context.Context, userID string) (needsMFA, hasFactor bool, err error) {
+	if c.d.MFA == nil {
+		return false, false, nil
+	}
+	state, err := c.d.MFA.State(ctx, userID)
+	if err != nil {
+		return false, false, fmt.Errorf("read the MFA state: %w", err)
+	}
+	if c.d.RequireMFAForAdmins && c.d.UserRoles != nil {
+		granted, err := c.d.UserRoles.GrantedPermissions(ctx, userID, domain.ImplicitUserRoles(domain.UserActive)...)
+		if err != nil {
+			return false, false, fmt.Errorf("get the permissions: %w", err)
+		}
+		needsMFA = domain.NeedsMFA(true, granted)
+	}
+	return needsMFA, state.Enabled(), nil
+}
+
+// startPending stores the pending login and returns the cookie value of it. A
+// store error gives ErrMFAUnavailable, and no session (fail closed).
+func (c *LoginCommand) startPending(ctx context.Context, userID, email string, in Login) (IssuedSession, error) {
+	value, hash, err := domain.NewSecret()
+	if err != nil {
+		return IssuedSession{}, err
 	}
 	now := c.d.Now().UTC()
-	oldHash := domain.HashSecret(in.PreviousToken)
-	prev, err := c.d.Session.GetByTokenHash(ctx, oldHash)
-	if err != nil && !errors.Is(err, sessions.ErrNotFound) {
-		return IssuedSession{}, false, fmt.Errorf("get the previous session: %w", err)
+	expires := now.Add(PendingLoginTTL)
+	err = c.d.Pending.Put(ctx, hash, domain.PendingLogin{
+		UserID: userID, Methods: domain.MethodsPassword(), AuthRequest: in.AuthRequest, ReturnTo: in.ReturnTo,
+		LimiterEmail: email, LimiterIP: in.counterKey(), ExpiresAt: expires,
+	}, PendingLoginTTL)
+	if err != nil {
+		c.d.Log.ErrorContext(ctx, "identity.mfa.pending_failed", "event", "identity.mfa.pending_failed", "error", err)
+		return IssuedSession{}, ErrMFAUnavailable
 	}
-	if err == nil && prev.KeepOnRelogin(userID, now) {
-		value, hash, err := domain.NewSecret()
-		if err != nil {
-			return IssuedSession{}, false, err
-		}
-		id, ok, err := c.d.Session.Reauthenticate(ctx, sessions.Reauth{
-			OldHash: oldHash, NewHash: hash, UserID: userID, Now: now,
-			IdleExpires: c.d.Policy.IdleExpiry(prev, now),
-			UserAgent:   clip(in.UserAgent, 512), IPAddress: clip(in.IP, 64),
-		})
-		if err != nil {
-			return IssuedSession{}, false, fmt.Errorf("keep the session: %w", err)
-		}
-		if ok {
-			return IssuedSession{UserID: userID, Token: value, ExpiresAt: prev.ExpiresAt, SessionID: id, AuthTime: now}, true, nil
-		}
-	}
-	if err := c.d.Session.RevokeByTokenHash(ctx, oldHash, now); err != nil {
-		return IssuedSession{}, false, fmt.Errorf("revoke the previous session: %w", err)
-	}
-	return IssuedSession{}, false, nil
+	c.count(ctx, OutcomeMFAPending)
+	c.d.Log.InfoContext(ctx, "identity.login.mfa_pending", "event", "identity.login.mfa_pending", "user_id", userID)
+	return IssuedSession{UserID: userID, PendingToken: value, PendingExpiresAt: expires}, nil
 }
 
 // normalizeLoose is the key of the failure counter for a value that is not an

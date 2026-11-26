@@ -14,7 +14,10 @@ type Session struct {
 	CreatedAt time.Time
 	// AuthTime is the time of the last login of the session. A login of the same
 	// user changes it. CreatedAt does not change.
-	AuthTime      time.Time
+	AuthTime time.Time
+	// AuthMethods are the methods of the last login (amr). A session from before
+	// the upgrade has none.
+	AuthMethods   []string
 	LastSeenAt    time.Time
 	IdleExpiresAt time.Time
 	ExpiresAt     time.Time
@@ -31,11 +34,12 @@ type SessionPolicy struct {
 
 // NewSession makes the session data for a user at the time now. The caller
 // sets the ID and the token hash.
-func (p SessionPolicy) NewSession(userID string, now time.Time) Session {
+func (p SessionPolicy) NewSession(userID string, now time.Time, methods []string) Session {
 	return Session{
 		UserID:        userID,
 		CreatedAt:     now,
 		AuthTime:      now,
+		AuthMethods:   methods,
 		LastSeenAt:    now,
 		IdleExpiresAt: now.Add(min(p.IdleTimeout, p.AbsoluteTimeout)),
 		ExpiresAt:     now.Add(p.AbsoluteTimeout),

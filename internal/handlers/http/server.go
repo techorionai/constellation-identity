@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/techorionai/constellation-platform-go/auth"
 	"github.com/techorionai/constellation-platform-go/executor"
@@ -68,6 +69,10 @@ type Deps struct {
 	Introspect   executor.ExecutorWithReturn[commands.Introspect, commands.IntrospectResult]
 	CreateUser   executor.ExecutorWithReturn[commands.CreateUser, commands.CreateUserResult]
 	CreateInvite executor.ExecutorWithReturn[commands.CreateInvite, commands.Link]
+	// MFA holds the use cases of the MFA operations.
+	MFA *commands.MFA
+	// Now is the clock of the step-up check. The default is time.Now.
+	Now func() time.Time
 	// CORSOrigins gives the login redirect URIs of the public clients that are
 	// not disabled. The CORS middleware answers for these origins only.
 	CORSOrigins CORSOrigins
@@ -413,6 +418,10 @@ func (s *Server) requestError(w http.ResponseWriter, r *http.Request, _ error) {
 }
 
 func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, errReauthRequired) {
+		s.writeReauthRequired(w, r)
+		return
+	}
 	if errors.Is(err, errNotImplemented) {
 		s.writeProblem(w, r, http.StatusNotImplemented, "not_implemented", "Not implemented", "The operation is not implemented.")
 		return

@@ -233,7 +233,7 @@ func TestU7_EnsureSetupToken(t *testing.T) {
 // U8: sessions expire by idle time and by absolute time.
 func TestU8_SessionExpiry(t *testing.T) {
 	start := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
-	s := policy.NewSession("u", start)
+	s := policy.NewSession("u", start, nil)
 	if !s.Valid(start.Add(59 * time.Minute)) {
 		t.Fatal("the session must be valid before the idle expiry")
 	}

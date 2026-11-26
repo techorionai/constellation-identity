@@ -148,6 +148,16 @@ func (r *Sessions) Touch(_ context.Context, id string, lastSeen, idle time.Time)
 	return nil
 }
 
+// SetMethods sets the methods of a session.
+func (r *Sessions) SetMethods(_ context.Context, id string, methods []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := r.Rows[id]
+	s.AuthMethods = methods
+	r.Rows[id] = s
+	return nil
+}
+
 // RevokeByTokenHash revokes a session.
 func (r *Sessions) RevokeByTokenHash(_ context.Context, hash string, now time.Time) error {
 	r.mu.Lock()

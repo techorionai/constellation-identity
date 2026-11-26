@@ -21,6 +21,9 @@ import (
 	"github.com/techorionai/constellation-identity/internal/adapters/argon2"
 	adapterjose "github.com/techorionai/constellation-identity/internal/adapters/jose"
 	"github.com/techorionai/constellation-identity/internal/adapters/postgres"
+	adaptersecrets "github.com/techorionai/constellation-identity/internal/adapters/secrets"
+	adaptersecurityevents "github.com/techorionai/constellation-identity/internal/adapters/securityevents"
+	adaptertotp "github.com/techorionai/constellation-identity/internal/adapters/totp"
 	adaptervalkey "github.com/techorionai/constellation-identity/internal/adapters/valkey"
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/app/queries"
@@ -28,6 +31,8 @@ import (
 	"github.com/techorionai/constellation-identity/internal/config"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/handlers/http/pages"
+	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/users"
 )
 
 // expectedUserError reports an error that the person at the browser caused.
@@ -72,6 +77,7 @@ type userStack struct {
 	sessions  *postgres.Sessions
 
 	oidc          *commands.OIDC
+	mfa           *commands.MFA
 	admin         *commands.Admin
 	apiTokens     *commands.APITokens
 	apiTokenRepo  *postgres.APITokens
@@ -126,8 +132,11 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		Issuer: cfg.Issuer, TTL: cfg.Invite.TTL, Tokens: tokens, Users: userRepo,
 		Session: sessionRepo, Hasher: hasher, Tx: tx, Policy: policy, Log: log, Now: clock,
 	}
+	mfaRepo := postgres.NewMFA(pool)
+	mfaFlow := adaptervalkey.NewMFAFlow(store)
 	loginDeps := commands.LoginDeps{
 		Users: userRepo, Session: sessionRepo, Hasher: hasher, Limiter: limiter,
+		MFA: mfaRepo, UserRoles: roles, Pending: mfaFlow.Pending(), RequireMFAForAdmins: cfg.MFA.RequireForAdmins,
 		Limits: commands.LoginLimits{
 			MaxFailuresPerEmail: int64(cfg.Login.MaxFailuresPerEmail), MaxFailuresPerIP: int64(cfg.Login.MaxFailuresPerIP),
 		},
@@ -143,6 +152,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		Issuer: cfg.Issuer, Clients: clientRepo, Users: userRepo, UserRoles: roles, Sessions: sessionRepo,
 		Refresh: refreshRepo, AuthRequests: store, Codes: store.Codes(), Keys: a.cache, Signer: adapterjose.Signer{},
 		Verifier: adapterjose.Verifier{}, Tx: tx, Policy: policy,
+		MFA: mfaRepo, RequireMFAForAdmins: cfg.MFA.RequireForAdmins,
 		AuthRequestTTL: cfg.OIDC.AuthRequestTTL, CodeTTL: cfg.OIDC.CodeTTL, UserTokenTTL: cfg.OIDC.UserTokenTTL,
 		Log: log, Now: clock,
 	})
@@ -150,6 +160,17 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		return nil, err
 	}
 	st.oidc = oidc
+	mfaCmd, err := commands.NewMFA(commands.MFADeps{
+		Users: userRepo, UserRoles: roles, Sessions: sessionRepo, MFA: mfaRepo, TOTP: adaptertotp.New(),
+		Sealer: adaptersecrets.NewSealer(a.ring), Pending: mfaFlow.Pending(), Setups: mfaFlow.Setups(),
+		Failures: mfaFlow.FailureCounter(), Limiter: limiter, Events: adaptersecurityevents.NewLogOnly(log), Tx: tx,
+		Policy: policy, RequireMFAForAdmins: cfg.MFA.RequireForAdmins, Issuer: cfg.MFA.TOTPIssuer,
+		MaxFailures: int64(cfg.MFA.MaxFailuresPerUser), FailureWindow: cfg.MFA.FailureWindow, Log: log, Now: clock,
+	})
+	if err != nil {
+		return nil, err
+	}
+	st.mfa = mfaCmd
 	st.admin = commands.NewAdmin(commands.AdminDeps{
 		Users: userRepo, UserRoles: roles, Sessions: sessionRepo, Clients: clientRepo,
 		ClientRoles: postgres.NewClientRoles(pool), Agents: postgres.NewAgents(pool), AgentRoles: postgres.NewAgentRoles(pool), Manifests: postgres.NewManifests(pool), Tokens: tokens,
@@ -191,6 +212,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		Continue:          observe[commands.Continue, commands.AuthorizeOutcome](executor.FuncWithReturn[commands.Continue, commands.AuthorizeOutcome](oidc.CompleteAuthorization), "CompleteAuthorization", log),
 		LookupAuthRequest: observe[string, commands.AuthRequestInfo](executor.FuncWithReturn[string, commands.AuthRequestInfo](oidc.LookupAuthRequest), "LookupAuthRequest", log),
 		EndSession:        observe[commands.EndSession, commands.EndSessionOutcome](executor.FuncWithReturn[commands.EndSession, commands.EndSessionOutcome](oidc.StartEndSession), "EndSession", log),
+		MFA:               mfaCmd,
 		ConfirmEndSession: decorators.ApplyTracingNoResult(decorators.ApplyLoggingNoResult[string](executor.Func[string](oidc.ConfirmEndSession), "ConfirmEndSession", decorators.WithLogger(log), decorators.WithErrorLevel(userErrorLevel)), "ConfirmEndSession"),
 		Now:               clock,
 		Issuer:            cfg.Issuer,
@@ -308,4 +330,40 @@ func UnlockLogin(ctx context.Context, cfg config.Config, email string, log *slog
 	defer kv.Close()
 	limiter := adaptervalkey.NewLoginLimiter(kv.Raw, kv.Keys, cfg.Login.FailureWindow)
 	return commands.NewUnlockLogin(limiter, log).Execute(ctx, commands.UnlockLogin{Email: email})
+}
+
+// ResetMFA removes the second factors of the user with the email and revokes
+// the sessions of the user. It is the recovery path of an admin who lost the
+// TOTP device and the recovery codes. It uses PostgreSQL only. It runs the
+// migrations first. It returns commands.ErrUserNotFound for an email that no
+// user has.
+func ResetMFA(ctx context.Context, cfg config.Config, email string, log *slog.Logger) error {
+	db, err := clientpg.New(ctx, cfg.Database)
+	if err != nil {
+		return fmt.Errorf("connect to PostgreSQL: %w", err)
+	}
+	defer db.Close()
+	if err := RunMigrations(ctx, db); err != nil {
+		return err
+	}
+	norm, err := domain.NormalizeEmail(email)
+	if err != nil {
+		return commands.ErrUserNotFound
+	}
+	userRepo := postgres.NewUsers(db.Pool)
+	u, err := userRepo.GetByEmail(ctx, norm)
+	if errors.Is(err, users.ErrNotFound) {
+		return commands.ErrUserNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("find the user: %w", err)
+	}
+	cmd, err := commands.NewMFA(commands.MFADeps{
+		Users: userRepo, Sessions: postgres.NewSessions(db.Pool), MFA: postgres.NewMFA(db.Pool),
+		Events: adaptersecurityevents.NewLogOnly(log), Tx: transactionpg.NewTransactor(db.Pool), Log: log,
+	})
+	if err != nil {
+		return err
+	}
+	return cmd.ResetMFA(ctx, commands.ResetMFA{UserID: u.ID, Actor: securityevents.ActorCLI})
 }
