@@ -53,6 +53,13 @@ The `.golangci.yml` file has `depguard` rules for the import table of the guide.
 | Personal API tokens (table `api_tokens`) | `internal/ports/apitokens` | `internal/adapters/postgres` |
 | Agents (table `agents`) and agent roles (table `agent_roles`) | `internal/ports/agents`, `internal/ports/agentroles` | `internal/adapters/postgres` |
 | Admin change lock | `internal/ports/adminlock` | `internal/adapters/postgres` (`pg_advisory_xact_lock`) |
+| TOTP codes (RFC 6238) | `internal/ports/totp` | `internal/adapters/totp` (`github.com/pquerna/otp`) |
+| TOTP factors and recovery codes (tables `user_totp`, `recovery_codes`) | `internal/ports/mfa` | `internal/adapters/postgres` |
+| Sealed TOTP secret | `internal/ports/secretbox` | `internal/adapters/secrets` (`platform-go` `secrets` key ring) |
+| Pending login, setup secret, failure counter of the second factor | `internal/ports/mfaflow` | `internal/adapters/valkey` (`SET`, `GET`, `GETDEL`, `DEL`, `MULTI`, `INCR`, `EXPIRE NX`) |
+| Audit entries and security notices | `internal/ports/securityevents` | `internal/adapters/securityevents` (log only) |
+
+The port `securityevents` has one method for the audit entry and one for the security notice. The service has no audit store and no email channel yet, so the adapter writes one log record for each call. R08, R09, and R12 replace the adapter. The commands do not change.
 
 The ports of the sessions, users, user roles, clients, and client roles have the methods that the code flow and the admin API need: the session `Reauthenticate` and `RevokeCascade`, the lists with a cursor, the role `Page`, and the client create, update, and key methods.
 
@@ -77,6 +84,7 @@ The token endpoint is the use case `IssueServiceToken` in `internal/app/commands
 | `POST /oauth/introspect` | Implemented. The use case `Introspect` checks the caller with `AuthenticateService` and reads the table `api_tokens`. See [tokens.md](tokens.md). |
 | All `/v1` operations | Implemented. See [admin-api.md](admin-api.md). |
 | `PUT /v1/permission-manifests/{app}`, `GET /v1/permission-manifests`, `GET /v1/permission-manifests/{app}`, `GET /v1/roles`, `GET /v1/roles/{role}` | Implemented. |
+| `GET /login/mfa`, `POST /login/mfa`, `GET /account/security`, `GET /account/totp`, `POST /account/totp`, `POST /account/totp/remove`, `POST /account/recovery-codes` | HTML pages of the second factor and of the MFA settings. They are not in the OpenAPI file. See [security.md](security.md). |
 | `GET /login`, `POST /login`, `GET /login/done`, `POST /logout`, `GET /setup`, `POST /setup`, `GET /invite`, `POST /invite`, `GET /assets/pages.css` | HTML pages. They are not in the OpenAPI file. See [security.md](security.md). |
 
 The pages are on a router in front of the generated router. The chain is `RedactToken`, then `otelhttp`, then `requestid`, then `RestoreQuery`, then the router of the pages or the generated router. `RedactToken` replaces the values of `token`, `code`, `code_verifier`, `refresh_token`, `id_token_hint`, `authRequest`, `state`, and `nonce` with `REDACTED` in the URL, so no span and no log record holds a secret. It keeps the real query in the request context, and `RestoreQuery` puts it back for the handlers. The pages use `html/template` with embedded templates, one embedded CSS file, and no JavaScript.

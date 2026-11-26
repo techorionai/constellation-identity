@@ -388,7 +388,7 @@ func TestU14_RemoveRequired(t *testing.T) {
 		t.Fatal("TOTP must stay")
 	}
 	// A user with no TOTP gives totp_not_found before mfa_required.
-	m.mfa.RemoveAll(ctx, adminID)
+	_, _ = m.mfa.RemoveAll(ctx, adminID)
 	if err := m.cmd.RemoveTOTP(ctx, commands.RemoveTOTP{UserID: adminID, Actor: adminID}); !errors.Is(err, commands.ErrTOTPNotFound) {
 		t.Fatalf("err = %v", err)
 	}

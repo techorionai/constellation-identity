@@ -156,6 +156,63 @@ linters:
               desc: An adapter must not import another adapter.
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/valkey
               desc: An adapter must not import another adapter.
+        adapter-totp:
+          files:
+            - "**/internal/adapters/totp/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/techorionai/constellation-identity/internal/app
+              desc: An adapter must not import the application layer.
+            - pkg: github.com/techorionai/constellation-identity/internal/handlers
+              desc: An adapter must not import a handler.
+            - pkg: github.com/techorionai/constellation-identity/internal/services
+              desc: An adapter must not import the composition root.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/postgres
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/secrets
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/jose
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/valkey
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/argon2
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/securityevents
+              desc: An adapter must not import another adapter.
+        adapter-securityevents:
+          files:
+            - "**/internal/adapters/securityevents/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/techorionai/constellation-identity/internal/app
+              desc: An adapter must not import the application layer.
+            - pkg: github.com/techorionai/constellation-identity/internal/handlers
+              desc: An adapter must not import a handler.
+            - pkg: github.com/techorionai/constellation-identity/internal/services
+              desc: An adapter must not import the composition root.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/postgres
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/secrets
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/jose
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/valkey
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/argon2
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/totp
+              desc: An adapter must not import another adapter.
+        # Only the adapter totp imports the TOTP library. The test helpers can
+        # use it to compute a code.
+        otp-library-in-adapter-only:
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/adapters/totp/**"
+            - "!**/resources/test/**"
+          deny:
+            - pkg: github.com/pquerna/otp
+              desc: Only the adapter totp can import the TOTP library.
         # A handler is a primary adapter. It calls the application layer only.
         handlers-app-only:
           files:
