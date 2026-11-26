@@ -110,10 +110,11 @@ func TestIssue9Integration(t *testing.T) {
 		// U16 and U16a on the real repository.
 		repo := postgres.NewUserRoles(f.a.Pool(t))
 		got, err := repo.GrantedPermissions(ctx, id, domain.ImplicitUserRoles(domain.UserActive)...)
-		// The implicit role user holds the key of the API tokens and, since the
-		// contract v0.5.0, the key of the MFA of the user.
+		// The implicit role user holds the key of the API tokens, the key of the MFA
+		// of the user (contract v0.5.0), and the key of the own upstream links
+		// (contract v0.7.0).
 		slices.Sort(got)
-		if err != nil || !slices.Equal(got, []string{manageOwn, "identity:mfa:manage_own"}) {
+		if err != nil || !slices.Equal(got, []string{manageOwn, "identity:identity_link:manage_own", "identity:mfa:manage_own"}) {
 			t.Fatalf("active: %v, %v", got, err)
 		}
 		if got, err := repo.GrantedPermissions(ctx, id, domain.ImplicitUserRoles(domain.UserInvited)...); err != nil || len(got) != 0 {

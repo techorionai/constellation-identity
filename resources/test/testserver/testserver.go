@@ -28,6 +28,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/ratelimit"
 	"github.com/techorionai/constellation-identity/internal/services"
+	"github.com/techorionai/constellation-identity/resources/test/oidcprovider"
 )
 
 // The images are the same as in constellation-deploy.
@@ -92,7 +93,29 @@ type settings struct {
 	rateRules       map[string]ratelimit.Rule
 	rateLimiter     ratelimit.Limiter
 	clockedVerifier bool
+	idp             *IdpSettings
 }
+
+// IdpSettings turn on the upstream login with a test provider.
+type IdpSettings struct {
+	// Provider is the test provider.
+	Provider *oidcprovider.Provider
+	// Google and Microsoft turn on the providers.
+	Google, Microsoft bool
+	// Tenant is the Microsoft tenant. The default is organizations.
+	Tenant string
+	// AllowedDomains is the list of the Google hosted domains.
+	AllowedDomains []string
+	// HTTPTimeout is the one deadline of the outbound calls. The default is 10s.
+	HTTPTimeout time.Duration
+	// NoSecrets does not store the client secrets. The service then does not start.
+	NoSecrets bool
+}
+
+// WithIdp turns on the upstream login with the test provider. It stores the
+// client secrets with the same function as the subcommand set-idp-secret, then
+// it starts the service.
+func WithIdp(s IdpSettings) Option { return func(o *settings) { o.idp = &s } }
 
 // Option changes a test server.
 type Option func(*settings)
@@ -219,6 +242,22 @@ func (e *Env) TryStart(t testing.TB, opts ...Option) (*Server, error) {
 	}
 	if s.managerInterval > 0 {
 		svcOpts = append(svcOpts, services.WithKeyIntervals(s.managerInterval, s.cacheInterval))
+	}
+	if s.idp != nil {
+		svcOpts = append(svcOpts, services.WithIdpBaseURLs(s.idp.Provider.GoogleBase(), s.idp.Provider.MicrosoftBase()))
+		if !s.idp.NoSecrets {
+			secretLog := slog.New(slog.NewTextHandler(io.Discard, nil))
+			if s.idp.Google {
+				if err := services.SetIdpSecret(context.Background(), cfg, "google", oidcprovider.GoogleSecret, secretLog); err != nil {
+					return nil, err
+				}
+			}
+			if s.idp.Microsoft {
+				if err := services.SetIdpSecret(context.Background(), cfg, "microsoft", oidcprovider.MSSecret, secretLog); err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
 	svcOpts = append(svcOpts, services.WithRateRules(s.rules()))
 	if s.rateLimiter != nil {
@@ -347,10 +386,25 @@ func (e *Env) buildConfig(t testing.TB, opts []Option) (config.Config, *settings
 			RefreshTokenFamilies: retention.Config{Interval: time.Hour, BatchSize: 1000},
 			APITokens:            retention.Config{Interval: time.Hour, BatchSize: 1000},
 		},
+		IDP:         config.IDP{Microsoft: config.MicrosoftIDP{Tenant: "organizations"}, HTTPTimeout: 10 * time.Second},
 		APIToken:    config.APIToken{DefaultTTLDays: 90, MaxTTLDays: 365, MaxPerUser: 50},
 		OIDC:        config.OIDC{AuthRequestTTL: 10 * time.Minute, CodeTTL: time.Minute, UserTokenTTL: 15 * time.Minute},
 		RateLimit:   config.RateLimit{Enabled: true},
 		ClientsFile: s.clientsFile,
+	}
+	if s.idp != nil {
+		if s.idp.Google {
+			cfg.IDP.Google = config.GoogleIDP{ClientID: oidcprovider.GoogleClientID, AllowedDomains: s.idp.AllowedDomains}
+		}
+		if s.idp.Microsoft {
+			cfg.IDP.Microsoft.ClientID = oidcprovider.MSClientID
+			if s.idp.Tenant != "" {
+				cfg.IDP.Microsoft.Tenant = s.idp.Tenant
+			}
+		}
+		if s.idp.HTTPTimeout > 0 {
+			cfg.IDP.HTTPTimeout = s.idp.HTTPTimeout
+		}
 	}
 	for _, f := range s.configure {
 		f(&cfg)

@@ -27,10 +27,10 @@ func TestIssue15_U5_Methods(t *testing.T) {
 	if got := domain.MethodsPasskeyLogin(); !slices.Equal(got, []string{"hwk", "user", "mfa"}) {
 		t.Errorf("passkey login = %v", got)
 	}
-	if got := domain.MethodsPasskeySecondFactor(true); !slices.Equal(got, []string{"pwd", "hwk", "user", "mfa"}) {
+	if got := domain.WithSecondFactor(domain.MethodsPassword(), domain.PasskeyFactor(true)...); !slices.Equal(got, []string{"pwd", "hwk", "user", "mfa"}) {
 		t.Errorf("password and passkey with UV = %v", got)
 	}
-	if got := domain.MethodsPasskeySecondFactor(false); !slices.Equal(got, []string{"pwd", "hwk", "mfa"}) {
+	if got := domain.WithSecondFactor(domain.MethodsPassword(), domain.PasskeyFactor(false)...); !slices.Equal(got, []string{"pwd", "hwk", "mfa"}) {
 		t.Errorf("password and passkey with no UV = %v", got)
 	}
 }

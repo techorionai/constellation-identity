@@ -1025,10 +1025,10 @@ func TestIssue14Integration(t *testing.T) {
 			}
 			return out
 		}
-		if got := held("admin"); !slices.Equal(got, []string{"identity:mfa:manage_own", "identity:mfa:read", "identity:mfa:reset"}) {
+		if got := held("admin"); !slices.Equal(got, []string{"identity:identity_link:manage_own", "identity:identity_link:read", "identity:identity_link:remove", "identity:mfa:manage_own", "identity:mfa:read", "identity:mfa:reset"}) {
 			t.Fatalf("admin permissions = %v", got)
 		}
-		if got := held("user"); !slices.Equal(got, []string{"identity:mfa:manage_own"}) {
+		if got := held("user"); !slices.Equal(got, []string{"identity:identity_link:manage_own", "identity:mfa:manage_own"}) {
 			t.Fatalf("user permissions = %v", got)
 		}
 		// A user logs in with the scope of the new key and calls MeMfa_get.

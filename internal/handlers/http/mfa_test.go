@@ -102,7 +102,7 @@ func newMFARig(t *testing.T) *mfaRig {
 	t.Helper()
 	users := mock.NewUsers()
 	for id, email := range map[string]string{mfaUser: "u@example.com", mfaOther: "o@example.com", mfaAdmin: "a@example.com"} {
-		users.Rows[id] = domain.User{ID: id, Email: email, Name: id, Status: domain.UserActive}
+		users.Rows[id] = domain.User{ID: id, Email: email, Name: id, Status: domain.UserActive, PasswordHash: "hash"}
 	}
 	roles := mock.NewUserRoles(users)
 	roles.Perms[domain.AdminRole] = []string{domain.AdminPermission}

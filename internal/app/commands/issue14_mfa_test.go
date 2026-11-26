@@ -147,15 +147,15 @@ func TestU1_Methods(t *testing.T) {
 		want string
 	}{
 		{"password", domain.MethodsPassword(), "pwd"},
-		{"totp", domain.MethodsTOTP(), "pwd otp mfa"},
-		{"recovery", domain.MethodsRecovery(), "pwd rec mfa"},
+		{"totp", domain.WithSecondFactor(domain.MethodsPassword(), domain.AMROTP), "pwd otp mfa"},
+		{"recovery", domain.WithSecondFactor(domain.MethodsPassword(), domain.AMRRecovery), "pwd rec mfa"},
 	}
 	for _, c := range cases {
 		if got := strings.Join(c.got, " "); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
-	if domain.HasMFA(domain.MethodsPassword()) || !domain.HasMFA(domain.MethodsTOTP()) || !domain.HasMFA(domain.MethodsRecovery()) {
+	if domain.HasMFA(domain.MethodsPassword()) || !domain.HasMFA(domain.WithSecondFactor(domain.MethodsPassword(), domain.AMROTP)) || !domain.HasMFA(domain.WithSecondFactor(domain.MethodsPassword(), domain.AMRRecovery)) {
 		t.Error("HasMFA is wrong")
 	}
 }
