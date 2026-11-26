@@ -12,7 +12,8 @@
 {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
 {{end}}
 {{define "footer"}}</main>
-</body>
+{{if .Script}}<script src="/assets/passkey.js" defer></script>
+{{end}}</body>
 </html>
 {{end}}
 {{define "login"}}{{template "header" .}}
@@ -25,6 +26,11 @@
 <input id="password" name="password" type="password" autocomplete="current-password" required>
 <button type="submit">Log in</button>
 </form>
+{{if .PasskeyOn}}<div class="passkey" data-passkey="login" data-options="/login/passkey/options" data-finish="/login/passkey/finish" data-auth-request="{{.AuthRequest}}" data-return-to="{{.ReturnTo}}">
+<button type="button" class="passkey-button" hidden>Log in with a passkey</button>
+<p class="error passkey-error" role="alert" hidden></p>
+</div>
+{{end}}
 {{template "footer" .}}{{end}}
 {{define "setup"}}{{template "header" .}}
 <p>Make the first admin account.</p>
@@ -75,14 +81,18 @@
 <button type="submit">Log in</button>
 </form>
 <p><a href="/login/mfa">Use a code from your authenticator app</a></p>
-{{else}}<p>Enter the 6-digit code from your authenticator app.</p>
+{{else}}{{if .HasTOTP}}<p>Enter the 6-digit code from your authenticator app.</p>
 <form method="post" action="/login/mfa">
 <label for="code">Code</label>
 <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required maxlength="6">
 <button type="submit">Log in</button>
 </form>
-<p><a href="/login/mfa?recovery=1">Use a recovery code</a></p>
-{{end}}
+{{end}}{{if .UsePasskey}}<div class="passkey" data-passkey="second-factor" data-options="/login/mfa/passkey/options" data-finish="/login/mfa/passkey/finish">
+<button type="button" class="passkey-button" hidden>Use a passkey</button>
+<p class="error passkey-error" role="alert" hidden></p>
+</div>
+{{end}}{{if .HasRecovery}}<p><a href="/login/mfa?recovery=1">Use a recovery code</a></p>
+{{end}}{{end}}
 {{template "footer" .}}{{end}}
 {{define "account_security"}}{{template "header" .}}
 <p>Account: {{.UserName}}</p>
@@ -97,6 +107,9 @@
 {{else}}<p>TOTP is off.</p>
 <p><a href="/account/totp">Set up TOTP</a></p>
 {{end}}
+{{if .PasskeyOn}}<p>Passkeys: {{.PasskeyCount}}.</p>
+<p><a href="/account/passkeys">Manage passkeys</a></p>
+{{end}}
 {{template "footer" .}}{{end}}
 {{define "account_totp"}}{{template "header" .}}
 {{if .Required}}<p>Your account must have MFA. Set up TOTP to continue.</p>{{end}}
@@ -110,6 +123,8 @@
 <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required maxlength="6">
 <button type="submit">Turn on TOTP</button>
 </form>
+{{if .PasskeyOn}}{{if .Required}}<p><a href="{{.PasskeyLink}}">Use a passkey</a></p>
+{{end}}{{end}}
 {{template "footer" .}}{{end}}
 {{define "account_codes"}}{{template "header" .}}
 {{if .Done}}<p>TOTP is on.</p>{{end}}
@@ -118,5 +133,31 @@
 {{range .Codes}}<li><code>{{.}}</code></li>
 {{end}}</ul>
 {{if .Next}}<p><a href="{{.Next}}">Continue</a></p>{{end}}
+<p><a href="/account/security">Account security</a></p>
+{{template "footer" .}}{{end}}
+{{define "account_passkeys"}}{{template "header" .}}
+{{if .Required}}<p>Your account must have MFA. Add a passkey to continue.</p>{{end}}
+<p>Register at least two passkeys, or set up TOTP as well. If you lose all passkeys and you have no TOTP, only an administrator can reset your MFA.</p>
+{{if .Passkeys}}<ul>
+{{range .Passkeys}}<li>
+<strong>{{.Name}}</strong> Added {{.CreatedAt}}.{{if .LastUsed}} Last used {{.LastUsed}}.{{else}} Not used yet.{{end}}{{if .Synced}} Synced.{{end}}
+<form method="post" action="/account/passkeys/{{.ID}}/rename">
+<label for="name-{{.ID}}">New name</label>
+<input id="name-{{.ID}}" name="name" type="text" required maxlength="64" autocomplete="off" value="{{.Name}}">
+<button type="submit">Rename</button>
+</form>
+<form method="post" action="/account/passkeys/{{.ID}}/remove">
+<button type="submit">Remove</button>
+</form>
+</li>
+{{end}}</ul>
+{{else}}<p>You have no passkeys.</p>
+{{end}}
+<div class="passkey" data-passkey="register" data-options="/account/passkeys/options" data-finish="/account/passkeys/finish" data-auth-request="{{.AuthRequest}}" data-return-to="{{.ReturnTo}}">
+<label for="name">Name of the new passkey</label>
+<input id="name" class="passkey-name" type="text" required maxlength="64" autocomplete="off">
+<button type="button" class="passkey-button" hidden>Add a passkey</button>
+<p class="error passkey-error" role="alert" hidden></p>
+</div>
 <p><a href="/account/security">Account security</a></p>
 {{template "footer" .}}{{end}}

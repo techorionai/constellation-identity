@@ -45,3 +45,7 @@ button {
   border: 1px solid #b00020;
   color: #b00020;
 }
+
+[hidden] {
+  display: none !important;
+}

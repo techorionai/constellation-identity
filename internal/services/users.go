@@ -25,6 +25,7 @@ import (
 	adaptersecurityevents "github.com/techorionai/constellation-identity/internal/adapters/securityevents"
 	adaptertotp "github.com/techorionai/constellation-identity/internal/adapters/totp"
 	adaptervalkey "github.com/techorionai/constellation-identity/internal/adapters/valkey"
+	adapterwebauthn "github.com/techorionai/constellation-identity/internal/adapters/webauthn"
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/app/queries"
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
@@ -33,6 +34,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/handlers/http/pages"
 	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
 	"github.com/techorionai/constellation-identity/internal/ports/users"
+	portwebauthn "github.com/techorionai/constellation-identity/internal/ports/webauthn"
 )
 
 // expectedUserError reports an error that the person at the browser caused.
@@ -134,8 +136,13 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	}
 	mfaRepo := postgres.NewMFA(pool)
 	mfaFlow := adaptervalkey.NewMFAFlow(store)
+	passkeyRepo := postgres.NewPasskeys(pool)
+	webauthnService, passkeysOn, err := a.buildWebAuthn()
+	if err != nil {
+		return nil, err
+	}
 	loginDeps := commands.LoginDeps{
-		Users: userRepo, Session: sessionRepo, Hasher: hasher, Limiter: limiter,
+		Users: userRepo, Session: sessionRepo, Hasher: hasher, Limiter: limiter, PasskeysOn: passkeysOn,
 		MFA: mfaRepo, UserRoles: roles, Pending: mfaFlow.Pending(), RequireMFAForAdmins: cfg.MFA.RequireForAdmins,
 		Limits: commands.LoginLimits{
 			MaxFailuresPerEmail: int64(cfg.Login.MaxFailuresPerEmail), MaxFailuresPerIP: int64(cfg.Login.MaxFailuresPerIP),
@@ -152,7 +159,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		Issuer: cfg.Issuer, Clients: clientRepo, Users: userRepo, UserRoles: roles, Sessions: sessionRepo,
 		Refresh: refreshRepo, AuthRequests: store, Codes: store.Codes(), Keys: a.cache, Signer: adapterjose.Signer{},
 		Verifier: adapterjose.Verifier{}, Tx: tx, Policy: policy,
-		MFA: mfaRepo, RequireMFAForAdmins: cfg.MFA.RequireForAdmins,
+		MFA: mfaRepo, PasskeysOn: passkeysOn, RequireMFAForAdmins: cfg.MFA.RequireForAdmins,
 		AuthRequestTTL: cfg.OIDC.AuthRequestTTL, CodeTTL: cfg.OIDC.CodeTTL, UserTokenTTL: cfg.OIDC.UserTokenTTL,
 		Log: log, Now: clock,
 	})
@@ -163,6 +170,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	mfaCmd, err := commands.NewMFA(commands.MFADeps{
 		Users: userRepo, UserRoles: roles, Sessions: sessionRepo, MFA: mfaRepo, TOTP: adaptertotp.New(),
 		Sealer: adaptersecrets.NewSealer(a.ring), Pending: mfaFlow.Pending(), Setups: mfaFlow.Setups(),
+		Passkeys: passkeyRepo, WebAuthn: webauthnService, Ceremonies: mfaFlow.Ceremonies(), PasskeysOn: passkeysOn,
 		Failures: mfaFlow.FailureCounter(), Limiter: limiter, Events: adaptersecurityevents.NewLogOnly(log), Tx: tx,
 		Policy: policy, RequireMFAForAdmins: cfg.MFA.RequireForAdmins, Issuer: cfg.MFA.TOTPIssuer,
 		MaxFailures: int64(cfg.MFA.MaxFailuresPerUser), FailureWindow: cfg.MFA.FailureWindow, Log: log, Now: clock,
@@ -213,6 +221,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		LookupAuthRequest: observe[string, commands.AuthRequestInfo](executor.FuncWithReturn[string, commands.AuthRequestInfo](oidc.LookupAuthRequest), "LookupAuthRequest", log),
 		EndSession:        observe[commands.EndSession, commands.EndSessionOutcome](executor.FuncWithReturn[commands.EndSession, commands.EndSessionOutcome](oidc.StartEndSession), "EndSession", log),
 		MFA:               mfaCmd,
+		PasskeysOn:        passkeysOn,
 		ConfirmEndSession: decorators.ApplyTracingNoResult(decorators.ApplyLoggingNoResult[string](executor.Func[string](oidc.ConfirmEndSession), "ConfirmEndSession", decorators.WithLogger(log), decorators.WithErrorLevel(userErrorLevel)), "ConfirmEndSession"),
 		Now:               clock,
 		Issuer:            cfg.Issuer,
@@ -240,6 +249,27 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		return nil, fmt.Errorf("make the retention runner: %w", err)
 	}
 	return st, nil
+}
+
+// buildWebAuthn makes the WebAuthn adapter. Passkeys are off when the setting
+// says so, or when the issuer host is an IP address. In the second case the
+// service writes one warn record. The result is nil when passkeys are off.
+func (a *App) buildWebAuthn() (portwebauthn.Service, bool, error) {
+	cfg := a.cfg
+	if !cfg.WebAuthn.Enabled {
+		return nil, false, nil
+	}
+	rpID, origin, ok := adapterwebauthn.RelyingParty(cfg.Issuer)
+	if !ok {
+		a.log.Warn("identity.passkeys.off: the issuer host is an IP address, so passkeys are off",
+			"event", "identity.passkeys.off", "setting", config.Prefix+"ISSUER")
+		return nil, false, nil
+	}
+	w, err := adapterwebauthn.New(adapterwebauthn.Config{RPID: rpID, Origin: origin, RPName: cfg.WebAuthn.RPName})
+	if err != nil {
+		return nil, false, err
+	}
+	return w, true, nil
 }
 
 // ensureSetupToken makes the setup token if the install needs one. The log
@@ -360,7 +390,8 @@ func ResetMFA(ctx context.Context, cfg config.Config, email string, log *slog.Lo
 	}
 	cmd, err := commands.NewMFA(commands.MFADeps{
 		Users: userRepo, Sessions: postgres.NewSessions(db.Pool), MFA: postgres.NewMFA(db.Pool),
-		Events: adaptersecurityevents.NewLogOnly(log), Tx: transactionpg.NewTransactor(db.Pool), Log: log,
+		Passkeys: postgres.NewPasskeys(db.Pool),
+		Events:   adaptersecurityevents.NewLogOnly(log), Tx: transactionpg.NewTransactor(db.Pool), Log: log,
 	})
 	if err != nil {
 		return err

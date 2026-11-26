@@ -26,7 +26,7 @@ import (
 //go:embed templates/*.html
 var templateFS embed.FS
 
-//go:embed assets/pages.css
+//go:embed assets/pages.css assets/passkey.js
 var assetFS embed.FS
 
 // CookieName is the name of the session cookie. The prefix __Host- makes the
@@ -39,8 +39,9 @@ const maxFormBytes = 64 << 10
 // Paths are the URL patterns that the handler of the pages serves. Register
 // them on the router of the public server.
 var Paths = []string{"/login", "/login/done", "/login/mfa", "/logout", "/setup", "/invite", "/assets/pages.css",
-	"/oauth/authorize", "/oauth/authorize/continue", "/oauth/end_session",
-	"/account/security", "/account/totp", "/account/totp/remove", "/account/recovery-codes"}
+	"/assets/passkey.js", "/oauth/authorize", "/oauth/authorize/continue", "/oauth/end_session",
+	"/account/security", "/account/totp", "/account/totp/remove", "/account/recovery-codes",
+	"/account/passkeys", "/account/passkeys/", "/login/passkey/", "/login/mfa/passkey/"}
 
 // Deps are the use cases and the settings of the pages.
 type Deps struct {
@@ -59,6 +60,8 @@ type Deps struct {
 	ConfirmEndSession executor.Executor[string]
 	// MFA holds the use cases of the second factor and of the account pages.
 	MFA *commands.MFA
+	// PasskeysOn turns on the routes of the passkeys, the script, and the buttons.
+	PasskeysOn bool
 	// Issuer is the issuer URL of the service. An https issuer turns on the
 	// Strict-Transport-Security header.
 	Issuer string
@@ -77,6 +80,7 @@ type Handler struct {
 	log  *slog.Logger
 	tmpl *template.Template
 	css  []byte
+	js   []byte
 	now  func() time.Time
 }
 
@@ -90,7 +94,11 @@ func New(d Deps) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Handler{d: d, log: d.Log, tmpl: tmpl, css: css, now: d.Now}
+	js, err := fs.ReadFile(assetFS, "assets/passkey.js")
+	if err != nil {
+		return nil, err
+	}
+	h := &Handler{d: d, log: d.Log, tmpl: tmpl, css: css, js: js, now: d.Now}
 	if h.log == nil {
 		h.log = slog.Default()
 	}
@@ -114,6 +122,16 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /account/totp", h.totpSetup)
 	mux.HandleFunc("POST /account/totp/remove", h.totpRemove)
 	mux.HandleFunc("POST /account/recovery-codes", h.recoveryCodes)
+	mux.HandleFunc("GET /account/passkeys", h.passkeysForm)
+	mux.HandleFunc("POST /account/passkeys/options", h.passkeyRegisterOptions)
+	mux.HandleFunc("POST /account/passkeys/finish", h.passkeyRegisterFinish)
+	mux.HandleFunc("POST /account/passkeys/{id}/rename", h.passkeyRename)
+	mux.HandleFunc("POST /account/passkeys/{id}/remove", h.passkeyRemove)
+	mux.HandleFunc("POST /login/passkey/options", h.passkeyLoginOptions)
+	mux.HandleFunc("POST /login/passkey/finish", h.passkeyLoginFinish)
+	mux.HandleFunc("POST /login/mfa/passkey/options", h.mfaPasskeyOptions)
+	mux.HandleFunc("POST /login/mfa/passkey/finish", h.mfaPasskeyFinish)
+	mux.HandleFunc("GET /assets/passkey.js", h.passkeyScript)
 	mux.HandleFunc("GET /login/done", h.loginDone)
 	mux.HandleFunc("POST /logout", h.logout)
 	mux.HandleFunc("GET /setup", h.setupForm)
@@ -152,9 +170,41 @@ type view struct {
 	Codes       []string
 	// Next is the place to go after the setup, or empty.
 	Next string
+	// The fields of the passkey pages.
+	PasskeyOn  bool
+	UsePasskey bool
+	Script     bool
+	Passkeys   []passkeyRow
+	// PasskeyCount is the number of stored passkeys of the user.
+	PasskeyCount int
+	// PasskeyLink is the link of the TOTP setup page to the passkey page.
+	PasskeyLink string
+	HasRecovery bool
+	HasTOTP     bool
+}
+
+// pageCSP returns the policy of a page that can have the script of the
+// passkeys, with one more origin in form-action.
+func (h *Handler) pageCSP(formActionOrigin string) string {
+	if h.passkeysOn() {
+		return ContentSecurityPolicyWithScript(formActionOrigin)
+	}
+	if formActionOrigin == "" {
+		return contentSecurityPolicy
+	}
+	return ContentSecurityPolicyWithFormAction(formActionOrigin)
 }
 
 func (h *Handler) render(w http.ResponseWriter, r *http.Request, status int, name string, v view) {
+	if h.passkeysOn() && (name == "login" || name == "mfa") {
+		// These pages can use the script. The policy of a page with an auth request
+		// has it already.
+		v.Script = name == "login" || v.UsePasskey
+		v.PasskeyOn = name == "login"
+		if w.Header().Get("Content-Security-Policy") == contentSecurityPolicy {
+			w.Header().Set("Content-Security-Policy", ContentSecurityPolicyWithScript(""))
+		}
+	}
 	var buf bytes.Buffer
 	if err := h.tmpl.ExecuteTemplate(&buf, name, v); err != nil {
 		h.log.ErrorContext(r.Context(), "render a page", "page", name, "error", err)
@@ -276,7 +326,7 @@ func (h *Handler) authRequestView(w http.ResponseWriter, r *http.Request, id str
 		return false
 	}
 	v.AuthRequest = id
-	w.Header().Set("Content-Security-Policy", ContentSecurityPolicyWithFormAction(info.FormActionOrigin))
+	w.Header().Set("Content-Security-Policy", h.pageCSP(info.FormActionOrigin))
 	return true
 }
 

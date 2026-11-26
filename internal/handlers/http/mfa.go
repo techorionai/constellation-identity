@@ -53,10 +53,12 @@ func userNotFound() error {
 }
 
 func genMfaStatus(st commands.MFAStatus) gen.MfaStatus {
+	passkeys := int32(st.State.Passkeys) //nolint:gosec // The count is 0 to 10.
 	out := gen.MfaStatus{
 		Enabled:                st.State.Enabled(),
 		Required:               st.Required,
 		RecoveryCodesRemaining: int32(st.State.CodesRemaining), //nolint:gosec // The count is 0 to 10.
+		Passkeys:               &passkeys,
 	}
 	if st.State.HasTOTP {
 		out.Totp = &gen.TotpStatus{CreatedAt: st.State.TOTPAt.UTC(), LastUsedAt: st.State.LastUsedAt}
