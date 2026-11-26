@@ -1905,6 +1905,133 @@ paths:
                 $ref: '#/components/schemas/InternalServerError'
       x-required-scopes:
         - identity:api_token:manage_own
+  /v1/me/identity-links:
+    get:
+      operationId: MeIdentityLinks_list
+      description: |-
+        List the identity links of the user. The order is `createdAt` ascending, then `provider` ascending.
+        Error code of `Forbidden`: `user_token_required`.
+      parameters:
+        - $ref: '#/components/parameters/CursorPageParams.pageToken'
+        - $ref: '#/components/parameters/CursorPageParams.pageSize'
+      responses:
+        '200':
+          description: The request has succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentityLinkPage'
+        '400':
+          description: The request is not valid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/BadRequest'
+        '401':
+          description: The request has no valid credentials.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Unauthorized'
+        '403':
+          description: The principal does not have the permission.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Forbidden'
+        '500':
+          description: The server has an internal error.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+      x-required-scopes:
+        - identity:identity_link:manage_own
+  /v1/me/identity-links/{provider}:
+    delete:
+      operationId: MeIdentityLinks_remove
+      description: |-
+        Remove an identity link of the user.
+        The token needs a fresh login: `auth_time` is at most 5 minutes old. The operation does not check `amr` for `mfa`.
+        A user with a local second factor has `mfa` in every login, so the rule includes the second factor for such a user.
+        Else the response is 401 with the code `reauthentication_required` and the header
+        `WWW-Authenticate: Bearer error="insufficient_user_authentication", error_description="A fresh login is necessary", max_age="300"`.
+        A token with no `amr` or `auth_time` (service, agent, exchange, or API token) gets the same response.
+        A token with `act` does not satisfy the rule.
+        The operation writes an audit entry with the action `identity:identity_link:remove`, the target user, the provider, and the result.
+        It sends a security notice to the user.
+        The removal revokes all sessions and all refresh tokens of the user that were made with an upstream login (`amr` contains `fed`).
+        The current session is also revoked if it has `fed`.
+        The removal also revokes the personal API tokens that a session with `fed` in `amr` made.
+        The service records the `amr` of the making session in the API token. The `ApiToken` model does not show it.
+        Error code of `Forbidden`: `user_token_required`.
+        Error code of `NotFound`: `identity_link_not_found`. A provider that the user did not link, an unknown provider, or a wrong-case provider gives the same 404.
+        Error code of `Conflict`: `last_login_method`. The removal would leave the user with no login method.
+        The methods that count are a password, a passkey that the service accepts, and a link of a provider that is on.
+        A provider is on when the operator sets the client ID. A stored passkey does not count when the service turns off passkeys.
+        A link of a provider that is off does not count.
+        The order of the checks: the token (401), the scopes (403), `user_token_required` (403),
+        `reauthentication_required` (401), `identity_link_not_found` (404), `last_login_method` (409).
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: 'There is no content to send for this request, but the headers may be useful. '
+        '400':
+          description: The request is not valid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/BadRequest'
+        '401':
+          description: |-
+            The token does not show a fresh login or a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+            A fresh login needs `auth_time` at most 5 minutes old. A fresh MFA login also needs `mfa` in `amr`.
+            The client must start a new authorization request with `max_age`. A token refresh does not help.
+            The header `WWW-Authenticate` is optional in this model, because the 401 response of an operation also covers `Unauthorized`.
+            An operation that uses this model always sends the header with the code `reauthentication_required`.
+          headers:
+            WWW-Authenticate:
+              required: false
+              description: Challenge, for example `Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`. `error_description` is optional. A second example is `Bearer error="insufficient_user_authentication", error_description="A fresh login is necessary", max_age="300"`.
+              schema:
+                type: string
+          content:
+            application/problem+json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/ReauthenticationRequired'
+                  - $ref: '#/components/schemas/Unauthorized'
+        '403':
+          description: The principal does not have the permission.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Forbidden'
+        '404':
+          description: The resource does not exist.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/NotFound'
+        '409':
+          description: The request conflicts with the state of the resource.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Conflict'
+        '500':
+          description: The server has an internal error.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+      x-required-scopes:
+        - identity:identity_link:manage_own
   /v1/me/mfa:
     get:
       operationId: MeMfa_get
@@ -2024,14 +2151,15 @@ paths:
                 $ref: '#/components/schemas/BadRequest'
         '401':
           description: |-
-            The token does not show a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+            The token does not show a fresh login or a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+            A fresh login needs `auth_time` at most 5 minutes old. A fresh MFA login also needs `mfa` in `amr`.
             The client must start a new authorization request with `max_age`. A token refresh does not help.
             The header `WWW-Authenticate` is optional in this model, because the 401 response of an operation also covers `Unauthorized`.
             An operation that uses this model always sends the header with the code `reauthentication_required`.
           headers:
             WWW-Authenticate:
               required: false
-              description: Challenge, for example `Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`. `error_description` is optional.
+              description: Challenge, for example `Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`. `error_description` is optional. A second example is `Bearer error="insufficient_user_authentication", error_description="A fresh login is necessary", max_age="300"`.
               schema:
                 type: string
           content:
@@ -2084,6 +2212,8 @@ paths:
         The operation writes an audit entry with the action `identity:mfa:passkey_remove`, the target user, and the result.
         It sends a security notice to the user.
         The removal revokes all sessions and all refresh tokens of the user that were made with a passkey (`amr` contains `hwk`).
+        The removal also revokes the personal API tokens that a session with `hwk` in `amr` made.
+        The service records the `amr` of the making session in the API token. The `ApiToken` model does not show it.
         The service does not record which passkey made a session, so the revocation does not depend on the removed passkey.
         An old refresh token of such a session then gets no new access token.
         Error code of `Forbidden`: `user_token_required`.
@@ -2091,8 +2221,12 @@ paths:
         or an ID that is not a UUID gives the same 404.
         Error code of `Conflict`: `mfa_required`. The policy requires MFA for the user and the passkey is the last second factor.
         The rule counts TOTP and the passkeys that the service accepts.
+        Error code of `Conflict`: `last_login_method`. The removal would leave the user with no login method.
+        The methods that count are a password, a passkey that the service accepts, and a link of a provider that is on.
+        A provider is on when the operator sets the client ID. A stored passkey does not count when the service turns off passkeys.
+        A link of a provider that is off does not count.
         The order of the checks: the token (401), the scopes (403), `user_token_required` (403),
-        `reauthentication_required` (401), `passkey_not_found` (404), `mfa_required` (409).
+        `reauthentication_required` (401), `passkey_not_found` (404), `mfa_required` (409), `last_login_method` (409).
       parameters:
         - name: passkeyId
           in: path
@@ -2110,14 +2244,15 @@ paths:
                 $ref: '#/components/schemas/BadRequest'
         '401':
           description: |-
-            The token does not show a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+            The token does not show a fresh login or a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+            A fresh login needs `auth_time` at most 5 minutes old. A fresh MFA login also needs `mfa` in `amr`.
             The client must start a new authorization request with `max_age`. A token refresh does not help.
             The header `WWW-Authenticate` is optional in this model, because the 401 response of an operation also covers `Unauthorized`.
             An operation that uses this model always sends the header with the code `reauthentication_required`.
           headers:
             WWW-Authenticate:
               required: false
-              description: Challenge, for example `Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`. `error_description` is optional.
+              description: Challenge, for example `Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`. `error_description` is optional. A second example is `Bearer error="insufficient_user_authentication", error_description="A fresh login is necessary", max_age="300"`.
               schema:
                 type: string
           content:
@@ -2182,14 +2317,15 @@ paths:
                 $ref: '#/components/schemas/BadRequest'
         '401':
           description: |-
-            The token does not show a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+            The token does not show a fresh login or a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+            A fresh login needs `auth_time` at most 5 minutes old. A fresh MFA login also needs `mfa` in `amr`.
             The client must start a new authorization request with `max_age`. A token refresh does not help.
             The header `WWW-Authenticate` is optional in this model, because the 401 response of an operation also covers `Unauthorized`.
             An operation that uses this model always sends the header with the code `reauthentication_required`.
           headers:
             WWW-Authenticate:
               required: false
-              description: Challenge, for example `Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`. `error_description` is optional.
+              description: Challenge, for example `Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`. `error_description` is optional. A second example is `Bearer error="insufficient_user_authentication", error_description="A fresh login is necessary", max_age="300"`.
               schema:
                 type: string
           content:
@@ -2804,6 +2940,150 @@ paths:
                 $ref: '#/components/schemas/InternalServerError'
       x-required-scopes:
         - identity:api_token:read
+  /v1/users/{userId}/identity-links:
+    get:
+      operationId: UserIdentityLinks_list
+      description: |-
+        List the identity links of a user. The order is `createdAt` ascending, then `provider` ascending.
+        The permission is `identity:identity_link:read`, not `identity:user:read`.
+        Error code of `NotFound`: `user_not_found`.
+        The order of the checks: the token (401), the scopes (403), `user_not_found` (404).
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CursorPageParams.pageToken'
+        - $ref: '#/components/parameters/CursorPageParams.pageSize'
+      responses:
+        '200':
+          description: The request has succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentityLinkPage'
+        '400':
+          description: The request is not valid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/BadRequest'
+        '401':
+          description: The request has no valid credentials.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Unauthorized'
+        '403':
+          description: The principal does not have the permission.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Forbidden'
+        '404':
+          description: The resource does not exist.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/NotFound'
+        '500':
+          description: The server has an internal error.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+      x-required-scopes:
+        - identity:identity_link:read
+  /v1/users/{userId}/identity-links/{provider}:
+    delete:
+      operationId: UserIdentityLinks_remove
+      description: |-
+        Remove an identity link of a user.
+        The token needs a fresh MFA login: `amr` contains `mfa` and `auth_time` is at most 5 minutes old.
+        Else the response is 401 with the code `reauthentication_required` and the header
+        `WWW-Authenticate: Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`.
+        A token with no `amr` (service, agent, exchange, or API token) gets the same response.
+        A token with `act` does not satisfy MFA.
+        The operation writes an audit entry with the action `identity:identity_link:remove`, the target user, the provider, and the result.
+        It sends a security notice to the user.
+        The removal revokes all sessions and all refresh tokens of the user that were made with an upstream login (`amr` contains `fed`).
+        The removal also revokes the personal API tokens that a session with `fed` in `amr` made.
+        The service records the `amr` of the making session in the API token. The `ApiToken` model does not show it.
+        Error code of `NotFound`: `user_not_found` or `identity_link_not_found`.
+        Error code of `Conflict`: `last_login_method`. The removal would leave the user with no login method.
+        The methods that count are a password, a passkey that the service accepts, and a link of a provider that is on.
+        A provider is on when the operator sets the client ID. A stored passkey does not count when the service turns off passkeys.
+        A link of a provider that is off does not count.
+        An administrator can use the operation on the own account. The rules are the same.
+        The order of the checks: the token (401), the scopes (403), `reauthentication_required` (401),
+        `user_not_found` (404), `identity_link_not_found` (404), `last_login_method` (409).
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: 'There is no content to send for this request, but the headers may be useful. '
+        '400':
+          description: The request is not valid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/BadRequest'
+        '401':
+          description: |-
+            The token does not show a fresh login or a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+            A fresh login needs `auth_time` at most 5 minutes old. A fresh MFA login also needs `mfa` in `amr`.
+            The client must start a new authorization request with `max_age`. A token refresh does not help.
+            The header `WWW-Authenticate` is optional in this model, because the 401 response of an operation also covers `Unauthorized`.
+            An operation that uses this model always sends the header with the code `reauthentication_required`.
+          headers:
+            WWW-Authenticate:
+              required: false
+              description: Challenge, for example `Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`. `error_description` is optional. A second example is `Bearer error="insufficient_user_authentication", error_description="A fresh login is necessary", max_age="300"`.
+              schema:
+                type: string
+          content:
+            application/problem+json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/ReauthenticationRequired'
+                  - $ref: '#/components/schemas/Unauthorized'
+        '403':
+          description: The principal does not have the permission.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Forbidden'
+        '404':
+          description: The resource does not exist.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/NotFound'
+        '409':
+          description: The request conflicts with the state of the resource.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Conflict'
+        '500':
+          description: The server has an internal error.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+      x-required-scopes:
+        - identity:identity_link:remove
+        - identity:admin
   /v1/users/{userId}/invites:
     post:
       operationId: Invites_create
@@ -2942,10 +3222,15 @@ paths:
         Error code of `Conflict`: `mfa_required`. The `userId` is the `sub` of the token.
         An administrator cannot reset the own MFA with this operation. The check goes around the rule of `MeTotp_remove`.
         The administrator uses the subcommand `identity reset-mfa <email>` of the identity service for this recovery.
+        Error code of `Conflict`: `last_login_method`. The reset removes all passkeys.
+        It gives 409 if the user then has no password and no usable link. The operation does not set the user to `invited`.
+        The methods that count are a password, a passkey that the service accepts, and a link of a provider that is on.
+        A provider is on when the operator sets the client ID. A stored passkey does not count when the service turns off passkeys.
+        A link of a provider that is off does not count.
         The operation writes an audit entry with the action `identity:mfa:reset`, the target user, and the result.
         It sends a security notice to the user.
         The order of the checks: the token (401), the scopes (403), `reauthentication_required` (401),
-        `user_not_found` (404), `mfa_required` (409).
+        `user_not_found` (404), `mfa_required` (409), `last_login_method` (409).
       parameters:
         - name: userId
           in: path
@@ -2963,14 +3248,15 @@ paths:
                 $ref: '#/components/schemas/BadRequest'
         '401':
           description: |-
-            The token does not show a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+            The token does not show a fresh login or a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+            A fresh login needs `auth_time` at most 5 minutes old. A fresh MFA login also needs `mfa` in `amr`.
             The client must start a new authorization request with `max_age`. A token refresh does not help.
             The header `WWW-Authenticate` is optional in this model, because the 401 response of an operation also covers `Unauthorized`.
             An operation that uses this model always sends the header with the code `reauthentication_required`.
           headers:
             WWW-Authenticate:
               required: false
-              description: Challenge, for example `Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`. `error_description` is optional.
+              description: Challenge, for example `Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`. `error_description` is optional. A second example is `Bearer error="insufficient_user_authentication", error_description="A fresh login is necessary", max_age="300"`.
               schema:
                 type: string
           content:
@@ -3946,6 +4232,45 @@ components:
       description: |-
         Claims of an ID token (OIDC Core 1.0 section 2).
         The identity service writes `aud` as one string. A verifier accepts both forms.
+    IdentityLink:
+      type: object
+      required:
+        - provider
+        - createdAt
+      properties:
+        provider:
+          allOf:
+            - $ref: '#/components/schemas/UpstreamProvider'
+          description: The upstream provider. It identifies the link of the user.
+        email:
+          type: string
+          description: The email from the upstream account at the last login. Only for show to people. The value is not verified. The upstream account owner can change it. A client must not use it to identify the user or to make a security decision. Absent when the service has no email.
+        createdAt:
+          type: string
+          format: date-time
+          description: The time of the link.
+        lastUsedAt:
+          type: string
+          format: date-time
+          description: The time of the last login with the link. Absent when the link was never used for a login.
+      description: |-
+        A link between a user and an account at an upstream identity provider.
+        The model has no upstream subject. The subject is an internal key of the service.
+        A user has a maximum of one link for each provider.
+    IdentityLinkPage:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/IdentityLink'
+          description: Items of the page.
+        nextPageToken:
+          type: string
+          description: Token for the next page. No value means that this is the last page.
+      description: One page of identity links.
     InternalServerError:
       type: object
       allOf:
@@ -4407,7 +4732,8 @@ components:
       allOf:
         - $ref: '#/components/schemas/Problem'
       description: |-
-        The token does not show a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+        The token does not show a fresh login or a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+        A fresh login needs `auth_time` at most 5 minutes old. A fresh MFA login also needs `mfa` in `amr`.
         The client must start a new authorization request with `max_age`. A token refresh does not help.
         The header `WWW-Authenticate` is optional in this model, because the 401 response of an operation also covers `Unauthorized`.
         An operation that uses this model always sends the header with the code `reauthentication_required`.
@@ -4764,6 +5090,14 @@ components:
       allOf:
         - $ref: '#/components/schemas/Problem'
       description: The request is well formed, but the server cannot process its content.
+    UpstreamProvider:
+      anyOf:
+        - type: string
+          enum:
+            - google
+            - microsoft
+        - type: string
+      description: Upstream identity provider for login and link. The union is open, so a later release can add a provider.
     User:
       type: object
       required:

@@ -310,6 +310,24 @@ func (e TokenTypeHint0) Valid() bool {
 	}
 }
 
+// Defines values for UpstreamProvider0.
+const (
+	Google    UpstreamProvider0 = "google"
+	Microsoft UpstreamProvider0 = "microsoft"
+)
+
+// Valid indicates whether the value is a known member of the UpstreamProvider0 enum.
+func (e UpstreamProvider0) Valid() bool {
+	switch e {
+	case Google:
+		return true
+	case Microsoft:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for UserStatus.
 const (
 	Active   UserStatus = "active"
@@ -706,6 +724,32 @@ type GrantType0 string
 // GrantType1 defines model for GrantType.1.
 type GrantType1 = string
 
+// IdentityLink A link between a user and an account at an upstream identity provider.
+// The model has no upstream subject. The subject is an internal key of the service.
+// A user has a maximum of one link for each provider.
+type IdentityLink struct {
+	// CreatedAt The time of the link.
+	CreatedAt time.Time `json:"createdAt"`
+
+	// Email The email from the upstream account at the last login. Only for show to people. The value is not verified. The upstream account owner can change it. A client must not use it to identify the user or to make a security decision. Absent when the service has no email.
+	Email *string `json:"email,omitempty"`
+
+	// LastUsedAt The time of the last login with the link. Absent when the link was never used for a login.
+	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+
+	// Provider The upstream provider. It identifies the link of the user.
+	Provider UpstreamProvider `json:"provider"`
+}
+
+// IdentityLinkPage One page of identity links.
+type IdentityLinkPage struct {
+	// Items Items of the page.
+	Items []IdentityLink `json:"items"`
+
+	// NextPageToken Token for the next page. No value means that this is the last page.
+	NextPageToken *string `json:"nextPageToken,omitempty"`
+}
+
 // InternalServerError The server has an internal error.
 type InternalServerError = Problem
 
@@ -1020,7 +1064,8 @@ type PublishedManifestPage struct {
 	NextPageToken *string `json:"nextPageToken,omitempty"`
 }
 
-// ReauthenticationRequired The token does not show a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+// ReauthenticationRequired The token does not show a fresh login or a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+// A fresh login needs `auth_time` at most 5 minutes old. A fresh MFA login also needs `mfa` in `amr`.
 // The client must start a new authorization request with `max_age`. A token refresh does not help.
 // The header `WWW-Authenticate` is optional in this model, because the 401 response of an operation also covers `Unauthorized`.
 // An operation that uses this model always sends the header with the code `reauthentication_required`.
@@ -1275,6 +1320,17 @@ type Unauthorized = Problem
 // UnprocessableContent The request is well formed, but the server cannot process its content.
 type UnprocessableContent = Problem
 
+// UpstreamProvider Upstream identity provider for login and link. The union is open, so a later release can add a provider.
+type UpstreamProvider struct {
+	union json.RawMessage
+}
+
+// UpstreamProvider0 defines model for UpstreamProvider.0.
+type UpstreamProvider0 string
+
+// UpstreamProvider1 defines model for UpstreamProvider.1.
+type UpstreamProvider1 = string
+
 // User A user.
 type User struct {
 	// CreatedAt Time when the user was created.
@@ -1425,6 +1481,20 @@ type MeApiTokensListParams struct {
 	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
 }
 
+// MeIdentityLinksListParams defines parameters for MeIdentityLinksList.
+type MeIdentityLinksListParams struct {
+	// PageToken Opaque token from `nextPageToken` of the previous page.
+	PageToken *CursorPageParamsPageToken `form:"pageToken,omitempty" json:"pageToken,omitempty"`
+
+	// PageSize Maximum number of items in the page.
+	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody defines parameters for MeIdentityLinksRemove.
+type MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody struct {
+	union json.RawMessage
+}
+
 // MePasskeysListParams defines parameters for MePasskeysList.
 type MePasskeysListParams struct {
 	// PageToken Opaque token from `nextPageToken` of the previous page.
@@ -1485,6 +1555,20 @@ type UserApiTokensListParams struct {
 
 	// PageSize Maximum number of items in the page.
 	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// UserIdentityLinksListParams defines parameters for UserIdentityLinksList.
+type UserIdentityLinksListParams struct {
+	// PageToken Opaque token from `nextPageToken` of the previous page.
+	PageToken *CursorPageParamsPageToken `form:"pageToken,omitempty" json:"pageToken,omitempty"`
+
+	// PageSize Maximum number of items in the page.
+	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody defines parameters for UserIdentityLinksRemove.
+type UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody struct {
+	union json.RawMessage
 }
 
 // UserMfaReset401ApplicationProblemPlusJSONResponseBody defines parameters for UserMfaReset.
@@ -2357,6 +2441,130 @@ func (t *TokenTypeHint) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsUpstreamProvider0 returns the union data inside the UpstreamProvider as a UpstreamProvider0
+func (t UpstreamProvider) AsUpstreamProvider0() (UpstreamProvider0, error) {
+	var body UpstreamProvider0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromUpstreamProvider0 overwrites any union data inside the UpstreamProvider as the provided UpstreamProvider0
+func (t *UpstreamProvider) FromUpstreamProvider0(v UpstreamProvider0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeUpstreamProvider0 performs a merge with any union data inside the UpstreamProvider, using the provided UpstreamProvider0
+func (t *UpstreamProvider) MergeUpstreamProvider0(v UpstreamProvider0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsUpstreamProvider1 returns the union data inside the UpstreamProvider as a UpstreamProvider1
+func (t UpstreamProvider) AsUpstreamProvider1() (UpstreamProvider1, error) {
+	var body UpstreamProvider1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromUpstreamProvider1 overwrites any union data inside the UpstreamProvider as the provided UpstreamProvider1
+func (t *UpstreamProvider) FromUpstreamProvider1(v UpstreamProvider1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeUpstreamProvider1 performs a merge with any union data inside the UpstreamProvider, using the provided UpstreamProvider1
+func (t *UpstreamProvider) MergeUpstreamProvider1(v UpstreamProvider1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t UpstreamProvider) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *UpstreamProvider) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsReauthenticationRequired returns the union data inside the MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody as a ReauthenticationRequired
+func (t MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) AsReauthenticationRequired() (ReauthenticationRequired, error) {
+	var body ReauthenticationRequired
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromReauthenticationRequired overwrites any union data inside the MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody as the provided ReauthenticationRequired
+func (t *MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) FromReauthenticationRequired(v ReauthenticationRequired) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeReauthenticationRequired performs a merge with any union data inside the MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody, using the provided ReauthenticationRequired
+func (t *MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) MergeReauthenticationRequired(v ReauthenticationRequired) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsUnauthorized returns the union data inside the MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody as a Unauthorized
+func (t MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) AsUnauthorized() (Unauthorized, error) {
+	var body Unauthorized
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromUnauthorized overwrites any union data inside the MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody as the provided Unauthorized
+func (t *MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) FromUnauthorized(v Unauthorized) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeUnauthorized performs a merge with any union data inside the MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody, using the provided Unauthorized
+func (t *MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) MergeUnauthorized(v Unauthorized) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsReauthenticationRequired returns the union data inside the MePasskeysRemove401ApplicationProblemPlusJSONResponseBody as a ReauthenticationRequired
 func (t MePasskeysRemove401ApplicationProblemPlusJSONResponseBody) AsReauthenticationRequired() (ReauthenticationRequired, error) {
 	var body ReauthenticationRequired
@@ -2543,6 +2751,68 @@ func (t *MeTotpRemove401ApplicationProblemPlusJSONResponseBody) UnmarshalJSON(b 
 	return err
 }
 
+// AsReauthenticationRequired returns the union data inside the UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody as a ReauthenticationRequired
+func (t UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) AsReauthenticationRequired() (ReauthenticationRequired, error) {
+	var body ReauthenticationRequired
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromReauthenticationRequired overwrites any union data inside the UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody as the provided ReauthenticationRequired
+func (t *UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) FromReauthenticationRequired(v ReauthenticationRequired) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeReauthenticationRequired performs a merge with any union data inside the UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody, using the provided ReauthenticationRequired
+func (t *UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) MergeReauthenticationRequired(v ReauthenticationRequired) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsUnauthorized returns the union data inside the UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody as a Unauthorized
+func (t UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) AsUnauthorized() (Unauthorized, error) {
+	var body Unauthorized
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromUnauthorized overwrites any union data inside the UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody as the provided Unauthorized
+func (t *UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) FromUnauthorized(v Unauthorized) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeUnauthorized performs a merge with any union data inside the UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody, using the provided Unauthorized
+func (t *UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) MergeUnauthorized(v Unauthorized) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsReauthenticationRequired returns the union data inside the UserMfaReset401ApplicationProblemPlusJSONResponseBody as a ReauthenticationRequired
 func (t UserMfaReset401ApplicationProblemPlusJSONResponseBody) AsReauthenticationRequired() (ReauthenticationRequired, error) {
 	var body ReauthenticationRequired
@@ -2695,6 +2965,12 @@ type ServerInterface interface {
 	// (DELETE /v1/me/api-tokens/{tokenId})
 	MeApiTokensRevoke(w http.ResponseWriter, r *http.Request, tokenId string)
 
+	// (GET /v1/me/identity-links)
+	MeIdentityLinksList(w http.ResponseWriter, r *http.Request, params MeIdentityLinksListParams)
+
+	// (DELETE /v1/me/identity-links/{provider})
+	MeIdentityLinksRemove(w http.ResponseWriter, r *http.Request, provider string)
+
 	// (GET /v1/me/mfa)
 	MeMfaGet(w http.ResponseWriter, r *http.Request)
 
@@ -2742,6 +3018,12 @@ type ServerInterface interface {
 
 	// (GET /v1/users/{userId}/api-tokens)
 	UserApiTokensList(w http.ResponseWriter, r *http.Request, userId string, params UserApiTokensListParams)
+
+	// (GET /v1/users/{userId}/identity-links)
+	UserIdentityLinksList(w http.ResponseWriter, r *http.Request, userId string, params UserIdentityLinksListParams)
+
+	// (DELETE /v1/users/{userId}/identity-links/{provider})
+	UserIdentityLinksRemove(w http.ResponseWriter, r *http.Request, userId string, provider string)
 
 	// (POST /v1/users/{userId}/invites)
 	InvitesCreate(w http.ResponseWriter, r *http.Request, userId string)
@@ -3734,6 +4016,78 @@ func (siw *ServerInterfaceWrapper) MeApiTokensRevoke(w http.ResponseWriter, r *h
 	handler.ServeHTTP(w, r)
 }
 
+// MeIdentityLinksList operation middleware
+func (siw *ServerInterfaceWrapper) MeIdentityLinksList(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params MeIdentityLinksListParams
+
+	// ------------- Optional query parameter "pageToken" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageToken", r.URL.Query(), &params.PageToken, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageToken"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageToken", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageSize", r.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageSize"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageSize", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MeIdentityLinksList(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// MeIdentityLinksRemove operation middleware
+func (siw *ServerInterfaceWrapper) MeIdentityLinksRemove(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "provider" -------------
+	var provider string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "provider", r.PathValue("provider"), &provider, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MeIdentityLinksRemove(w, r, provider)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // MeMfaGet operation middleware
 func (siw *ServerInterfaceWrapper) MeMfaGet(w http.ResponseWriter, r *http.Request) {
 
@@ -4236,6 +4590,96 @@ func (siw *ServerInterfaceWrapper) UserApiTokensList(w http.ResponseWriter, r *h
 	handler.ServeHTTP(w, r)
 }
 
+// UserIdentityLinksList operation middleware
+func (siw *ServerInterfaceWrapper) UserIdentityLinksList(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "userId" -------------
+	var userId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", r.PathValue("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UserIdentityLinksListParams
+
+	// ------------- Optional query parameter "pageToken" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageToken", r.URL.Query(), &params.PageToken, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageToken"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageToken", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageSize", r.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageSize"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageSize", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UserIdentityLinksList(w, r, userId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UserIdentityLinksRemove operation middleware
+func (siw *ServerInterfaceWrapper) UserIdentityLinksRemove(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "userId" -------------
+	var userId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", r.PathValue("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "provider" -------------
+	var provider string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "provider", r.PathValue("provider"), &provider, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UserIdentityLinksRemove(w, r, userId, provider)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // InvitesCreate operation middleware
 func (siw *ServerInterfaceWrapper) InvitesCreate(w http.ResponseWriter, r *http.Request) {
 
@@ -4724,6 +5168,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/me/api-tokens", wrapper.MeApiTokensList)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/me/api-tokens", wrapper.MeApiTokensCreate)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/me/api-tokens/{tokenId}", wrapper.MeApiTokensRevoke)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/me/identity-links", wrapper.MeIdentityLinksList)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/me/identity-links/{provider}", wrapper.MeIdentityLinksRemove)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/me/mfa", wrapper.MeMfaGet)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/me/passkeys", wrapper.MePasskeysList)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/me/passkeys/{passkeyId}", wrapper.MePasskeysRemove)
@@ -4740,6 +5186,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/users/{userId}", wrapper.UsersGet)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/v1/users/{userId}", wrapper.UsersUpdate)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/users/{userId}/api-tokens", wrapper.UserApiTokensList)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/users/{userId}/identity-links", wrapper.UserIdentityLinksList)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/users/{userId}/identity-links/{provider}", wrapper.UserIdentityLinksRemove)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/users/{userId}/invites", wrapper.InvitesCreate)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/users/{userId}/mfa", wrapper.UserMfaReset)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/users/{userId}/mfa", wrapper.UserMfaGet)
@@ -7553,6 +8001,194 @@ func (response MeApiTokensRevoke500ApplicationProblemPlusJSONResponse) VisitMeAp
 	return err
 }
 
+type MeIdentityLinksListRequestObject struct {
+	Params MeIdentityLinksListParams
+}
+
+type MeIdentityLinksListResponseObject interface {
+	VisitMeIdentityLinksListResponse(w http.ResponseWriter) error
+}
+
+type MeIdentityLinksList200JSONResponse IdentityLinkPage
+
+func (response MeIdentityLinksList200JSONResponse) VisitMeIdentityLinksListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeIdentityLinksList400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response MeIdentityLinksList400ApplicationProblemPlusJSONResponse) VisitMeIdentityLinksListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeIdentityLinksList401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response MeIdentityLinksList401ApplicationProblemPlusJSONResponse) VisitMeIdentityLinksListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeIdentityLinksList403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response MeIdentityLinksList403ApplicationProblemPlusJSONResponse) VisitMeIdentityLinksListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeIdentityLinksList500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response MeIdentityLinksList500ApplicationProblemPlusJSONResponse) VisitMeIdentityLinksListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeIdentityLinksRemoveRequestObject struct {
+	Provider string `json:"provider"`
+}
+
+type MeIdentityLinksRemoveResponseObject interface {
+	VisitMeIdentityLinksRemoveResponse(w http.ResponseWriter) error
+}
+
+type MeIdentityLinksRemove204Response struct {
+}
+
+func (response MeIdentityLinksRemove204Response) VisitMeIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type MeIdentityLinksRemove400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response MeIdentityLinksRemove400ApplicationProblemPlusJSONResponse) VisitMeIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeIdentityLinksRemove401ResponseHeaders struct {
+	WWWAuthenticate *string
+}
+
+type MeIdentityLinksRemove401ApplicationProblemPlusJSONResponse struct {
+	Body    MeIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody
+	Headers MeIdentityLinksRemove401ResponseHeaders
+}
+
+func (response MeIdentityLinksRemove401ApplicationProblemPlusJSONResponse) VisitMeIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body.union); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.WWWAuthenticate != nil {
+		w.Header().Set("WWW-Authenticate", fmt.Sprint(*response.Headers.WWWAuthenticate))
+	}
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeIdentityLinksRemove403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response MeIdentityLinksRemove403ApplicationProblemPlusJSONResponse) VisitMeIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeIdentityLinksRemove404ApplicationProblemPlusJSONResponse NotFound
+
+func (response MeIdentityLinksRemove404ApplicationProblemPlusJSONResponse) VisitMeIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeIdentityLinksRemove409ApplicationProblemPlusJSONResponse Conflict
+
+func (response MeIdentityLinksRemove409ApplicationProblemPlusJSONResponse) VisitMeIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeIdentityLinksRemove500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response MeIdentityLinksRemove500ApplicationProblemPlusJSONResponse) VisitMeIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type MeMfaGetRequestObject struct {
 }
 
@@ -9085,6 +9721,210 @@ func (response UserApiTokensList500ApplicationProblemPlusJSONResponse) VisitUser
 	return err
 }
 
+type UserIdentityLinksListRequestObject struct {
+	UserId string `json:"userId"`
+	Params UserIdentityLinksListParams
+}
+
+type UserIdentityLinksListResponseObject interface {
+	VisitUserIdentityLinksListResponse(w http.ResponseWriter) error
+}
+
+type UserIdentityLinksList200JSONResponse IdentityLinkPage
+
+func (response UserIdentityLinksList200JSONResponse) VisitUserIdentityLinksListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserIdentityLinksList400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response UserIdentityLinksList400ApplicationProblemPlusJSONResponse) VisitUserIdentityLinksListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserIdentityLinksList401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response UserIdentityLinksList401ApplicationProblemPlusJSONResponse) VisitUserIdentityLinksListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserIdentityLinksList403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response UserIdentityLinksList403ApplicationProblemPlusJSONResponse) VisitUserIdentityLinksListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserIdentityLinksList404ApplicationProblemPlusJSONResponse NotFound
+
+func (response UserIdentityLinksList404ApplicationProblemPlusJSONResponse) VisitUserIdentityLinksListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserIdentityLinksList500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response UserIdentityLinksList500ApplicationProblemPlusJSONResponse) VisitUserIdentityLinksListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserIdentityLinksRemoveRequestObject struct {
+	UserId   string `json:"userId"`
+	Provider string `json:"provider"`
+}
+
+type UserIdentityLinksRemoveResponseObject interface {
+	VisitUserIdentityLinksRemoveResponse(w http.ResponseWriter) error
+}
+
+type UserIdentityLinksRemove204Response struct {
+}
+
+func (response UserIdentityLinksRemove204Response) VisitUserIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type UserIdentityLinksRemove400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response UserIdentityLinksRemove400ApplicationProblemPlusJSONResponse) VisitUserIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserIdentityLinksRemove401ResponseHeaders struct {
+	WWWAuthenticate *string
+}
+
+type UserIdentityLinksRemove401ApplicationProblemPlusJSONResponse struct {
+	Body    UserIdentityLinksRemove401ApplicationProblemPlusJSONResponseBody
+	Headers UserIdentityLinksRemove401ResponseHeaders
+}
+
+func (response UserIdentityLinksRemove401ApplicationProblemPlusJSONResponse) VisitUserIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body.union); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.WWWAuthenticate != nil {
+		w.Header().Set("WWW-Authenticate", fmt.Sprint(*response.Headers.WWWAuthenticate))
+	}
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserIdentityLinksRemove403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response UserIdentityLinksRemove403ApplicationProblemPlusJSONResponse) VisitUserIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserIdentityLinksRemove404ApplicationProblemPlusJSONResponse NotFound
+
+func (response UserIdentityLinksRemove404ApplicationProblemPlusJSONResponse) VisitUserIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserIdentityLinksRemove409ApplicationProblemPlusJSONResponse Conflict
+
+func (response UserIdentityLinksRemove409ApplicationProblemPlusJSONResponse) VisitUserIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserIdentityLinksRemove500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response UserIdentityLinksRemove500ApplicationProblemPlusJSONResponse) VisitUserIdentityLinksRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type InvitesCreateRequestObject struct {
 	UserId string `json:"userId"`
 }
@@ -10066,6 +10906,12 @@ type StrictServerInterface interface {
 	// (DELETE /v1/me/api-tokens/{tokenId})
 	MeApiTokensRevoke(ctx context.Context, request MeApiTokensRevokeRequestObject) (MeApiTokensRevokeResponseObject, error)
 
+	// (GET /v1/me/identity-links)
+	MeIdentityLinksList(ctx context.Context, request MeIdentityLinksListRequestObject) (MeIdentityLinksListResponseObject, error)
+
+	// (DELETE /v1/me/identity-links/{provider})
+	MeIdentityLinksRemove(ctx context.Context, request MeIdentityLinksRemoveRequestObject) (MeIdentityLinksRemoveResponseObject, error)
+
 	// (GET /v1/me/mfa)
 	MeMfaGet(ctx context.Context, request MeMfaGetRequestObject) (MeMfaGetResponseObject, error)
 
@@ -10113,6 +10959,12 @@ type StrictServerInterface interface {
 
 	// (GET /v1/users/{userId}/api-tokens)
 	UserApiTokensList(ctx context.Context, request UserApiTokensListRequestObject) (UserApiTokensListResponseObject, error)
+
+	// (GET /v1/users/{userId}/identity-links)
+	UserIdentityLinksList(ctx context.Context, request UserIdentityLinksListRequestObject) (UserIdentityLinksListResponseObject, error)
+
+	// (DELETE /v1/users/{userId}/identity-links/{provider})
+	UserIdentityLinksRemove(ctx context.Context, request UserIdentityLinksRemoveRequestObject) (UserIdentityLinksRemoveResponseObject, error)
 
 	// (POST /v1/users/{userId}/invites)
 	InvitesCreate(ctx context.Context, request InvitesCreateRequestObject) (InvitesCreateResponseObject, error)
@@ -10997,6 +11849,58 @@ func (sh *strictHandler) MeApiTokensRevoke(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// MeIdentityLinksList operation middleware
+func (sh *strictHandler) MeIdentityLinksList(w http.ResponseWriter, r *http.Request, params MeIdentityLinksListParams) {
+	var request MeIdentityLinksListRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.MeIdentityLinksList(ctx, request.(MeIdentityLinksListRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "MeIdentityLinksList")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(MeIdentityLinksListResponseObject); ok {
+		if err := validResponse.VisitMeIdentityLinksListResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// MeIdentityLinksRemove operation middleware
+func (sh *strictHandler) MeIdentityLinksRemove(w http.ResponseWriter, r *http.Request, provider string) {
+	var request MeIdentityLinksRemoveRequestObject
+
+	request.Provider = provider
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.MeIdentityLinksRemove(ctx, request.(MeIdentityLinksRemoveRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "MeIdentityLinksRemove")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(MeIdentityLinksRemoveResponseObject); ok {
+		if err := validResponse.VisitMeIdentityLinksRemoveResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // MeMfaGet operation middleware
 func (sh *strictHandler) MeMfaGet(w http.ResponseWriter, r *http.Request) {
 	var request MeMfaGetRequestObject
@@ -11429,6 +12333,60 @@ func (sh *strictHandler) UserApiTokensList(w http.ResponseWriter, r *http.Reques
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UserApiTokensListResponseObject); ok {
 		if err := validResponse.VisitUserApiTokensListResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UserIdentityLinksList operation middleware
+func (sh *strictHandler) UserIdentityLinksList(w http.ResponseWriter, r *http.Request, userId string, params UserIdentityLinksListParams) {
+	var request UserIdentityLinksListRequestObject
+
+	request.UserId = userId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UserIdentityLinksList(ctx, request.(UserIdentityLinksListRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UserIdentityLinksList")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UserIdentityLinksListResponseObject); ok {
+		if err := validResponse.VisitUserIdentityLinksListResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UserIdentityLinksRemove operation middleware
+func (sh *strictHandler) UserIdentityLinksRemove(w http.ResponseWriter, r *http.Request, userId string, provider string) {
+	var request UserIdentityLinksRemoveRequestObject
+
+	request.UserId = userId
+	request.Provider = provider
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UserIdentityLinksRemove(ctx, request.(UserIdentityLinksRemoveRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UserIdentityLinksRemove")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UserIdentityLinksRemoveResponseObject); ok {
+		if err := validResponse.VisitUserIdentityLinksRemoveResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

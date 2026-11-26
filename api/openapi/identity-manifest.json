@@ -66,6 +66,18 @@
       "description": "Reset the MFA of any user. An operation with this permission also needs identity:admin."
     },
     {
+      "key": "identity:identity_link:manage_own",
+      "description": "Read and remove the own upstream links."
+    },
+    {
+      "key": "identity:identity_link:read",
+      "description": "Read the upstream links of any user."
+    },
+    {
+      "key": "identity:identity_link:remove",
+      "description": "Remove the upstream link of any user. An operation with this permission also needs identity:admin."
+    },
+    {
       "key": "identity:agent:read",
       "description": "Read agents."
     },
@@ -100,6 +112,9 @@
         "identity:mfa:manage_own",
         "identity:mfa:read",
         "identity:mfa:reset",
+        "identity:identity_link:manage_own",
+        "identity:identity_link:read",
+        "identity:identity_link:remove",
         "identity:agent:read",
         "identity:agent:write",
         "identity:token:exchange"
@@ -119,7 +134,8 @@
       "description": "Role of every active user. Every active user has it implicitly. It has no database row. A role list shows it with the source config.",
       "permissions": [
         "identity:api_token:manage_own",
-        "identity:mfa:manage_own"
+        "identity:mfa:manage_own",
+        "identity:identity_link:manage_own"
       ]
     }
   ]
