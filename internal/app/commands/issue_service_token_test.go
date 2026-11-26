@@ -137,6 +137,7 @@ type fixture struct {
 	key     *ecdsa.PrivateKey
 	sign    *ecdsa.PrivateKey
 	log     *bytes.Buffer
+	signer  *countingSigner
 }
 
 func newKey(t *testing.T) *ecdsa.PrivateKey {
@@ -163,7 +164,7 @@ func jwkOf(t *testing.T, k *ecdsa.PrivateKey, kid string) domain.PublicJWK {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{key: newKey(t), sign: newKey(t), log: &bytes.Buffer{}}
+	f := &fixture{key: newKey(t), sign: newKey(t), log: &bytes.Buffer{}, signer: &countingSigner{}}
 	f.clients = &fakeClients{
 		clients: map[string]domain.Client{
 			"helpdesk": {ID: "helpdesk", Type: domain.ClientTypeService, App: "helpdesk"},
@@ -191,7 +192,7 @@ func newFixture(t *testing.T) *fixture {
 		Manifests:   &fakeManifests{apps: map[string]bool{"demo": true, "identity": true}},
 		JTI:         f.jti,
 		Keys:        fakeKeySource{key: tokensigner.Key{KID: "sig-1", Private: f.sign}},
-		Signer:      jose.Signer{},
+		Signer:      f.signer,
 		Parser:      jose.AssertionParser{},
 		Log:         slog.New(slog.NewTextHandler(f.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Now:         func() time.Time { return now },
@@ -577,5 +578,64 @@ func TestIssue2_U10m_LogTruncatesAtCharacter(t *testing.T) {
 	want := "client.id_unverified=" + strings.Repeat("a", 63)
 	if !strings.Contains(logText, want+"\n") && !strings.Contains(logText, want+" ") {
 		t.Fatalf("the log field is not cut at the character:\n%s", logText)
+	}
+}
+
+// countingSigner counts the calls of the signer.
+type countingSigner struct {
+	calls int
+}
+
+func (s *countingSigner) Sign(key tokensigner.Key, claims map[string]any, header map[string]any) (string, error) {
+	s.calls++
+	return jose.Signer{}.Sign(key, claims, header)
+}
+
+// Issue20_U3: the token of a service client has the claim app with the app of
+// the client.
+func TestIssue20_U3_AppClaim(t *testing.T) {
+	f := newFixture(t)
+	res, err := f.cmd.Execute(context.Background(), request(f.assertion(t, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, err := gojose.ParseSignedCompact(res.AccessToken, []gojose.SignatureAlgorithm{gojose.ES256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := obj.Verify(&f.sign.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c map[string]any
+	if err := json.Unmarshal(payload, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c["app"] != "helpdesk" || c["aud"] != "demo" || c["principal_type"] != "service" {
+		t.Fatalf("claims = %v", c)
+	}
+}
+
+// Issue20_U4: a client with an empty app or a bad app gets server_error and no
+// token. The signer is not called.
+func TestIssue20_U4_BadApp(t *testing.T) {
+	for name, app := range map[string]string{"empty app": "", "bad app": "Bad App"} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			c := f.clients.clients["helpdesk"]
+			c.App = app
+			f.clients.clients["helpdesk"] = c
+			res, err := f.cmd.Execute(context.Background(), request(f.assertion(t, nil)))
+			if oauthCode(t, err) != "server_error" {
+				t.Fatalf("error = %v", err)
+			}
+			if res.AccessToken != "" || f.signer.calls != 0 {
+				t.Fatalf("token = %q, signer calls = %d", res.AccessToken, f.signer.calls)
+			}
+			logText := f.log.String()
+			if !strings.Contains(logText, "level=WARN") || !strings.Contains(logText, "error_code=server_error") || !strings.Contains(logText, "client.id=helpdesk") {
+				t.Fatalf("log:\n%s", logText)
+			}
+		})
 	}
 }

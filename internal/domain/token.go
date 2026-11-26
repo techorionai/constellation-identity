@@ -45,14 +45,17 @@ type ServiceToken struct {
 	Issuer   string
 	Audience string
 	ClientID string
-	Scopes   []string
-	Now      time.Time
-	JTI      string
+	// App is the app key of the service client. The claim app is present only
+	// if App is not empty.
+	App    string
+	Scopes []string
+	Now    time.Time
+	JTI    string
 }
 
 // Claims returns the claims of AccessTokenClaims in the contract.
 func (t ServiceToken) Claims() map[string]any {
-	return map[string]any{
+	c := map[string]any{
 		"iss":            t.Issuer,
 		"sub":            t.ClientID,
 		"aud":            t.Audience,
@@ -64,4 +67,8 @@ func (t ServiceToken) Claims() map[string]any {
 		"scope":          strings.Join(t.Scopes, " "),
 		"principal_type": PrincipalService,
 	}
+	if t.App != "" {
+		c["app"] = t.App
+	}
+	return c
 }

@@ -201,12 +201,18 @@ func (c *IssueServiceTokenCommand) issue(ctx context.Context, in IssueServiceTok
 		return IssueServiceTokenResult{}, fail(apperrors.OAuthInvalidScope, "The scope is required. Each scope must be a permission of the audience that the client has.", err)
 	}
 
+	// The app of the client goes into the token. A bad app is a data fault: no
+	// service accepts the token, so the service does not issue it.
+	if !domain.ValidAppKey(client.App) {
+		return IssueServiceTokenResult{}, fail(apperrors.OAuthServerError, "The server has an internal error.", errors.New("the client has no valid app"))
+	}
+
 	key, err := c.d.Keys.ActiveKey()
 	if err != nil {
 		return IssueServiceTokenResult{}, fail(apperrors.OAuthTemporarilyUnavailable, "The service is not available. Try again.", err)
 	}
 	token := domain.ServiceToken{
-		Issuer: c.d.Issuer, Audience: in.Audience, ClientID: client.ID, Scopes: scopes, Now: now, JTI: c.d.NewID(),
+		Issuer: c.d.Issuer, Audience: in.Audience, ClientID: client.ID, App: client.App, Scopes: scopes, Now: now, JTI: c.d.NewID(),
 	}
 	signed, err := c.d.Signer.Sign(key, token.Claims(), map[string]any{"typ": domain.AccessTokenType})
 	if err != nil {

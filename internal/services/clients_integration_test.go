@@ -126,6 +126,10 @@ func TestIssue2Integration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Issue20_I1: the token has the claim app with the app of the client.
+		if _, c := testserver.JWTClaims(t, tok); c["app"] != "demo" || c["principal_type"] != "service" || c["sub"] != "demo" {
+			t.Fatalf("Issue20_I1: claims = %v", c)
+		}
 		if p.ID != "demo" || p.Type != auth.PrincipalService || p.ClientID != "demo" ||
 			!slices.Equal(p.Scopes, []string{"identity:manifest:publish"}) {
 			t.Fatalf("principal = %+v", p)
