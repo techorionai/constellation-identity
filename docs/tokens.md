@@ -106,7 +106,7 @@ A client must make the `code_verifier` as RFC 7636 section 4.1 says: a random va
 
 `auth_time` is the time of the last login of the session (`sessions.auth_time`). A login of the same user changes it. It is never `created_at`.
 
-`amr` (RFC 8176) has the methods of the last login of the session: `["pwd"]` for a password only, `["pwd","otp","mfa"]` for a password and a TOTP code, and `["pwd","rec","mfa"]` for a password and a recovery code. A service that needs MFA checks that `amr` has `mfa`. A session with no recorded method (a session from before the upgrade) gives no `amr` claim. The access token of a user from the code flow also has `amr` and `auth_time`, the values of the code. Service tokens, agent tokens, exchange tokens, and API tokens have neither claim. A token with `act` does not satisfy MFA.
+`amr` (RFC 8176) has the methods of the last login of the session: `["pwd"]` for a password only, `["pwd","otp","mfa"]` for a password and a TOTP code, and `["pwd","rec","mfa"]` for a password and a recovery code, `["hwk","user","mfa"]` for a passkey with no password, and `["pwd","hwk","user","mfa"]` for a password and a passkey. The method `hwk` (RFC 8176) is a proof of a key that the user holds, a passkey. The method `user` means that the authenticator verified the user (a PIN or a biometric). A passkey that was used as a second factor with no user verification gives `["pwd","hwk","mfa"]`. A service that needs MFA checks that `amr` has `mfa`. A session with no recorded method (a session from before the upgrade) gives no `amr` claim. The access token of a user from the code flow also has `amr` and `auth_time`, the values of the code. Service tokens, agent tokens, exchange tokens, and API tokens have neither claim. A token with `act` does not satisfy MFA.
 
 The token request for a code runs these checks in order: the client, the read of the code (a read does not delete it), the client of the code, the `redirect_uri`, the `code_verifier`, the session and the user, the claim of the code (`GETDEL`), the marker of the used code, and the tokens. A Valkey fault gives `temporarily_unavailable` (503) and no token. It changes no session.
 
@@ -133,7 +133,7 @@ Reuse of a code: the service keeps a marker for 10 minutes. A request for a used
 
 ## Step-up (fresh MFA login)
 
-An operation that changes the MFA of a user (`MeTotp_remove` and `UserMfa_reset`) needs a fresh MFA login: `amr` has `mfa` and `auth_time` is 5 minutes old or less. If the token does not show this, the response is 401 (RFC 9470):
+An operation that changes the MFA of a user (`MeTotp_remove`, `MePasskeys_update`, `MePasskeys_remove`, and `UserMfa_reset`) needs a fresh MFA login: `amr` has `mfa` and `auth_time` is 5 minutes old or less. If the token does not show this, the response is 401 (RFC 9470):
 
 - Content type `application/problem+json`.
 - Header `WWW-Authenticate: Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`.
