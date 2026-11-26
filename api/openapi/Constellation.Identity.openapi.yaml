@@ -1807,6 +1807,14 @@ paths:
                 $ref: '#/components/schemas/InternalServerError'
         '503':
           description: The service is not available.
+          headers:
+            Retry-After:
+              required: false
+              description: Seconds to wait before the next request. Optional.
+              schema:
+                type: integer
+                format: int32
+                minimum: 0
           content:
             application/problem+json:
               schema:
@@ -2468,6 +2476,14 @@ paths:
                 $ref: '#/components/schemas/InternalServerError'
         '503':
           description: The service is not available.
+          headers:
+            Retry-After:
+              required: false
+              description: Seconds to wait before the next request. Optional.
+              schema:
+                type: integer
+                format: int32
+                minimum: 0
           content:
             application/problem+json:
               schema:
@@ -4034,6 +4050,13 @@ components:
       allOf:
         - $ref: '#/components/schemas/Problem'
       description: The request conflicts with the state of the resource.
+    ContentTooLarge:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+      description: |-
+        The request body is larger than the limit of the service. The code is `content_too_large`.
+        The operator of the service sets the limit.
     DiscoveryDocument:
       type: object
       required:

@@ -64,6 +64,10 @@ func TestIssue4CodeFlowIntegration(t *testing.T) {
 		if hdr["typ"] != "at+jwt" || claims["aud"] != "demo" || claims["principal_type"] != "user" || claims["scope"] != "demo:ticket:read" {
 			t.Fatalf("access token = %v %v", hdr, claims)
 		}
+		// Issue20_I3: the user token has no app claim.
+		if _, has := claims["app"]; has {
+			t.Fatalf("Issue20_I3: claims = %v", claims)
+		}
 		ih, ic := testserver.JWTClaims(t, tr.IDToken)
 		if ih["typ"] != "JWT" || ic["nonce"] != "nonce-1" || ic["aud"] != "demo-ui" || ic["email"] != "agent@example.com" || ic["sid"] != f.sessionID(web) {
 			t.Fatalf("id token = %v %v", ih, ic)

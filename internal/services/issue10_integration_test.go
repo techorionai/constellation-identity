@@ -354,6 +354,10 @@ func TestIssue10Integration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Issue20_I2: the exchange token has no app claim, also for a service client with an app.
+		if _, c := testserver.JWTClaims(t, tok); c["app"] != nil || c["principal_type"] != "user" {
+			t.Fatalf("Issue20_I2: claims = %v", c)
+		}
 		p, err := x.verifier("extra").Verify(ctx, tok)
 		if err != nil {
 			t.Fatal(err)
@@ -405,6 +409,10 @@ func TestIssue10Integration(t *testing.T) {
 		tok, err := x.exchange(demo, auth.ExchangeRequest{SubjectToken: subject, Audience: "extra", Scopes: []string{extraRead, extraWrite}})
 		if err != nil {
 			t.Fatal(err)
+		}
+		// Issue20_I2: no app claim without an agent.
+		if _, c := testserver.JWTClaims(t, tok); c["app"] != nil || c["principal_type"] != "user" {
+			t.Fatalf("Issue20_I2: claims = %v", c)
 		}
 		p, err := x.verifier("extra").Verify(ctx, tok)
 		if err != nil || p.ID != userID || p.Act != nil || !slices.Equal(p.Scopes, []string{extraRead, extraWrite}) {

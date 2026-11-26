@@ -13,12 +13,15 @@ The token is a JWT (RFC 9068) with the claims of `AccessTokenClaims` in `constel
 | `aud` | The audience of the request, as one string |
 | `sub`, `client_id` | The client ID |
 | `principal_type` | `service` |
+| `app` | The key of the app of the service client. It is not the audience. Only access tokens of the client credentials grant have it, with `principal_type` `service`. Exchange tokens, user tokens, and API tokens do not have it. A verifier uses `app` only when `principal_type` is `service`. |
 | `scope` | The granted permission keys, separated by spaces |
 | `iat`, `nbf` | The time of the request |
 | `exp` | `iat` plus 5 minutes |
 | `jti` | A new UUID |
 
 A token has one audience. It has only scopes that start with `<audience>:` and that the client has through its roles that are not pending, and through the implicit role `identity:service`. The response has no refresh token. A changed manifest does not change a token that exists. The token ends in 5 minutes at most.
+
+The `app` claim has the app of the client at the time of issue. A change of the app of a client in the clients file takes effect for new tokens only. A token that exists keeps its app for its life of 5 minutes at most. If the app of the client is empty or is not an app key, the service issues no token. The response is `server_error`.
 
 ## The request
 
@@ -212,6 +215,7 @@ Each field has one value. A repeated field gives `invalid_request`.
 ### Result
 
 - Claims: `iss`, `sub` (the user), `aud` (the audience), `client_id` (the authenticated client), `scope`, `principal_type` `user`, `jti`, `iat`, `nbf`, `exp`, and `act` if there is an actor.
+- The exchange token has no `app` claim, also if the client has an app. It acts for a user, so it must not give the app of the client.
 - `exp` is the lower value of `iat` + 5 minutes and the `exp` of the subject token. `expires_in` is at least 10.
 - The response has `access_token`, `token_type` `Bearer`, `expires_in`, `scope`, and `issued_token_type`. It has no `refresh_token` and no `id_token`. It has `Cache-Control: no-store` and `Pragma: no-cache`.
 - An exchanged token is not valid at `/oauth/userinfo` (401). It cannot call `/v1`, because its audience is never `identity`.
