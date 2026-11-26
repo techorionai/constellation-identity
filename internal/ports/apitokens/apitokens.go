@@ -34,6 +34,11 @@ type Repository interface {
 	// RevokeAllOfUser revokes all active tokens of a user. It returns the number
 	// of tokens that it revoked.
 	RevokeAllOfUser(ctx context.Context, userID string, now time.Time) (int, error)
+	// RevokeWithMethod revokes the active tokens of a user that have the method
+	// in amr. A token with an empty amr is not revoked. A token that is revoked
+	// already keeps its revoked_at. It returns the number of tokens that it
+	// revoked.
+	RevokeWithMethod(ctx context.Context, userID, method string, now time.Time) (int, error)
 	// TouchLastUsed sets last_used_at to now if it is null or older than
 	// interval.
 	TouchLastUsed(ctx context.Context, id string, now time.Time, interval time.Duration) error

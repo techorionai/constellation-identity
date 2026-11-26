@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -132,6 +133,22 @@ func (r *APITokens) Revoke(_ context.Context, id, owner string, now time.Time) (
 		}
 	}
 	return false, nil
+}
+
+// RevokeWithMethod revokes the active tokens of a user that have the method in
+// amr. A token that is revoked already keeps its revoked_at.
+func (r *APITokens) RevokeWithMethod(_ context.Context, userID, method string, now time.Time) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for h, t := range r.Rows {
+		if t.UserID == userID && t.RevokedAt == nil && slices.Contains(t.AMR, method) {
+			t.RevokedAt = &now
+			r.Rows[h] = t
+			n++
+		}
+	}
+	return n, nil
 }
 
 // RevokeAllOfUser revokes the active tokens of a user.

@@ -91,13 +91,13 @@ const (
 // MethodsPasskeyLogin is the amr of a login with a passkey and no password.
 func MethodsPasskeyLogin() []string { return []string{AMRHardwareKey, AMRUser, AMRMFA} }
 
-// MethodsPasskeySecondFactor is the amr of a login with a password and a
-// passkey. The method user is set when the authenticator verified the user.
-func MethodsPasskeySecondFactor(verified bool) []string {
+// PasskeyFactor returns the factor values of a passkey as a second factor. The
+// value user is set when the authenticator verified the user.
+func PasskeyFactor(verified bool) []string {
 	if verified {
-		return []string{AMRPassword, AMRHardwareKey, AMRUser, AMRMFA}
+		return []string{AMRHardwareKey, AMRUser}
 	}
-	return []string{AMRPassword, AMRHardwareKey, AMRMFA}
+	return []string{AMRHardwareKey}
 }
 
 // Ceremony is the state of a WebAuthn ceremony between the options and the

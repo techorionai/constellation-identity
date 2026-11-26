@@ -36,6 +36,7 @@ func TestU3_RateLimitDefaults(t *testing.T) {
 		"manifest_publish":  {60, time.Hour},
 		"mfa_verify":        {30, time.Minute},
 		"passkey":           {30, time.Minute},
+		"idp":               {30, time.Minute},
 	}
 	if len(rules) != len(want) || len(ratelimit.Buckets()) != len(want) {
 		t.Fatalf("rules = %v", rules)

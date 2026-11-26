@@ -129,6 +129,8 @@ func (s *Server) UserMfaReset(ctx context.Context, r gen.UserMfaResetRequestObje
 		return nil, userNotFound()
 	case errors.Is(err, commands.ErrMFARequired):
 		return nil, apperrors.NewConflictCode("mfa_required", "An administrator cannot reset the own MFA with this operation. Use the subcommand reset-mfa.")
+	case errors.Is(err, commands.ErrLastLoginMethod):
+		return nil, lastLoginMethod()
 	case err != nil:
 		return nil, err
 	}

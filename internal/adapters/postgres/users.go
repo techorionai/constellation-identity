@@ -79,9 +79,10 @@ func (r *Users) get(ctx context.Context, query string, arg any) (domain.User, er
 	return u, nil
 }
 
-// Activate sets the password hash and the status active.
+// Activate sets the password hash and the status active. An empty hash means
+// no password (an invite that an upstream account accepted).
 func (r *Users) Activate(ctx context.Context, id, passwordHash string, now time.Time) error {
-	return r.update(ctx, `UPDATE users SET password_hash = $2, status = 'active', updated_at = $3 WHERE id = $1`,
+	return r.update(ctx, `UPDATE users SET password_hash = NULLIF($2, ''), status = 'active', updated_at = $3 WHERE id = $1`,
 		id, passwordHash, now)
 }
 

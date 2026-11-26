@@ -25,7 +25,9 @@ import (
 	"github.com/techorionai/constellation-identity/internal/ports/apitokens"
 	"github.com/techorionai/constellation-identity/internal/ports/clientroles"
 	"github.com/techorionai/constellation-identity/internal/ports/clients"
+	"github.com/techorionai/constellation-identity/internal/ports/identitylinks"
 	"github.com/techorionai/constellation-identity/internal/ports/manifests"
+	"github.com/techorionai/constellation-identity/internal/ports/mfa"
 	"github.com/techorionai/constellation-identity/internal/ports/onetimetokens"
 	"github.com/techorionai/constellation-identity/internal/ports/refreshtokens"
 	"github.com/techorionai/constellation-identity/internal/ports/sessions"
@@ -49,6 +51,12 @@ type AdminDeps struct {
 	Lock        adminlock.Locker
 	Tx          transaction.Transactor
 	Log         *slog.Logger
+	// MFA, Links, PasskeysOn, and ProviderOn give the login methods of a user for
+	// the enable rule. A nil repository means that the user has none of that kind.
+	MFA        mfa.Repository
+	Links      identitylinks.Repository
+	PasskeysOn bool
+	ProviderOn domain.ProviderOn
 	// Now is the clock. The default is time.Now.
 	Now Clock
 }
@@ -296,9 +304,9 @@ func (a *Admin) UpdateUser(ctx context.Context, actor, id string, name *string, 
 				}
 			}
 		case disabled != nil && !*disabled && u.Status == domain.UserDisabled:
-			status := domain.UserActive
-			if u.PasswordHash == "" {
-				status = domain.UserInvited
+			status, err := a.enableStatus(ctx, u)
+			if err != nil {
+				return err
 			}
 			if err := a.d.Users.SetStatus(ctx, id, status, now); err != nil {
 				return err
@@ -315,6 +323,24 @@ func (a *Admin) UpdateUser(ctx context.Context, actor, id string, name *string, 
 		a.LogChange(ctx, actor, "Users_update", id)
 	}
 	return a.GetUser(ctx, id)
+}
+
+// enableStatus gives the status of a disabled user that an admin enables: active
+// if the user has a login method (see domain.HasLoginMethod), else invited.
+func (a *Admin) enableStatus(ctx context.Context, u domain.User) (domain.UserStatus, error) {
+	passkeys := 0
+	if a.d.MFA != nil {
+		st, err := a.d.MFA.State(ctx, u.ID)
+		if err != nil {
+			return "", err
+		}
+		passkeys = st.Passkeys
+	}
+	ms, err := readMethodsState(ctx, a.d.Links, a.d.ProviderOn, a.d.PasskeysOn, u, passkeys)
+	if err != nil {
+		return "", err
+	}
+	return domain.EnableStatus(ms), nil
 }
 
 // holdsAdmin reports whether the user is active and has the permission

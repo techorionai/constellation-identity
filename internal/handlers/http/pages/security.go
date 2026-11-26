@@ -77,6 +77,11 @@ type rawQueryKey struct{}
 var redactedParams = map[string]bool{
 	"token": true, "code": true, "code_verifier": true, "refresh_token": true,
 	"id_token_hint": true, "authRequest": true, "state": true, "nonce": true,
+	// The upstream login: the ID token, the text of an error, and the session
+	// state of the provider.
+	"id_token": true, "error_description": true, "session_state": true,
+	// The value of a local factor check before a link.
+	"confirm": true,
 }
 
 // RedactQuery returns the raw query with the value of each secret parameter

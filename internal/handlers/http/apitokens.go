@@ -64,6 +64,7 @@ func (s *Server) MeApiTokensCreate(ctx context.Context, r gen.MeApiTokensCreateR
 	}
 	created, err := s.d.APITokens.Create(ctx, commands.CreateAPIToken{
 		UserID: p.ID, Name: r.Body.Name, Scope: r.Body.Scope, ExpiresInDays: r.Body.ExpiresInDays,
+		AMR: p.AuthMethods,
 	})
 	if err != nil {
 		return nil, err

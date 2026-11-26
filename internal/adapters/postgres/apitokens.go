@@ -44,10 +44,14 @@ func scanAPIToken(row pgx.Row, extra ...any) (domain.APIToken, error) {
 
 // Insert adds a token.
 func (r *APITokens) Insert(ctx context.Context, hash string, t domain.APIToken) error {
+	amr := t.AMR
+	if amr == nil {
+		amr = []string{}
+	}
 	if _, err := clientspg.Conn(ctx, r.pool).Exec(ctx, `
-		INSERT INTO api_tokens (id, token_hash, user_id, name, scope, created_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		t.ID, hash, t.UserID, t.Name, strings.Join(t.Scope, " "), t.CreatedAt, t.ExpiresAt); err != nil {
+		INSERT INTO api_tokens (id, token_hash, user_id, name, scope, created_at, expires_at, amr)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		t.ID, hash, t.UserID, t.Name, strings.Join(t.Scope, " "), t.CreatedAt, t.ExpiresAt, amr); err != nil {
 		return fmt.Errorf("insert api token: %w", err)
 	}
 	return nil
@@ -143,6 +147,18 @@ func (r *APITokens) RevokeAllOfUser(ctx context.Context, userID string, now time
 		WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > $2`, userID, now)
 	if err != nil {
 		return 0, fmt.Errorf("revoke api tokens of user: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// RevokeWithMethod revokes the active tokens of a user that have the method in
+// amr. A token that is revoked already keeps its revoked_at.
+func (r *APITokens) RevokeWithMethod(ctx context.Context, userID, method string, now time.Time) (int, error) {
+	tag, err := clientspg.Conn(ctx, r.pool).Exec(ctx, `
+		UPDATE api_tokens SET revoked_at = $3
+		WHERE user_id = $1 AND revoked_at IS NULL AND $2 = ANY(amr)`, userID, method, now)
+	if err != nil {
+		return 0, fmt.Errorf("revoke api tokens with method: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }

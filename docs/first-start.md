@@ -42,6 +42,22 @@ If an admin exists, `setup-link` prints an error and exits with code 1.
 
 A restart of the service after the link ended makes a new token and writes a new log record. The record does not have the link. Run `setup-link` to get it.
 
+## Login with Google or Microsoft (optional)
+
+The service can log users in with a Google account or a Microsoft work account. A user links the account on `/account/security`, or accepts an invite with it. There is no sign-up with an upstream account.
+
+1. Register the redirect URI at the provider. It is `<IDENTITY_ISSUER>/login/oidc/google/callback` or `<IDENTITY_ISSUER>/login/oidc/microsoft/callback`. A change of the issuer changes the redirect URI.
+2. Google: make an OAuth client of the type web application. The scopes are `openid`, `email`, and `profile`. Set `IDENTITY_IDP__GOOGLE__CLIENT_ID`. To limit the login to your domains, set `IDENTITY_IDP__GOOGLE__ALLOWED_DOMAINS`.
+3. Microsoft: make an app registration for accounts in an organizational directory only. Add a client secret. In the token configuration, add the optional claims `email` and `xms_edov` to the ID token. Without `xms_edov`, the invite with Microsoft fails, and the login of a linked user still works. Set `IDENTITY_IDP__MICROSOFT__CLIENT_ID`, and `IDENTITY_IDP__MICROSOFT__TENANT` (a tenant GUID, or `organizations` for all work and school accounts).
+4. Store the client secret. The value comes from stdin and is not in the process list:
+
+   ```sh
+   identity set-idp-secret google
+   identity set-idp-secret microsoft
+   ```
+
+5. Start the service. If a provider has a client ID and no stored secret, the service does not start and logs `identity.idp.secret_missing`.
+
 ## Next step
 
 Log in at `<IDENTITY_ISSUER>/login`. The admin API for users and invites comes with a later issue. Until then, only code inside the process can call the use cases `CreateUser` and `CreateInvite`.

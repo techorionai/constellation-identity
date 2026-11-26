@@ -14,7 +14,7 @@ func TestU15_TokenClaims(t *testing.T) {
 	authTime := now.Add(-time.Minute)
 	full := domain.UserAccessToken{
 		Issuer: "https://id", Audience: "demo", UserID: "u", ClientID: "c", Now: now, TTL: time.Minute, JTI: "j",
-		AuthMethods: domain.MethodsTOTP(), AuthTime: authTime,
+		AuthMethods: domain.WithSecondFactor(domain.MethodsPassword(), domain.AMROTP), AuthTime: authTime,
 	}.Claims()
 	amr, ok := full["amr"].([]string)
 	if !ok || len(amr) != 3 || amr[2] != "mfa" || full["auth_time"] != authTime.Unix() {

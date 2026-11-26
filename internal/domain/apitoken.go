@@ -52,6 +52,10 @@ type APIToken struct {
 	ExpiresAt  time.Time
 	LastUsedAt *time.Time
 	RevokedAt  *time.Time
+	// AMR is the amr of the session that made the token. The service uses it to
+	// revoke the tokens of a removed login method. The API does not show it. A
+	// token from before the migration has none.
+	AMR []string
 }
 
 // APITokenWithOwner is a token with the status of its user.

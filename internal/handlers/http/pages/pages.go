@@ -41,7 +41,8 @@ const maxFormBytes = 64 << 10
 var Paths = []string{"/login", "/login/done", "/login/mfa", "/logout", "/setup", "/invite", "/assets/pages.css",
 	"/assets/passkey.js", "/oauth/authorize", "/oauth/authorize/continue", "/oauth/end_session",
 	"/account/security", "/account/totp", "/account/totp/remove", "/account/recovery-codes",
-	"/account/passkeys", "/account/passkeys/", "/login/passkey/", "/login/mfa/passkey/"}
+	"/account/passkeys", "/account/passkeys/", "/login/passkey/", "/login/mfa/passkey/",
+	"/login/oidc/", "/account/identity-links/", "/account/password"}
 
 // Deps are the use cases and the settings of the pages.
 type Deps struct {
@@ -60,6 +61,14 @@ type Deps struct {
 	ConfirmEndSession executor.Executor[string]
 	// MFA holds the use cases of the second factor and of the account pages.
 	MFA *commands.MFA
+	// Idp, IdentityLinks, and Providers are the use cases and the settings of the
+	// upstream logins. Providers lists the providers that are on, in the order of
+	// the pages. A page has no upstream login when Providers is empty.
+	Idp           *commands.Idp
+	IdentityLinks *commands.IdentityLinks
+	Providers     []string
+	// SetPassword sets the first password of a user that has none.
+	SetPassword *commands.SetPasswordCommand
 	// PasskeysOn turns on the routes of the passkeys, the script, and the buttons.
 	PasskeysOn bool
 	// Issuer is the issuer URL of the service. An https issuer turns on the
@@ -132,6 +141,16 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /login/mfa/passkey/options", h.mfaPasskeyOptions)
 	mux.HandleFunc("POST /login/mfa/passkey/finish", h.mfaPasskeyFinish)
 	mux.HandleFunc("GET /assets/passkey.js", h.passkeyScript)
+	mux.HandleFunc("GET /login/oidc/{provider}", h.idpStart)
+	mux.HandleFunc("GET /login/oidc/{provider}/callback", h.idpCallback)
+	mux.HandleFunc("GET /account/identity-links/{provider}/link", h.linkConfirmForm)
+	mux.HandleFunc("POST /account/identity-links/{provider}/link", h.linkConfirm)
+	mux.HandleFunc("POST /account/identity-links/{provider}/remove", h.linkRemove)
+	mux.HandleFunc("POST /account/identity-links/passkey/options", h.linkPasskeyOptions)
+	mux.HandleFunc("POST /account/identity-links/passkey/link", h.linkPasskeyFinish)
+	mux.HandleFunc("POST /account/identity-links/passkey/remove", h.linkRemovePasskey)
+	mux.HandleFunc("GET /account/password", h.passwordForm)
+	mux.HandleFunc("POST /account/password", h.passwordSet)
 	mux.HandleFunc("GET /login/done", h.loginDone)
 	mux.HandleFunc("POST /logout", h.logout)
 	mux.HandleFunc("GET /setup", h.setupForm)
@@ -181,6 +200,37 @@ type view struct {
 	PasskeyLink string
 	HasRecovery bool
 	HasTOTP     bool
+	// Notice is an information text.
+	Notice string
+	// Providers are the links of the upstream logins. Federated is true when the
+	// first factor of the pending login was an upstream login.
+	Providers []providerLink
+	Federated bool
+	// ProviderName is the name of the provider of an upstream login.
+	ProviderName string
+	// The fields of the account page: the links, the providers that the user can
+	// link, and the flag of a password.
+	Links       []linkRow
+	Linkable    []providerLink
+	HasPassword bool
+	// The fields of the page of a link: the provider, the flag of a local
+	// factor, and the URL of the start.
+	Provider string
+	FactorOn bool
+	StartURL string
+	// PasskeyConfirm is true when the user can use a passkey as the local factor
+	// of a link and of a link removal.
+	PasskeyConfirm bool
+}
+
+// linkRow is a link of the user on the account page.
+type linkRow struct {
+	Provider string
+	Name     string
+	Email    string
+	// Confirm are the upstream logins that can confirm the removal of a user
+	// that has no local factor (P23).
+	Confirm []providerLink
 }
 
 // pageCSP returns the policy of a page that can have the script of the
@@ -308,6 +358,14 @@ func (h *Handler) loginForm(w http.ResponseWriter, r *http.Request) {
 	} else {
 		v.ReturnTo, _ = domain.SafeReturnTo(r.URL.Query().Get("return_to"))
 	}
+	if r.URL.Query().Get("removed") == "1" {
+		v.Notice = "The link is removed. Log in again."
+	}
+	prompt := ""
+	if r.URL.Query().Get("prompt") == "login" {
+		prompt = "login"
+	}
+	v.Providers = h.idpLinks(domain.FlowLogin, url.Values{"authRequest": {v.AuthRequest}, "return_to": {v.ReturnTo}, "prompt": {prompt}})
 	h.render(w, r, http.StatusOK, "login", v)
 }
 
@@ -510,7 +568,11 @@ func (h *Handler) tokenForm(w http.ResponseWriter, r *http.Request, purpose doma
 		h.invalidLink(w, r)
 		return
 	}
-	h.render(w, r, http.StatusOK, page, view{Title: title, Token: token})
+	v := view{Title: title, Token: token}
+	if purpose == domain.PurposeInvite {
+		v.Providers = h.idpLinks(domain.FlowInvite, url.Values{"token": {token}})
+	}
+	h.render(w, r, http.StatusOK, page, v)
 }
 
 func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {

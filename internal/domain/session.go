@@ -17,13 +17,17 @@ type Session struct {
 	AuthTime time.Time
 	// AuthMethods are the methods of the last login (amr). A session from before
 	// the upgrade has none.
-	AuthMethods   []string
-	LastSeenAt    time.Time
-	IdleExpiresAt time.Time
-	ExpiresAt     time.Time
-	RevokedAt     *time.Time
-	UserAgent     string
-	IPAddress     string
+	AuthMethods []string
+	// UpstreamAuthValid is true if the last login was a login with an upstream
+	// identity provider and its ID token had a valid auth_time (P23). It stays
+	// inside the service. No token and no API response has it (P24).
+	UpstreamAuthValid bool
+	LastSeenAt        time.Time
+	IdleExpiresAt     time.Time
+	ExpiresAt         time.Time
+	RevokedAt         *time.Time
+	UserAgent         string
+	IPAddress         string
 }
 
 // SessionPolicy gives the life of a session.

@@ -56,6 +56,8 @@ const (
 	CeremonyLogin = "login"
 	// CeremonySecondFactor is a second factor. The key is the hash of the cookie value of the pending login.
 	CeremonySecondFactor = "mfa"
+	// CeremonyConfirm is the passkey check before a link or a link removal. The key is the hash of the session cookie value.
+	CeremonyConfirm = "confirm"
 )
 
 // Ceremonies stores the state of the WebAuthn ceremonies.

@@ -110,6 +110,39 @@ type Sessions struct {
 	Rows map[string]domain.Session
 	// Touches counts the calls of Touch.
 	Touches int
+	// Marks holds the access token marks: the jti to the user ID and the end.
+	Marks map[string]AccessTokenMark
+}
+
+// AccessTokenMark is the row of an access token from a login with a valid
+// upstream auth_time.
+type AccessTokenMark struct {
+	UserID    string
+	ExpiresAt time.Time
+}
+
+// MarkAccessToken stores a mark.
+func (r *Sessions) MarkAccessToken(_ context.Context, jti, userID string, expiresAt, now time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.Marks == nil {
+		r.Marks = map[string]AccessTokenMark{}
+	}
+	for k, m := range r.Marks {
+		if !m.ExpiresAt.After(now) {
+			delete(r.Marks, k)
+		}
+	}
+	r.Marks[jti] = AccessTokenMark{UserID: userID, ExpiresAt: expiresAt}
+	return nil
+}
+
+// AccessTokenMarked reports whether a mark exists for the user and has not ended.
+func (r *Sessions) AccessTokenMarked(_ context.Context, jti, userID string, now time.Time) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m, ok := r.Marks[jti]
+	return ok && m.UserID == userID && m.ExpiresAt.After(now), nil
 }
 
 var _ sessions.Repository = (*Sessions)(nil)

@@ -83,8 +83,8 @@ func TestR3_R10_SetupSecretSealedAndStable(t *testing.T) {
 func TestR4_RemoveDropsMethodsOfOtherSessions(t *testing.T) {
 	m := newMFAEnv(t)
 	m.enable(t, userA, "a@example.com")
-	m.sessions.Rows["other"] = domain.Session{ID: "other", UserID: userA, AuthMethods: domain.MethodsTOTP()}
-	m.sessions.Rows["foreign"] = domain.Session{ID: "foreign", UserID: userB, AuthMethods: domain.MethodsTOTP()}
+	m.sessions.Rows["other"] = domain.Session{ID: "other", UserID: userA, AuthMethods: domain.WithSecondFactor(domain.MethodsPassword(), domain.AMROTP)}
+	m.sessions.Rows["foreign"] = domain.Session{ID: "foreign", UserID: userB, AuthMethods: domain.WithSecondFactor(domain.MethodsPassword(), domain.AMROTP)}
 	if err := m.cmd.RemoveTOTP(ctx, commands.RemoveTOTP{UserID: userA, Actor: userA}); err != nil {
 		t.Fatal(err)
 	}

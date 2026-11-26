@@ -76,6 +76,9 @@ type options struct {
 	rateLimiter ratelimit.Limiter
 	// verifierClock is the clock of the token verifier of the /v1 routes. Nil means time.Now.
 	verifierClock func() time.Time
+	// idpTransport is the HTTP transport of the upstream login client. A test uses
+	// it to send the requests to a test provider.
+	idpTransport http.RoundTripper
 }
 
 // Option changes the composition. The options are for tests. Production code
@@ -131,6 +134,14 @@ func WithVerifierClock(now func() time.Time) Option {
 	return func(o *options) { o.verifierClock = now }
 }
 
+// WithIdpTransport sets the HTTP transport of the upstream login client. A test
+// gives a transport that sends the requests to a test provider. The issuers and
+// the hosts of the providers stay the real values (R14). Production code uses
+// the default transport.
+func WithIdpTransport(rt http.RoundTripper) Option {
+	return func(o *options) { o.idpTransport = rt }
+}
+
 func newOptions(opts []Option) options {
 	o := options{managerInterval: defaultKeyManagerInterval, cacheInterval: defaultCacheInterval, log: slog.Default()}
 	for _, opt := range opts {
@@ -158,6 +169,9 @@ type App struct {
 	reg    metric.Registration
 	// ring is the key ring of the secrets. The TOTP sealer uses it.
 	ring *platformsecrets.KeyRing
+	// secrets is the secrets service. The client secrets of the upstream
+	// providers are in it.
+	secrets *platformsecrets.Service
 
 	sessionReg    metric.Registration
 	stopRetention context.CancelFunc
@@ -233,7 +247,8 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		return nil, fmt.Errorf("master key: %w", err)
 	}
 	a.ring = ring
-	store := adaptersecrets.New(platformsecrets.NewService(ring, secretRepo))
+	a.secrets = platformsecrets.NewService(ring, secretRepo)
+	store := adaptersecrets.New(a.secrets)
 	a.cache = keys.NewCache(postgres.NewSigningKeys(a.db.Pool), store, log)
 	a.state = health.NewState(
 		a.pgChk,
@@ -293,6 +308,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	if err := a.ensureSetupToken(ctx, users); err != nil {
 		return nil, err
 	}
+	a.warnUsersWithoutLoginMethod(ctx, users)
 
 	// 4. Make the key manager and the key cache. Check that the active key
 	// decrypts before the manager can change any key.
@@ -399,7 +415,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		JWKS:          jwks, Discovery: discovery, IssueToken: issue, PublishManifest: publishAPI,
 		ListManifests: listManifests, GetManifest: getManifest, ListRoles: listRoles, GetRole: getRole,
 		ExchangeCode: users.exchangeCode, RefreshTokens: users.refreshTokens, RevokeToken: users.revokeToken, UserInfo: users.userInfo,
-		Admin: users.admin, APITokens: users.apiTokens, Introspect: introspect, CreateUser: users.createUser, CreateInvite: users.createInvite, CORSOrigins: users.cors, MFA: users.mfa, Now: o.clock,
+		Admin: users.admin, IdentityLinks: users.identityLinks, APITokens: users.apiTokens, Introspect: introspect, CreateUser: users.createUser, CreateInvite: users.createInvite, CORSOrigins: users.cors, MFA: users.mfa, Now: o.clock,
 		Verifier: a.verify, Scopes: scopes, Log: log, RateLimits: limits, TrustedProxies: trustedProxies,
 	})
 	// RedactToken is outside the tracing handler, so no span has a secret value

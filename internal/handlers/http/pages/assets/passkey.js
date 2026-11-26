@@ -13,7 +13,10 @@
     expired: 'The request has expired. Try again.',
     unavailable: 'The service is not available. Try again later.',
     cancelled: 'The passkey request was cancelled or it timed out.',
-    unsupported: 'This browser does not support passkeys.'
+    unsupported: 'This browser does not support passkeys.',
+    link_not_found: 'You have no link for this provider.',
+    last_login_method: 'You cannot remove your last login method.',
+    not_found: 'This page does not exist.'
   };
   var unavailableText = 'The service is not available. Try again later.';
 

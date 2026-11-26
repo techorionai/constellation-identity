@@ -17,6 +17,9 @@ type RefreshFamily struct {
 	// AuthTime and no methods.
 	AuthTime    time.Time
 	AuthMethods []string
+	// UpstreamAuthValid is the flag of the session at the time of the code flow.
+	// It stays inside the service (P24).
+	UpstreamAuthValid bool
 }
 
 // RefreshToken is one refresh token. The service stores the hash only.
@@ -54,6 +57,8 @@ type AuthCode struct {
 	OIDCScopes    []string  `json:"oidc_scopes"`
 	AuthTime      time.Time `json:"auth_time"`
 	AuthMethods   []string  `json:"auth_methods,omitempty"`
+	// UpstreamAuthValid is the flag of the session. It stays inside the service.
+	UpstreamAuthValid bool `json:"upstream_auth_valid,omitempty"`
 }
 
 // UsedCode is the marker of a code that a client used. It has the data that

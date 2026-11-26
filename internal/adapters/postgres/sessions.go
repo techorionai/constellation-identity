@@ -24,11 +24,11 @@ var _ sessions.Repository = (*Sessions)(nil)
 // NewSessions makes the repository.
 func NewSessions(pool *pgxpool.Pool) *Sessions { return &Sessions{pool: pool} }
 
-const sessionColumns = `id, user_id, token_hash, created_at, auth_time, amr, last_seen_at, idle_expires_at, expires_at, revoked_at, user_agent, ip_address`
+const sessionColumns = `id, user_id, token_hash, created_at, auth_time, amr, upstream_auth_valid, last_seen_at, idle_expires_at, expires_at, revoked_at, user_agent, ip_address`
 
 func scanSession(row pgx.Row) (domain.Session, error) {
 	var s domain.Session
-	err := row.Scan(&s.ID, &s.UserID, &s.TokenHash, &s.CreatedAt, &s.AuthTime, &s.AuthMethods, &s.LastSeenAt, &s.IdleExpiresAt, &s.ExpiresAt, &s.RevokedAt, &s.UserAgent, &s.IPAddress)
+	err := row.Scan(&s.ID, &s.UserID, &s.TokenHash, &s.CreatedAt, &s.AuthTime, &s.AuthMethods, &s.UpstreamAuthValid, &s.LastSeenAt, &s.IdleExpiresAt, &s.ExpiresAt, &s.RevokedAt, &s.UserAgent, &s.IPAddress)
 	return s, err
 }
 
@@ -36,9 +36,9 @@ func scanSession(row pgx.Row) (domain.Session, error) {
 // the default of the column.
 func (r *Sessions) Create(ctx context.Context, s domain.Session) error {
 	if _, err := clientspg.Conn(ctx, r.pool).Exec(ctx, `
-		INSERT INTO sessions (id, user_id, token_hash, created_at, auth_time, amr, last_seen_at, idle_expires_at, expires_at, user_agent, ip_address)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		s.ID, s.UserID, s.TokenHash, s.CreatedAt, s.AuthTime, nonNil(s.AuthMethods), s.LastSeenAt, s.IdleExpiresAt, s.ExpiresAt, s.UserAgent, s.IPAddress); err != nil {
+		INSERT INTO sessions (id, user_id, token_hash, created_at, auth_time, amr, upstream_auth_valid, last_seen_at, idle_expires_at, expires_at, user_agent, ip_address)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		s.ID, s.UserID, s.TokenHash, s.CreatedAt, s.AuthTime, nonNil(s.AuthMethods), s.UpstreamAuthValid, s.LastSeenAt, s.IdleExpiresAt, s.ExpiresAt, s.UserAgent, s.IPAddress); err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
 	return nil
@@ -116,10 +116,10 @@ func (r *Sessions) Reauthenticate(ctx context.Context, a sessions.Reauth) (strin
 	var id string
 	err := clientspg.Conn(ctx, r.pool).QueryRow(ctx, `
 		UPDATE sessions
-		SET token_hash = $2, auth_time = $4, amr = $8, last_seen_at = $4, idle_expires_at = $5, user_agent = $6, ip_address = $7
+		SET token_hash = $2, auth_time = $4, amr = $8, upstream_auth_valid = $9, last_seen_at = $4, idle_expires_at = $5, user_agent = $6, ip_address = $7
 		WHERE token_hash = $1 AND user_id = $3 AND revoked_at IS NULL AND expires_at > $4 AND idle_expires_at > $4
 		RETURNING id`,
-		a.OldHash, a.NewHash, a.UserID, a.Now, a.IdleExpires, a.UserAgent, a.IPAddress, nonNil(a.Methods)).Scan(&id)
+		a.OldHash, a.NewHash, a.UserID, a.Now, a.IdleExpires, a.UserAgent, a.IPAddress, nonNil(a.Methods), a.UpstreamAuthValid).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
@@ -127,6 +127,34 @@ func (r *Sessions) Reauthenticate(ctx context.Context, a sessions.Reauth) (strin
 		return "", false, fmt.Errorf("reauthenticate session: %w", err)
 	}
 	return id, true, nil
+}
+
+// MarkAccessToken stores the jti of an access token that comes from a login
+// with a valid upstream auth_time. It deletes the rows that ended.
+func (r *Sessions) MarkAccessToken(ctx context.Context, jti, userID string, expiresAt, now time.Time) error {
+	q := clientspg.Conn(ctx, r.pool)
+	if _, err := q.Exec(ctx, `DELETE FROM upstream_auth_tokens WHERE expires_at <= $1`, now); err != nil {
+		return fmt.Errorf("delete ended access token marks: %w", err)
+	}
+	if _, err := q.Exec(ctx, `
+		INSERT INTO upstream_auth_tokens (jti, user_id, expires_at) VALUES ($1, $2, $3)
+		ON CONFLICT (jti) DO NOTHING`, jti, userID, expiresAt); err != nil {
+		return fmt.Errorf("mark access token: %w", err)
+	}
+	return nil
+}
+
+// AccessTokenMarked reports whether the jti has a row for the user that has not
+// ended.
+func (r *Sessions) AccessTokenMarked(ctx context.Context, jti, userID string, now time.Time) (bool, error) {
+	var ok bool
+	err := clientspg.Conn(ctx, r.pool).QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM upstream_auth_tokens WHERE jti = $1 AND user_id = $2 AND expires_at > $3)`,
+		jti, userID, now).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("read access token mark: %w", err)
+	}
+	return ok, nil
 }
 
 // nonNil gives an empty list for nil. The column amr is NOT NULL.

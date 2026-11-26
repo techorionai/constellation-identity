@@ -96,9 +96,14 @@ func (h *Handler) passkeyRoute(w http.ResponseWriter, r *http.Request, jsonRoute
 // jsonSession returns the fresh session of a JSON route. A session that is not
 // fresh gets the answer "login_required".
 func (h *Handler) jsonSession(w http.ResponseWriter, r *http.Request) (queries.SessionResult, bool) {
+	return h.jsonSessionAt(w, r, passkeyPath)
+}
+
+// jsonSessionAt is jsonSession with the page that the login comes back to.
+func (h *Handler) jsonSessionAt(w http.ResponseWriter, r *http.Request, returnTo string) (queries.SessionResult, bool) {
 	res, err := h.d.Session.Execute(r.Context(), queries.SessionFromCookie{Token: cookieValue(r)})
 	if errors.Is(err, queries.ErrNoSession) {
-		h.jsonLogin(w, passkeyPath)
+		h.jsonLogin(w, returnTo)
 		return queries.SessionResult{}, false
 	}
 	if err != nil {
@@ -107,7 +112,7 @@ func (h *Handler) jsonSession(w http.ResponseWriter, r *http.Request) (queries.S
 		return queries.SessionResult{}, false
 	}
 	if !domain.FreshLogin(res.Session.AuthTime, h.now().UTC()) {
-		h.jsonLogin(w, passkeyPath)
+		h.jsonLogin(w, returnTo)
 		return queries.SessionResult{}, false
 	}
 	return res, true
@@ -463,6 +468,9 @@ var jsonRoutes = map[string]bool{
 	"/login/passkey/options": true, "/login/passkey/finish": true,
 	"/login/mfa/passkey/options": true, "/login/mfa/passkey/finish": true,
 	"/account/passkeys/options": true, "/account/passkeys/finish": true,
+	// The passkey check before a link and before a link removal (P23).
+	"/account/identity-links/passkey/options": true, "/account/identity-links/passkey/link": true,
+	"/account/identity-links/passkey/remove": true,
 }
 
 // jsonRateLimited writes the 429 answer of a JSON route.

@@ -18,6 +18,12 @@ const (
 	ActionPasskeyAdd    = "identity:mfa:passkey_add"    //nolint:gosec // G101: This is the name of an action, not a credential.
 	ActionPasskeyRemove = "identity:mfa:passkey_remove" //nolint:gosec // G101: This is the name of an action, not a credential.
 	ActionPasskeyRename = "identity:mfa:passkey_rename" //nolint:gosec // G101: This is the name of an action, not a credential.
+	// ActionIdentityLinkAdd and ActionIdentityLinkRemove are the actions of the
+	// changes of the upstream links.
+	ActionIdentityLinkAdd    = "identity:identity_link:add"
+	ActionIdentityLinkRemove = "identity:identity_link:remove"
+	// ActionPasswordSet is the action of the first password of a user.
+	ActionPasswordSet = "identity:password:set"
 )
 
 // The kinds of the security notices.
@@ -27,6 +33,12 @@ const (
 	// NoticePasskeyAdded and NoticePasskeyRemoved tell the user about a change of the passkeys.
 	NoticePasskeyAdded   = "mfa_passkey_added"   //nolint:gosec // G101: This is the name of a notice, not a credential.
 	NoticePasskeyRemoved = "mfa_passkey_removed" //nolint:gosec // G101: This is the name of a notice, not a credential.
+	// NoticeIdentityLinkAdded and NoticeIdentityLinkRemoved tell the user about
+	// a change of the upstream links.
+	NoticeIdentityLinkAdded   = "identity_link_added"
+	NoticeIdentityLinkRemoved = "identity_link_removed"
+	// NoticePasswordSet tells the user that a password was set.
+	NoticePasswordSet = "password_set"
 	// NoticeMfaLimited means a limit of second factor failures is reached.
 	// Someone can know the password of the user.
 	NoticeMfaLimited = "mfa_attempts_limited"

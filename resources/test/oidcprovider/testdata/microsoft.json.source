@@ -1,0 +1,4 @@
+Source: https://login.microsoftonline.com/organizations/v2.0/.well-known/openid-configuration
+Copied on 2026-11-26.
+Change: each host is replaced by the text {BASE} and a path. The test provider replaces {BASE} with its own URL.
+The issuer keeps the text {tenantid}. The document has no code_challenge_methods_supported.

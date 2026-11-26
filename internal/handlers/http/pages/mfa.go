@@ -125,6 +125,7 @@ func (h *Handler) mfaView(w http.ResponseWriter, r *http.Request, v *view) bool 
 		return false
 	}
 	v.HasTOTP, v.HasRecovery, v.UsePasskey = info.HasTOTP, info.HasRecoveryCodes, info.HasPasskey && h.passkeysOn()
+	v.Federated = info.Federated
 	if info.AuthRequest != "" {
 		// The redirect after the form goes to the redirect URI of the client. The
 		// CSP form-action must have its origin. The auth request can end before
@@ -231,11 +232,49 @@ func (h *Handler) securityPage(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, r, err)
 		return
 	}
-	h.render(w, r, http.StatusOK, "account_security", view{
+	v := view{
 		Title: "Account security", UserName: res.User.Name, TOTPOn: st.State.HasTOTP,
 		CodesLeft: st.State.CodesRemaining, MFARequired: st.Required,
-		PasskeyOn: h.passkeysOn(), PasskeyCount: st.State.Passkeys,
-	})
+		PasskeyOn: h.passkeysOn(), PasskeyCount: st.State.Passkeys, HasPassword: res.User.PasswordHash != "",
+	}
+	if h.idpEnabled() && h.d.IdentityLinks != nil {
+		links, err := h.d.IdentityLinks.List(r.Context(), res.User.ID, commands.ListPage{}, false)
+		if err != nil {
+			h.serverError(w, r, err)
+			return
+		}
+		linked := map[string]bool{}
+		for _, l := range links.Items {
+			linked[l.Provider] = true
+			v.Links = append(v.Links, linkRow{Provider: l.Provider, Name: providerNames[l.Provider], Email: l.Email})
+		}
+		v.FactorOn = domain.HasLocalFactor(res.User.PasswordHash != "", st.State)
+		v.PasskeyConfirm = h.passkeysOn() && st.State.AcceptedPasskeys() > 0
+		for i := range v.Links {
+			if v.FactorOn {
+				break
+			}
+			// A user with no local factor removes a link after an upstream login
+			// that has a valid auth_time (P23). The account must be of the user.
+			for _, p := range h.idpLinks(domain.FlowUnlink, url.Values{"remove": {v.Links[i].Provider}}) {
+				if linked[p.Provider] {
+					v.Links[i].Confirm = append(v.Links[i].Confirm, p)
+				}
+			}
+		}
+		for _, p := range h.idpLinks(domain.FlowLink, nil) {
+			if !linked[p.Provider] {
+				// The link goes to the page of the local factor check (P23).
+				p.URL = "/account/identity-links/" + p.Provider + "/link"
+				v.Linkable = append(v.Linkable, p)
+			}
+		}
+	}
+	if v.PasskeyConfirm {
+		v.Script = true
+		w.Header().Set("Content-Security-Policy", ContentSecurityPolicyWithScript(""))
+	}
+	h.render(w, r, http.StatusOK, "account_security", v)
 }
 
 func (h *Handler) totpSetupForm(w http.ResponseWriter, r *http.Request) {

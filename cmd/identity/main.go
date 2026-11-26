@@ -8,6 +8,7 @@
 //	identity setup-link                   Print a new first-admin setup link.
 //	identity unlock-login <email>         Remove the login lock of one email.
 //	identity reset-mfa <email>            Remove the second factors of one user.
+//	identity set-idp-secret <provider>    Store the client secret of an upstream provider (stdin).
 package main
 
 import (
@@ -52,6 +53,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runUnlockLogin(args[1:], stdout, stderr)
 	case "reset-mfa":
 		return runResetMFA(args[1:], stdout, stderr)
+	case "set-idp-secret":
+		return runSetIdpSecret(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		return 2

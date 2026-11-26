@@ -141,6 +141,53 @@ type WebAuthn struct {
 	RPName string `env:"RP_NAME" envDefault:"Constellation"`
 }
 
+// Limits of the upstream login settings.
+const (
+	MinIDPClientIDLength = 1
+	MaxIDPClientIDLength = 256
+	MinIDPHTTPTimeout    = time.Second
+	MaxIDPHTTPTimeout    = 25 * time.Second
+)
+
+// GoogleIDP is the config of the login with Google. The provider is on when
+// the client ID is set. The client secret is in the secrets store.
+type GoogleIDP struct {
+	ClientID string `env:"CLIENT_ID"`
+	// AllowedDomains limits the login to the Google hosted domains (the claim
+	// hd). An empty list allows all accounts.
+	AllowedDomains []string `env:"ALLOWED_DOMAINS"`
+}
+
+// MicrosoftIDP is the config of the login with Microsoft work accounts. The
+// provider is on when the client ID is set.
+type MicrosoftIDP struct {
+	ClientID string `env:"CLIENT_ID"`
+	// Tenant is a tenant GUID or "organizations". The values "common" and
+	// "consumers" allow personal accounts and are not allowed.
+	Tenant string `env:"TENANT" envDefault:"organizations"`
+}
+
+// IDP is the config of the login with an upstream identity provider.
+type IDP struct {
+	Google    GoogleIDP    `envPrefix:"GOOGLE__"`
+	Microsoft MicrosoftIDP `envPrefix:"MICROSOFT__"`
+	// HTTPTimeout is the one deadline for all outbound calls of one request.
+	HTTPTimeout time.Duration `env:"HTTP_TIMEOUT" envDefault:"10s"`
+}
+
+// Providers returns the names of the providers that are on, in the order of the
+// pages.
+func (i IDP) Providers() []string {
+	var out []string
+	if i.Google.ClientID != "" {
+		out = append(out, domain.ProviderGoogle)
+	}
+	if i.Microsoft.ClientID != "" {
+		out = append(out, domain.ProviderMicrosoft)
+	}
+	return out
+}
+
 // Retention is the config of the retention jobs. A job deletes the rows 7 days
 // after the end of the token or session, unless Period says otherwise.
 type Retention struct {
@@ -212,6 +259,7 @@ type Config struct {
 	WebAuthn    WebAuthn        `envPrefix:"WEBAUTHN__"`
 	Retention   Retention       `envPrefix:"RETENTION__"`
 	OIDC        OIDC            `envPrefix:"OIDC__"`
+	IDP         IDP             `envPrefix:"IDP__"`
 	APIToken    APIToken        `envPrefix:"API_TOKEN__"`
 	RateLimit   RateLimit       `envPrefix:"RATE_LIMIT__"`
 	ClientsFile string          `env:"CLIENTS_FILE"`
@@ -239,6 +287,7 @@ func (c Config) Validate() error {
 	errs = append(errs, c.Keys.Validate()...)
 	errs = append(errs, c.validateUsers()...)
 	errs = append(errs, c.RateLimit.Validate()...)
+	errs = append(errs, c.IDP.Validate()...)
 	return errors.Join(errs...)
 }
 
@@ -320,6 +369,33 @@ func (c Config) validateUsers() []error {
 	}
 	if c.OIDC.UserTokenTTL < MinUserTokenTTL || c.OIDC.UserTokenTTL > MaxUserTokenTTL {
 		bad("OIDC__USER_TOKEN_TTL", fmt.Sprintf("must be from %s to %s", MinUserTokenTTL, MaxUserTokenTTL))
+	}
+	return errs
+}
+
+// Validate checks the upstream login settings. Each error names its variable.
+func (i IDP) Validate() []error {
+	var errs []error
+	bad := func(name, rule string) { errs = append(errs, fmt.Errorf("%sIDP__%s %s", Prefix, name, rule)) }
+	for name, id := range map[string]string{"GOOGLE__CLIENT_ID": i.Google.ClientID, "MICROSOFT__CLIENT_ID": i.Microsoft.ClientID} {
+		if id == "" {
+			continue
+		}
+		if n := utf8.RuneCountInString(id); n < MinIDPClientIDLength || n > MaxIDPClientIDLength || strings.TrimSpace(id) != id {
+			bad(name, fmt.Sprintf("must have %d to %d characters, with no space at the start or the end", MinIDPClientIDLength, MaxIDPClientIDLength))
+		}
+	}
+	if !domain.ValidMicrosoftTenant(i.Microsoft.Tenant) {
+		bad("MICROSOFT__TENANT", "must be a tenant GUID or organizations. The values common and consumers allow personal accounts")
+	}
+	for _, d := range i.Google.AllowedDomains {
+		if d = strings.TrimSpace(d); d == "" || strings.ContainsAny(d, " @/:") {
+			bad("GOOGLE__ALLOWED_DOMAINS", "must be a comma list of domain names")
+			break
+		}
+	}
+	if i.HTTPTimeout < MinIDPHTTPTimeout || i.HTTPTimeout > MaxIDPHTTPTimeout {
+		bad("HTTP_TIMEOUT", fmt.Sprintf("must be from %s to %s", MinIDPHTTPTimeout, MaxIDPHTTPTimeout))
 	}
 	return errs
 }

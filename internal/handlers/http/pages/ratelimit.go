@@ -3,6 +3,7 @@ package pages
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
 	"github.com/techorionai/constellation-identity/internal/handlers/http/clientip"
@@ -24,6 +25,10 @@ var pageBuckets = map[string]string{
 	"/login/mfa/passkey/finish":  ratelimit.BucketPasskey,
 	"/account/passkeys/options":  ratelimit.BucketPasskey,
 	"/account/passkeys/finish":   ratelimit.BucketPasskey,
+	// The passkey check before a link and before a link removal (P23).
+	"/account/identity-links/passkey/options": ratelimit.BucketPasskey,
+	"/account/identity-links/passkey/link":    ratelimit.BucketPasskey,
+	"/account/identity-links/passkey/remove":  ratelimit.BucketPasskey,
 }
 
 // rateLimit counts each request of a limited page in its IP bucket. It runs
@@ -36,6 +41,9 @@ func (h *Handler) rateLimit(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bucket, ok := pageBuckets[r.URL.Path]
+		if strings.HasPrefix(r.URL.Path, "/login/oidc/") {
+			bucket, ok = ratelimit.BucketIdp, true
+		}
 		// The bucket mfa_verify counts the check of a code (POST) only.
 		countsPostOnly := bucket == ratelimit.BucketMFAVerify || bucket == ratelimit.BucketPasskey
 		if !ok || r.Method == http.MethodOptions || (countsPostOnly && r.Method != http.MethodPost) {
