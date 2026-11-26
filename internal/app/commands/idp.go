@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/techorionai/constellation-platform-go/transaction"
@@ -85,6 +86,15 @@ type LocalFactors interface {
 	HasLocalFactor(ctx context.Context, userID string) (bool, error)
 	// VerifyLocalFactor checks a password or a code of the user.
 	VerifyLocalFactor(ctx context.Context, in LocalFactor) error
+	// BeginPasskeyConfirm and FinishPasskeyConfirm are the passkey check. The
+	// session hash binds the ceremony to one session.
+	BeginPasskeyConfirm(ctx context.Context, userID, sessionHash string) ([]byte, error)
+	FinishPasskeyConfirm(ctx context.Context, in PasskeyConfirm) error
+}
+
+// LinkRemover removes a link. The use cases of the identity links implement it.
+type LinkRemover interface {
+	Remove(ctx context.Context, in RemoveIdentityLink) error
 }
 
 // IdpDeps are the ports of the upstream flows.
@@ -102,6 +112,8 @@ type IdpDeps struct {
 	// Factors checks the local factors of a user for the purpose link. A nil
 	// value means that no user has a local factor.
 	Factors LocalFactors
+	// Remover removes a link for the purpose unlink.
+	Remover LinkRemover
 	Events  securityevents.Events
 	Tx      transaction.Transactor
 	Policy  domain.SessionPolicy
@@ -174,6 +186,8 @@ type StartIdp struct {
 	SecFetchSite string
 	// Confirm is the value that ConfirmLink gave (purpose link). It is a secret.
 	Confirm string
+	// RemoveProvider is the provider of the link to remove (purpose unlink).
+	RemoveProvider string
 }
 
 // StartedIdp is the result of the start.
@@ -226,6 +240,10 @@ func (i *Idp) Start(ctx context.Context, in StartIdp) (StartedIdp, error) {
 		} else {
 			rec.NeedAuthTime = true
 		}
+	case domain.FlowUnlink:
+		if err := i.startUnlink(ctx, in, &rec); err != nil {
+			return StartedIdp{}, err
+		}
 	case domain.FlowInvite:
 		if err := checkTokenValid(ctx, i.d.Tokens, in.InviteToken, domain.PurposeInvite, i.now()); err != nil {
 			return StartedIdp{}, i.invalidStart(ctx, in, err)
@@ -265,6 +283,33 @@ func (i *Idp) Start(ctx context.Context, in StartIdp) (StartedIdp, error) {
 	return StartedIdp{Location: loc, Binding: binding, Flow: domain.FlowID(state)}, nil
 }
 
+// startUnlink checks the start of the removal of a link by a user that has no
+// local factor (P23). A user with a local factor proves it on the page, with no
+// upstream login. The ID token must have a valid auth_time.
+func (i *Idp) startUnlink(ctx context.Context, in StartIdp, rec *domain.IdpFlow) error {
+	if !domain.ValidProvider(in.RemoveProvider) {
+		i.failed(ctx, in.Provider, in.Purpose, IdpOutcomeRefused)
+		return ErrIdpFailed
+	}
+	sess, err := i.session(ctx, in.SessionToken)
+	if err != nil {
+		return err
+	}
+	if !domain.FreshLogin(sess.AuthTime, i.now()) {
+		return ErrIdpReauth
+	}
+	has, err := i.hasLocalFactor(ctx, sess.UserID)
+	if err != nil {
+		return err
+	}
+	if has {
+		i.failed(ctx, in.Provider, in.Purpose, IdpOutcomeRefused)
+		return ErrIdpFailed
+	}
+	rec.SessionHash, rec.Fresh, rec.NeedAuthTime, rec.RemoveProvider = sess.TokenHash, true, true, in.RemoveProvider
+	return nil
+}
+
 // hasLocalFactor reports whether the user has a local factor.
 func (i *Idp) hasLocalFactor(ctx context.Context, userID string) (bool, error) {
 	if i.d.Factors == nil {
@@ -301,6 +346,9 @@ type ConfirmLink struct {
 	SessionToken string
 	Password     string
 	Code         string
+	// PasskeyBody is the response of a passkey. If it is not empty, the check
+	// uses the passkey and not the password or the code.
+	PasskeyBody []byte
 }
 
 // ConfirmLink checks the local factor of the user of the session before the
@@ -323,7 +371,11 @@ func (i *Idp) ConfirmLink(ctx context.Context, in ConfirmLink) (string, error) {
 	if err != nil || !has {
 		return "", err
 	}
-	if err := i.d.Factors.VerifyLocalFactor(ctx, LocalFactor{UserID: sess.UserID, Password: in.Password, Code: in.Code}); err != nil {
+	if len(in.PasskeyBody) > 0 {
+		if err := i.d.Factors.FinishPasskeyConfirm(ctx, PasskeyConfirm{UserID: sess.UserID, SessionHash: sess.TokenHash, Body: in.PasskeyBody}); err != nil {
+			return "", err
+		}
+	} else if err := i.d.Factors.VerifyLocalFactor(ctx, LocalFactor{UserID: sess.UserID, Password: in.Password, Code: in.Code}); err != nil {
 		return "", err
 	}
 	value, hash, err := domain.NewSecret()
@@ -336,6 +388,22 @@ func (i *Idp) ConfirmLink(ctx context.Context, in ConfirmLink) (string, error) {
 		return "", ErrIdpUnavailable
 	}
 	return value, nil
+}
+
+// BeginPasskeyConfirm makes the options of the passkey check of the session. It
+// needs a fresh session. The same options serve a link and a link removal.
+func (i *Idp) BeginPasskeyConfirm(ctx context.Context, sessionToken string) ([]byte, error) {
+	sess, err := i.session(ctx, sessionToken)
+	if err != nil {
+		return nil, err
+	}
+	if !domain.FreshLogin(sess.AuthTime, i.now()) {
+		return nil, ErrIdpReauth
+	}
+	if i.d.Factors == nil {
+		return nil, ErrPasskeysOff
+	}
+	return i.d.Factors.BeginPasskeyConfirm(ctx, sess.UserID, sess.TokenHash)
 }
 
 func (i *Idp) invalidStart(ctx context.Context, in StartIdp, err error) error {
@@ -412,6 +480,9 @@ const (
 	IdpPending = "pending"
 	// IdpLinked means the flow added a link. The user goes to the account page.
 	IdpLinked = "linked"
+	// IdpUnlinked means the flow removed a link. The sessions with an upstream
+	// login ended.
+	IdpUnlinked = "unlinked"
 )
 
 // IdpResult is the result of a good callback.
@@ -423,6 +494,9 @@ type IdpResult struct {
 	// AuthRequest and ReturnTo are the place to go after a login.
 	AuthRequest string
 	ReturnTo    string
+	// SessionEnded is true when the removal of a link ended the session of the
+	// request (purpose unlink).
+	SessionEnded bool
 }
 
 // Callback checks the answer of the provider and continues with the purpose of
@@ -465,6 +539,8 @@ func (i *Idp) Callback(ctx context.Context, in CallbackIdp) (IdpResult, error) {
 	switch rec.Purpose {
 	case domain.FlowLink:
 		return i.link(ctx, in, rec, id)
+	case domain.FlowUnlink:
+		return i.unlink(ctx, in, rec, id)
 	case domain.FlowInvite:
 		return i.invite(ctx, in, rec, id)
 	}
@@ -518,7 +594,7 @@ func (i *Idp) login(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id 
 	if err := i.d.Links.Touch(ctx, link.ID, id.Email, i.now()); err != nil {
 		i.d.Log.WarnContext(ctx, "identity.idp.touch_failed", "event", "identity.idp.touch_failed", "error", err)
 	}
-	res, err := i.continueLogin(ctx, in, rec, user.ID)
+	res, err := i.continueLogin(ctx, in, rec, user.ID, domain.UpstreamAuthTimeFresh(id.AuthTime, i.now()))
 	if err != nil {
 		return IdpResult{}, err
 	}
@@ -529,7 +605,7 @@ func (i *Idp) login(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id 
 
 // continueLogin makes the session, or the pending login if the user has a local
 // second factor.
-func (i *Idp) continueLogin(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, userID string) (IdpResult, error) {
+func (i *Idp) continueLogin(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, userID string, authTimeValid bool) (IdpResult, error) {
 	needsMFA, hasFactor, err := i.mfaPolicy(ctx, userID)
 	if err != nil {
 		return IdpResult{}, err
@@ -568,7 +644,7 @@ func (i *Idp) continueLogin(ctx context.Context, in CallbackIdp, rec domain.IdpF
 		}
 		var err error
 		issued, err = sessionStarter{sessionIssuer{repo: i.d.Sessions, policy: i.d.Policy, now: i.d.Now}}.
-			start(ctx, userID, in.PreviousToken, in.UserAgent, in.IP, domain.MethodsFederated())
+			start(ctx, userID, in.PreviousToken, in.UserAgent, in.IP, domain.MethodsFederatedFor(authTimeValid))
 		return err
 	}, txName("login_upstream"))
 	if errors.Is(err, ErrIdpFailed) {
@@ -638,6 +714,45 @@ func (i *Idp) link(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id d
 	}
 	i.linked(ctx, in.Provider, domain.FlowLink, sess.UserID, sess.UserID)
 	return IdpResult{Kind: IdpLinked, Purpose: domain.FlowLink}, nil
+}
+
+// unlink is the purpose unlink: the session of the start removes a link. The
+// upstream account of the login must be linked to the user of the session. The
+// ID token has a valid auth_time (the callback checked it), so the removal
+// passes the rule of P23 for a user with no local factor.
+func (i *Idp) unlink(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id domain.UpstreamIdentity) (IdpResult, error) {
+	sess, err := i.session(ctx, in.SessionToken)
+	if err != nil {
+		i.failed(ctx, in.Provider, domain.FlowUnlink, IdpOutcomeBadState)
+		return IdpResult{}, ErrIdpReauth
+	}
+	if subtle.ConstantTimeCompare([]byte(sess.TokenHash), []byte(rec.SessionHash)) != 1 {
+		i.failed(ctx, in.Provider, domain.FlowUnlink, IdpOutcomeBadState)
+		return IdpResult{}, ErrIdpExpired
+	}
+	// The upstream account must be an account of the user. An account of the
+	// attacker would give a valid auth_time and no proof about the user.
+	link, err := i.d.Links.GetBySubject(ctx, in.Provider, id.Subject)
+	if errors.Is(err, identitylinks.ErrNotFound) || (err == nil && link.UserID != sess.UserID) {
+		i.failed(ctx, in.Provider, domain.FlowUnlink, IdpOutcomeNotLinked)
+		return IdpResult{}, ErrIdpFailed
+	}
+	if err != nil {
+		return IdpResult{}, fmt.Errorf("get the link: %w", err)
+	}
+	if i.d.Remover == nil {
+		return IdpResult{}, ErrIdpFailed
+	}
+	err = i.d.Remover.Remove(ctx, RemoveIdentityLink{
+		UserID: sess.UserID, Provider: rec.RemoveProvider, Actor: sess.UserID, Self: true, UpstreamFresh: true,
+	})
+	if err != nil {
+		return IdpResult{}, err
+	}
+	i.count(ctx, in.Provider, domain.FlowUnlink, IdpOutcomeOK)
+	return IdpResult{
+		Kind: IdpUnlinked, Purpose: domain.FlowUnlink, SessionEnded: slices.Contains(sess.AuthMethods, domain.AMRFederated),
+	}, nil
 }
 
 // createLink adds the link of an upstream account. It runs in a transaction.
@@ -729,7 +844,7 @@ func (i *Idp) invite(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id
 			return err
 		}
 		issued, err = sessionIssuer{repo: i.d.Sessions, policy: i.d.Policy, now: i.d.Now}.
-			issue(ctx, user.ID, in.UserAgent, in.IP, domain.MethodsFederated())
+			issue(ctx, user.ID, in.UserAgent, in.IP, domain.MethodsFederatedFor(domain.UpstreamAuthTimeFresh(id.AuthTime, now)))
 		return err
 	}, txName("accept_invite_upstream"))
 	switch {

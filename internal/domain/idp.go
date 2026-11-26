@@ -74,10 +74,15 @@ const (
 	FlowLogin  = "login"
 	FlowLink   = "link"
 	FlowInvite = "invite"
+	// FlowUnlink is the removal of a link by a user with no local factor. The
+	// upstream login must have a valid auth_time (P23).
+	FlowUnlink = "unlink"
 )
 
 // ValidFlowPurpose reports whether s is a purpose of an upstream flow.
-func ValidFlowPurpose(s string) bool { return s == FlowLogin || s == FlowLink || s == FlowInvite }
+func ValidFlowPurpose(s string) bool {
+	return s == FlowLogin || s == FlowLink || s == FlowInvite || s == FlowUnlink
+}
 
 // IdpFlow is the record of an upstream flow between the start and the callback.
 // The store keeps it for a short time, under the hash of the state.
@@ -103,6 +108,9 @@ type IdpFlow struct {
 	// valid auth_time. The start sets it for a link of a user that has no local
 	// factor (P23).
 	NeedAuthTime bool `json:"need_auth_time,omitempty"`
+	// RemoveProvider is the provider of the link that the flow removes (purpose
+	// unlink).
+	RemoveProvider string `json:"remove_provider,omitempty"`
 }
 
 // FlowID returns the short ID of a flow. It is the start of the hash of the

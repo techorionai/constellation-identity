@@ -206,7 +206,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	})
 	idpCmd, err := commands.NewIdp(commands.IdpDeps{
 		Client: idpClient, Flows: adaptervalkey.NewIdpFlow(store), Links: linkRepo, Users: userRepo, Sessions: sessionRepo,
-		Tokens: tokens, MFA: mfaRepo, UserRoles: roles, Pending: mfaFlow.Pending(), Factors: mfaCmd, Events: events, Tx: tx, Policy: policy,
+		Tokens: tokens, MFA: mfaRepo, UserRoles: roles, Pending: mfaFlow.Pending(), Factors: mfaCmd, Remover: st.identityLinks, Events: events, Tx: tx, Policy: policy,
 		LookupAuthRequest: oidc.LookupAuthRequest, PasskeysOn: passkeysOn, RequireMFAForAdmins: cfg.MFA.RequireForAdmins,
 		Timeout: cfg.IDP.HTTPTimeout, Log: log, Now: clock,
 	})

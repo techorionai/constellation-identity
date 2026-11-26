@@ -31,7 +31,7 @@ func newIdpEnv(t *testing.T) *idpEnv {
 	}
 	idp, err := commands.NewIdp(commands.IdpDeps{
 		Client: e.client, Flows: e.flows, Links: e.links, Users: e.users, Sessions: e.sessions, Tokens: e.env.tokens,
-		MFA: e.mfa, UserRoles: e.roles, Pending: e.pending, Factors: e.cmd, Events: e.events, Tx: mock.Tx{}, Policy: policy,
+		MFA: e.mfa, UserRoles: e.roles, Pending: e.pending, Factors: e.cmd, Remover: e.links2, Events: e.events, Tx: mock.Tx{}, Policy: policy,
 		LookupAuthRequest: func(_ context.Context, id string) (commands.AuthRequestInfo, error) {
 			if id == "gone" {
 				return commands.AuthRequestInfo{}, commands.ErrAuthRequestGone

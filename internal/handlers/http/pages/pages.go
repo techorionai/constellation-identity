@@ -146,6 +146,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /account/identity-links/{provider}/link", h.linkConfirmForm)
 	mux.HandleFunc("POST /account/identity-links/{provider}/link", h.linkConfirm)
 	mux.HandleFunc("POST /account/identity-links/{provider}/remove", h.linkRemove)
+	mux.HandleFunc("POST /account/identity-links/passkey/options", h.linkPasskeyOptions)
+	mux.HandleFunc("POST /account/identity-links/passkey/link", h.linkPasskeyFinish)
+	mux.HandleFunc("POST /account/identity-links/passkey/remove", h.linkRemovePasskey)
 	mux.HandleFunc("GET /account/password", h.passwordForm)
 	mux.HandleFunc("POST /account/password", h.passwordSet)
 	mux.HandleFunc("GET /login/done", h.loginDone)
@@ -215,6 +218,9 @@ type view struct {
 	Provider string
 	FactorOn bool
 	StartURL string
+	// PasskeyConfirm is true when the user can use a passkey as the local factor
+	// of a link and of a link removal.
+	PasskeyConfirm bool
 }
 
 // linkRow is a link of the user on the account page.
@@ -222,6 +228,9 @@ type linkRow struct {
 	Provider string
 	Name     string
 	Email    string
+	// Confirm are the upstream logins that can confirm the removal of a user
+	// that has no local factor (P23).
+	Confirm []providerLink
 }
 
 // pageCSP returns the policy of a page that can have the script of the

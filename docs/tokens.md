@@ -157,9 +157,12 @@ A client must not refresh the token to answer this. A refresh keeps the old `aut
 | Password and passkey | `["pwd","hwk","mfa"]`, and `["pwd","hwk","user","mfa"]` with user verification |
 | Passkey only | `["hwk","user","mfa"]` |
 | Google or Microsoft | `["fed"]` |
+| Google or Microsoft, with a valid `auth_time` in the ID token | `["fed","fed_auth_time"]` |
 | Google or Microsoft and TOTP | `["fed","otp","mfa"]` |
 | Google or Microsoft and recovery code | `["fed","rec","mfa"]` |
 | Google or Microsoft and passkey | `["fed","hwk","mfa"]`, and `["fed","hwk","user","mfa"]` with user verification |
+
+The value `fed_auth_time` is not in the list of the contract. It shows that the ID token of the upstream login had an `auth_time` of 5 minutes or less at the login. `MeIdentityLinks_remove` uses it for a user with no local factor. A client must not use it for another decision.
 
 ## Personal API tokens
 

@@ -25,6 +25,10 @@ var pageBuckets = map[string]string{
 	"/login/mfa/passkey/finish":  ratelimit.BucketPasskey,
 	"/account/passkeys/options":  ratelimit.BucketPasskey,
 	"/account/passkeys/finish":   ratelimit.BucketPasskey,
+	// The passkey check before a link and before a link removal (P23).
+	"/account/identity-links/passkey/options": ratelimit.BucketPasskey,
+	"/account/identity-links/passkey/link":    ratelimit.BucketPasskey,
+	"/account/identity-links/passkey/remove":  ratelimit.BucketPasskey,
 }
 
 // rateLimit counts each request of a limited page in its IP bucket. It runs

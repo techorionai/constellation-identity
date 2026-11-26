@@ -109,7 +109,8 @@ func (h *Handler) idpStart(w http.ResponseWriter, r *http.Request) {
 		Provider: r.PathValue("provider"), Purpose: purpose, AuthRequest: q.Get("authRequest"), ReturnTo: q.Get("return_to"),
 		InviteToken: TokenFromRequest(r), Fresh: q.Get("prompt") == "login", SecFetchSite: r.Header.Get("Sec-Fetch-Site"),
 	}
-	if purpose == domain.FlowLink {
+	if purpose == domain.FlowLink || purpose == domain.FlowUnlink {
+		in.RemoveProvider = q.Get("remove")
 		// The use case reads the session one time (R17). It needs a fresh session
 		// and the proof of a local factor (P23). The error ErrIdpReauth sends a
 		// session that is too old to the login page.
@@ -176,6 +177,13 @@ func (h *Handler) idpCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login/mfa", http.StatusSeeOther)
 	case commands.IdpLinked:
 		http.Redirect(w, r, "/account/security", http.StatusSeeOther)
+	case commands.IdpUnlinked:
+		if res.SessionEnded {
+			clearCookie(w)
+			http.Redirect(w, r, "/login?removed=1", http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/account/security", http.StatusSeeOther)
 	default:
 		h.setCookie(w, res.Session)
 		target := afterLogin(res.AuthRequest, res.ReturnTo)
@@ -208,6 +216,12 @@ func (h *Handler) idpCallbackError(w http.ResponseWriter, r *http.Request, provi
 		h.message(w, r, http.StatusBadRequest, "Cannot log in", idpFailedText)
 	case errors.Is(err, commands.ErrIdpReauth):
 		h.loginRedirect(w, r, "/account/security")
+	case errors.Is(err, commands.ErrIdentityLinkNotFound):
+		h.message(w, r, http.StatusNotFound, "Link not found", "You have no link for this provider.")
+	case errors.Is(err, commands.ErrLastLoginMethod):
+		h.message(w, r, http.StatusConflict, "Last login method", "You cannot remove your last login method.")
+	case errors.Is(err, commands.ErrLocalFactorMissing):
+		h.message(w, r, http.StatusConflict, "Check not passed", factorMissingText)
 	case errors.Is(err, commands.ErrIdpUnavailable), errors.Is(err, commands.ErrMFAUnavailable):
 		h.message(w, r, http.StatusServiceUnavailable, "Service not available", "The service is not available. Try again later.")
 	default:
@@ -324,6 +338,7 @@ func (h *Handler) linkConfirmView(r *http.Request, userID, provider string, hasP
 		FactorOn: domain.HasLocalFactor(hasPassword, st.State),
 	}
 	v.StartURL = "/login/oidc/" + provider + "?purpose=link"
+	v.PasskeyConfirm = h.passkeysOn() && st.State.AcceptedPasskeys() > 0
 	return v, nil
 }
 
@@ -349,7 +364,7 @@ func (h *Handler) linkConfirmForm(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, r, err)
 		return
 	}
-	h.render(w, r, http.StatusOK, "account_link", v)
+	h.renderLink(w, r, http.StatusOK, v)
 }
 
 // linkConfirm checks the local factor and shows the link to the start of the
@@ -385,7 +400,7 @@ func (h *Handler) linkConfirm(w http.ResponseWriter, r *http.Request) {
 		v.StartURL += "&confirm=" + url.QueryEscape(confirm)
 	}
 	v.Done = true
-	h.render(w, r, http.StatusOK, "account_link", v)
+	h.renderLink(w, r, http.StatusOK, v)
 }
 
 func (h *Handler) linkConfirmError(w http.ResponseWriter, r *http.Request, res queries.SessionResult, provider string, err error) {
@@ -396,7 +411,7 @@ func (h *Handler) linkConfirmError(w http.ResponseWriter, r *http.Request, res q
 			return
 		}
 		v.Error = text
-		h.render(w, r, status, "account_link", v)
+		h.renderLink(w, r, status, v)
 	}
 	switch {
 	case errors.Is(err, commands.ErrLocalFactorRequired):
@@ -414,4 +429,14 @@ func (h *Handler) linkConfirmError(w http.ResponseWriter, r *http.Request, res q
 	default:
 		h.serverError(w, r, err)
 	}
+}
+
+// renderLink shows the page of a link. It has the script of the passkeys if the
+// user can use a passkey as the local factor.
+func (h *Handler) renderLink(w http.ResponseWriter, r *http.Request, status int, v view) {
+	if v.PasskeyConfirm {
+		v.Script = true
+		w.Header().Set("Content-Security-Policy", ContentSecurityPolicyWithScript(""))
+	}
+	h.render(w, r, status, "account_link", v)
 }

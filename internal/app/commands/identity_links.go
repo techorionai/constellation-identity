@@ -110,6 +110,10 @@ type RemoveIdentityLink struct {
 	// the page checked a password or a code, or the token of the API call has a
 	// local factor in amr. It matters only with Self.
 	FactorVerified bool
+	// UpstreamFresh is true when the login of the caller had an upstream ID token
+	// with a valid auth_time (P23). It counts for a user with no local factor. It
+	// matters only with Self.
+	UpstreamFresh bool
 }
 
 // Remove removes the link of a user for a provider. The order of the checks:
@@ -175,12 +179,14 @@ func (l *IdentityLinks) Remove(ctx context.Context, in RemoveIdentityLink) error
 		// The check comes after the checks of the data and before the first change.
 		if in.Self {
 			// A user that has a local factor must prove it. A user with no local
-			// factor cannot prove anything, and the removal is refused (P23).
-			if !domain.HasLocalFactor(u.PasswordHash != "", st) {
+			// factor needs an upstream login with a valid auth_time, else the
+			// removal is refused (P23).
+			if domain.HasLocalFactor(u.PasswordHash != "", st) {
+				if !in.FactorVerified {
+					return ErrLocalFactorRequired
+				}
+			} else if !in.UpstreamFresh {
 				return ErrLocalFactorMissing
-			}
-			if !in.FactorVerified {
-				return ErrLocalFactorRequired
 			}
 		}
 		if err := l.d.Links.Remove(ctx, u.ID, in.Provider); err != nil {

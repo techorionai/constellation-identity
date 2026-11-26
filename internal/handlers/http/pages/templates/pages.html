@@ -120,13 +120,18 @@
 <ul>
 {{range .Links}}<li>
 <strong>{{.Name}}</strong>{{if .Email}} {{.Email}}{{end}}
-{{if $.FactorOn}}<form method="post" action="/account/identity-links/{{.Provider}}/remove">
+{{if $.FactorOn}}{{if or $.HasPassword $.TOTPOn}}<form method="post" action="/account/identity-links/{{.Provider}}/remove">
 {{if $.HasPassword}}<label for="rm-password-{{.Provider}}">Password</label>
 <input id="rm-password-{{.Provider}}" name="password" type="password" autocomplete="current-password" maxlength="512">
 {{end}}{{if $.TOTPOn}}<label for="rm-code-{{.Provider}}">Code from the app, or a recovery code</label>
 <input id="rm-code-{{.Provider}}" name="code" type="text" autocomplete="one-time-code" maxlength="64">
 {{end}}<button type="submit">Remove</button>
-</form>{{else}}<p>Set a password or an authenticator app to remove this account.</p>{{end}}
+</form>{{end}}{{if $.PasskeyConfirm}}<div class="passkey" data-passkey="link-remove" data-options="/account/identity-links/passkey/options" data-finish="/account/identity-links/passkey/remove?provider={{.Provider}}">
+<button type="button" class="passkey-button" hidden>Remove with a passkey</button>
+<p class="error passkey-error" role="alert" hidden></p>
+</div>{{end}}{{else}}{{if .Confirm}}<p>Log in again to remove this account. The account that you use must be one of your linked accounts, and it must show a recent login.</p>
+{{range .Confirm}}<p><a class="idp" href="{{.URL}}">Remove with {{.Name}}</a></p>
+{{end}}{{else}}<p>Set a password or an authenticator app to remove this account.</p>{{end}}{{end}}
 </li>
 {{end}}</ul>
 {{end}}{{range .Linkable}}<p><a class="idp" href="{{.URL}}">Link {{.Name}}</a></p>
@@ -139,15 +144,19 @@
 <p><a class="idp" href="{{.StartURL}}">Continue with {{.ProviderName}}</a></p>
 {{else if not .FactorOn}}<p>You have no password and no authenticator app. {{.ProviderName}} must show that you logged in a short time ago. If it does not, the link is refused. Set a password to avoid this.</p>
 <p><a class="idp" href="{{.StartURL}}">Link {{.ProviderName}}</a></p>
-{{else if or .HasPassword .TOTPOn}}<p>Confirm that it is you before you link a {{.ProviderName}} account.</p>
-<form method="post" action="/account/identity-links/{{.Provider}}/link">
+{{else if or .HasPassword .TOTPOn .PasskeyConfirm}}<p>Confirm that it is you before you link a {{.ProviderName}} account.</p>
+{{if or .HasPassword .TOTPOn}}<form method="post" action="/account/identity-links/{{.Provider}}/link">
 {{if .HasPassword}}<label for="password">Password</label>
 <input id="password" name="password" type="password" autocomplete="current-password" maxlength="512">
 {{end}}{{if .TOTPOn}}<label for="code">Code from the app, or a recovery code</label>
 <input id="code" name="code" type="text" autocomplete="one-time-code" maxlength="64">
 {{end}}<button type="submit">Confirm</button>
 </form>
-{{else}}<p>Set a password or an authenticator app first. Then you can link accounts.</p>
+{{end}}{{if .PasskeyConfirm}}<div class="passkey" data-passkey="link-confirm" data-options="/account/identity-links/passkey/options" data-finish="/account/identity-links/passkey/link?provider={{.Provider}}">
+<button type="button" class="passkey-button" hidden>Confirm with a passkey</button>
+<p class="error passkey-error" role="alert" hidden></p>
+</div>
+{{end}}{{else}}<p>Set a password or an authenticator app first. Then you can link accounts.</p>
 {{end}}
 <p><a href="/account/security">Account security</a></p>
 {{template "footer" .}}{{end}}

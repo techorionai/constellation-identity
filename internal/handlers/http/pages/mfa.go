@@ -248,6 +248,20 @@ func (h *Handler) securityPage(w http.ResponseWriter, r *http.Request) {
 			linked[l.Provider] = true
 			v.Links = append(v.Links, linkRow{Provider: l.Provider, Name: providerNames[l.Provider], Email: l.Email})
 		}
+		v.FactorOn = domain.HasLocalFactor(res.User.PasswordHash != "", st.State)
+		v.PasskeyConfirm = h.passkeysOn() && st.State.AcceptedPasskeys() > 0
+		for i := range v.Links {
+			if v.FactorOn {
+				break
+			}
+			// A user with no local factor removes a link after an upstream login
+			// that has a valid auth_time (P23). The account must be of the user.
+			for _, p := range h.idpLinks(domain.FlowUnlink, url.Values{"remove": {v.Links[i].Provider}}) {
+				if linked[p.Provider] {
+					v.Links[i].Confirm = append(v.Links[i].Confirm, p)
+				}
+			}
+		}
 		for _, p := range h.idpLinks(domain.FlowLink, nil) {
 			if !linked[p.Provider] {
 				// The link goes to the page of the local factor check (P23).
@@ -255,7 +269,10 @@ func (h *Handler) securityPage(w http.ResponseWriter, r *http.Request) {
 				v.Linkable = append(v.Linkable, p)
 			}
 		}
-		v.FactorOn = domain.HasLocalFactor(res.User.PasswordHash != "", st.State)
+	}
+	if v.PasskeyConfirm {
+		v.Script = true
+		w.Header().Set("Content-Security-Policy", ContentSecurityPolicyWithScript(""))
 	}
 	h.render(w, r, http.StatusOK, "account_security", v)
 }

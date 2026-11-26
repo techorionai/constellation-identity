@@ -20,6 +20,11 @@ const (
 	// AMRFederated is the first factor of a login with an upstream identity
 	// provider. It is the value "fed" of RFC 8176.
 	AMRFederated = "fed"
+	// AMRFederatedAuthTime marks a login with an upstream identity provider
+	// whose ID token had an auth_time that passed the strict fresh login rule
+	// (P23). It is an additional value that goes with "fed". The removal of a
+	// link through the API needs it for a user with no local factor.
+	AMRFederatedAuthTime = "fed_auth_time"
 )
 
 // MethodsPassword is the amr of a login with a password only.
@@ -28,6 +33,16 @@ func MethodsPassword() []string { return []string{AMRPassword} }
 // MethodsFederated is the amr of a login with an upstream identity provider
 // and no second factor.
 func MethodsFederated() []string { return []string{AMRFederated} }
+
+// MethodsFederatedFor is the amr of a login with an upstream identity provider.
+// If the ID token had a valid auth_time (P23), the amr also has the marker
+// AMRFederatedAuthTime.
+func MethodsFederatedFor(authTimeValid bool) []string {
+	if authTimeValid {
+		return []string{AMRFederated, AMRFederatedAuthTime}
+	}
+	return MethodsFederated()
+}
 
 // WithSecondFactor returns the amr of a login with the first factor and a
 // second factor: the first factor, then the factor values, then mfa. The first

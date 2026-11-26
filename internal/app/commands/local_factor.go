@@ -15,9 +15,11 @@ var (
 	// did not prove it. The password or the code is missing or wrong.
 	ErrLocalFactorRequired = errors.New("a local factor is necessary")
 	// ErrLocalFactorMissing means the user has no local factor that the check
-	// can use. A user with no password, no TOTP, and no passkey has none. A user
-	// with only a passkey also gets this error, because the check accepts a
-	// password and a code only.
+	// can use. A user with no password, no TOTP, and no passkey has none. The
+	// password and code check gives it also to a user with only a passkey. The
+	// passkey check is a separate step (FinishPasskeyConfirm). For a removal, a
+	// user with no local factor gets it when the login has no valid upstream
+	// auth_time.
 	ErrLocalFactorMissing = errors.New("the user has no password or code to check")
 )
 
