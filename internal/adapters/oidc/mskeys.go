@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
 
@@ -31,15 +32,26 @@ type msKey struct {
 type msKeySet struct {
 	url    string
 	client *http.Client
+	// now is the clock. The default is time.Now.
+	now func() time.Time
 
-	mu   sync.Mutex
-	keys []msKey
+	mu      sync.Mutex
+	keys    []msKey
+	fetched time.Time
+	// fetchMu lets one call read the JWKS. A call that finds keys in memory does
+	// not wait for it (R6).
+	fetchMu sync.Mutex
 }
 
+// minKeyRefresh is the shortest time between two reads of the JWKS. A token with
+// an unknown kid does not make a read before this time passes (R6).
+const minKeyRefresh = time.Minute
+
 // VerifySignature checks the signature of the token with the key of its kid. If
-// the kid is not known, it reads the JWKS again. After a good signature it
-// checks the issuer property of the key against the iss and the tid of the
-// token.
+// the kid is not known, it reads the JWKS again, at most one time in
+// minKeyRefresh. A bad signature with a known kid does not make a read (R16).
+// After a good signature it checks the issuer property of the key against the
+// iss and the tid of the token.
 func (s *msKeySet) VerifySignature(ctx context.Context, rawJWT string) ([]byte, error) {
 	jws, err := jose.ParseSignedCompact(rawJWT, []jose.SignatureAlgorithm{jose.RS256})
 	if err != nil || len(jws.Signatures) != 1 {
@@ -51,10 +63,12 @@ func (s *msKeySet) VerifySignature(ctx context.Context, rawJWT string) ([]byte, 
 		if err != nil {
 			return nil, err
 		}
+		known := false
 		for _, k := range keys {
 			if kid != "" && k.jwk.KeyID != kid {
 				continue
 			}
+			known = true
 			payload, err := jws.Verify(&k.jwk)
 			if err != nil {
 				continue
@@ -71,21 +85,50 @@ func (s *msKeySet) VerifySignature(ctx context.Context, rawJWT string) ([]byte, 
 			}
 			return payload, nil
 		}
+		if known {
+			// The key of the kid is in memory and the signature is wrong. A read of
+			// the JWKS cannot change this result.
+			break
+		}
 	}
 	return nil, errors.New("no key verifies the token")
 }
 
+func (s *msKeySet) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+// get returns the keys. Without refresh, it reads the JWKS only if it has no
+// key. With refresh, it reads the JWKS only if the last read is older than
+// minKeyRefresh. The mutex is not held during the HTTP call, so a call that finds
+// keys in memory does not wait (R6).
 func (s *msKeySet) get(ctx context.Context, refresh bool) ([]msKey, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !refresh && len(s.keys) > 0 {
-		return s.keys, nil
+	keys, fetched := s.keys, s.fetched
+	s.mu.Unlock()
+	if len(keys) > 0 && (!refresh || s.clock().Sub(fetched) < minKeyRefresh) {
+		return keys, nil
 	}
+	s.fetchMu.Lock()
+	defer s.fetchMu.Unlock()
+	s.mu.Lock()
+	if len(s.keys) > 0 && !s.fetched.Equal(fetched) {
+		// Another call read the JWKS while this call waited.
+		keys = s.keys
+		s.mu.Unlock()
+		return keys, nil
+	}
+	s.mu.Unlock()
 	keys, err := s.fetch(ctx)
 	if err != nil {
 		return nil, err
 	}
-	s.keys = keys
+	s.mu.Lock()
+	s.keys, s.fetched = keys, s.clock()
+	s.mu.Unlock()
 	return keys, nil
 }
 

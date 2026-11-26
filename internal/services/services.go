@@ -76,9 +76,9 @@ type options struct {
 	rateLimiter ratelimit.Limiter
 	// verifierClock is the clock of the token verifier of the /v1 routes. Nil means time.Now.
 	verifierClock func() time.Time
-	// idpGoogleBase and idpMicrosoftBase replace the issuer of Google and the login
-	// base of Microsoft. A test uses them to point the service at a test provider.
-	idpGoogleBase, idpMicrosoftBase string
+	// idpTransport is the HTTP transport of the upstream login client. A test uses
+	// it to send the requests to a test provider.
+	idpTransport http.RoundTripper
 }
 
 // Option changes the composition. The options are for tests. Production code
@@ -134,10 +134,12 @@ func WithVerifierClock(now func() time.Time) Option {
 	return func(o *options) { o.verifierClock = now }
 }
 
-// WithIdpBaseURLs replaces the issuer of Google and the login base of Microsoft
-// with the URLs of a test provider. Production code uses the defaults.
-func WithIdpBaseURLs(google, microsoft string) Option {
-	return func(o *options) { o.idpGoogleBase, o.idpMicrosoftBase = google, microsoft }
+// WithIdpTransport sets the HTTP transport of the upstream login client. A test
+// gives a transport that sends the requests to a test provider. The issuers and
+// the hosts of the providers stay the real values (R14). Production code uses
+// the default transport.
+func WithIdpTransport(rt http.RoundTripper) Option {
+	return func(o *options) { o.idpTransport = rt }
 }
 
 func newOptions(opts []Option) options {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/techorionai/constellation-platform-go/auth"
 
@@ -100,7 +101,17 @@ func (s *Server) MeIdentityLinksRemove(ctx context.Context, r gen.MeIdentityLink
 	if err := s.checkFreshLogin(ctx); err != nil {
 		return nil, err
 	}
-	err = s.d.IdentityLinks.Remove(ctx, commands.RemoveIdentityLink{UserID: p.ID, Provider: r.Provider, Actor: p.ID})
+	// The API call cannot carry a password or a code. The token must show that
+	// the login used a local factor (pwd, otp, rec, or hwk in amr), and the user
+	// must have one (P23). A token of a login with only an upstream account does
+	// not pass. The user then logs in with the local factor, or uses the page.
+	err = s.d.IdentityLinks.Remove(ctx, commands.RemoveIdentityLink{
+		UserID: p.ID, Provider: r.Provider, Actor: p.ID, Self: true,
+		FactorVerified: slices.ContainsFunc(p.AuthMethods, domain.LocalFactorMethod),
+	})
+	if errors.Is(err, commands.ErrLocalFactorRequired) || errors.Is(err, commands.ErrLocalFactorMissing) {
+		return nil, errFreshLoginRequired
+	}
 	if err := mapLinkRemoveError(err); err != nil {
 		return nil, err
 	}

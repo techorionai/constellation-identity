@@ -28,7 +28,7 @@ var ErrIdpSecretMissing = errors.New("the client secret of a provider is missing
 func (a *App) buildIdpClient(o options, providers []string) (*adapteroidc.Client, error) {
 	cfg := a.cfg
 	store := adaptersecrets.NewIdpSecrets(a.secrets)
-	ic := adapteroidc.Config{Issuer: cfg.Issuer, HTTPTimeout: cfg.IDP.HTTPTimeout, Now: o.clock}
+	ic := adapteroidc.Config{Issuer: cfg.Issuer, HTTPTimeout: cfg.IDP.HTTPTimeout, Now: o.clock, Transport: o.idpTransport, Log: a.log}
 	for _, p := range providers {
 		secret, err := store.ClientSecret(context.Background(), p)
 		if errors.Is(err, idpsecrets.ErrNotFound) {
@@ -43,12 +43,10 @@ func (a *App) buildIdpClient(o options, providers []string) (*adapteroidc.Client
 		case domain.ProviderGoogle:
 			ic.Google = adapteroidc.ProviderConfig{
 				ClientID: cfg.IDP.Google.ClientID, ClientSecret: secret, AllowedDomains: cfg.IDP.Google.AllowedDomains,
-				BaseURL: o.idpGoogleBase,
 			}
 		case domain.ProviderMicrosoft:
 			ic.Microsoft = adapteroidc.ProviderConfig{
 				ClientID: cfg.IDP.Microsoft.ClientID, ClientSecret: secret, Tenant: cfg.IDP.Microsoft.Tenant,
-				BaseURL: o.idpMicrosoftBase,
 			}
 		}
 	}

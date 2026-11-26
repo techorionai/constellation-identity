@@ -143,6 +143,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /assets/passkey.js", h.passkeyScript)
 	mux.HandleFunc("GET /login/oidc/{provider}", h.idpStart)
 	mux.HandleFunc("GET /login/oidc/{provider}/callback", h.idpCallback)
+	mux.HandleFunc("GET /account/identity-links/{provider}/link", h.linkConfirmForm)
+	mux.HandleFunc("POST /account/identity-links/{provider}/link", h.linkConfirm)
 	mux.HandleFunc("POST /account/identity-links/{provider}/remove", h.linkRemove)
 	mux.HandleFunc("GET /account/password", h.passwordForm)
 	mux.HandleFunc("POST /account/password", h.passwordSet)
@@ -208,6 +210,11 @@ type view struct {
 	Links       []linkRow
 	Linkable    []providerLink
 	HasPassword bool
+	// The fields of the page of a link: the provider, the flag of a local
+	// factor, and the URL of the start.
+	Provider string
+	FactorOn bool
+	StartURL string
 }
 
 // linkRow is a link of the user on the account page.

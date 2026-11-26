@@ -286,3 +286,49 @@ func TestIssue16_TenantRule(t *testing.T) {
 		}
 	}
 }
+
+// U36 (R3, P23): the strict freshness rule needs an auth_time, for each provider.
+func TestIssue16_U36_UpstreamAuthTimeFresh(t *testing.T) {
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name string
+		auth time.Time
+		want bool
+	}{
+		{"1 minute old", now.Add(-time.Minute), true},
+		{"4 minutes 59 seconds old", now.Add(-5*time.Minute + time.Second), true},
+		{"10 minutes old", now.Add(-10 * time.Minute), false},
+		{"no auth_time", time.Time{}, false},
+		{"far in the future", now.Add(time.Hour), false},
+		{"a little in the future", now.Add(30 * time.Second), true},
+	} {
+		if got := domain.UpstreamAuthTimeFresh(c.auth, now); got != c.want {
+			t.Errorf("%s = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// U37 (P23): the local factors are the password, TOTP, and an accepted passkey.
+func TestIssue16_U37_HasLocalFactor(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		pw   bool
+		st   domain.MFAState
+		want bool
+	}{
+		{"nothing", false, domain.MFAState{}, false},
+		{"password", true, domain.MFAState{}, true},
+		{"totp", false, domain.MFAState{HasTOTP: true}, true},
+		{"passkey, on", false, domain.MFAState{Passkeys: 1, PasskeysOn: true}, true},
+		{"passkey, off", false, domain.MFAState{Passkeys: 1}, false},
+	} {
+		if got := domain.HasLocalFactor(c.pw, c.st); got != c.want {
+			t.Errorf("%s = %v, want %v", c.name, got, c.want)
+		}
+	}
+	for m, want := range map[string]bool{"pwd": true, "otp": true, "rec": true, "hwk": true, "fed": false, "mfa": false, "": false} {
+		if got := domain.LocalFactorMethod(m); got != want {
+			t.Errorf("method %q = %v, want %v", m, got, want)
+		}
+	}
+}

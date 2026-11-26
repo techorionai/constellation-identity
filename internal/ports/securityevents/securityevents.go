@@ -22,6 +22,8 @@ const (
 	// changes of the upstream links.
 	ActionIdentityLinkAdd    = "identity:identity_link:add"
 	ActionIdentityLinkRemove = "identity:identity_link:remove"
+	// ActionPasswordSet is the action of the first password of a user.
+	ActionPasswordSet = "identity:password:set"
 )
 
 // The kinds of the security notices.
@@ -35,6 +37,8 @@ const (
 	// a change of the upstream links.
 	NoticeIdentityLinkAdded   = "identity_link_added"
 	NoticeIdentityLinkRemoved = "identity_link_removed"
+	// NoticePasswordSet tells the user that a password was set.
+	NoticePasswordSet = "password_set"
 	// NoticeMfaLimited means a limit of second factor failures is reached.
 	// Someone can know the password of the user.
 	NoticeMfaLimited = "mfa_attempts_limited"

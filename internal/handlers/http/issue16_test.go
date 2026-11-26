@@ -78,6 +78,7 @@ type linkRig struct {
 	users  *mock.Users
 	events *mock.Events
 	sess   *mock.Sessions
+	mfa    *mock.MFA
 }
 
 func newLinkRig(t *testing.T) *linkRig {
@@ -86,9 +87,9 @@ func newLinkRig(t *testing.T) *linkRig {
 	for id, email := range map[string]string{mfaUser: "u@example.com", mfaOther: "o@example.com", mfaAdmin: "a@example.com"} {
 		users.Rows[id] = domain.User{ID: id, Email: email, Name: id, Status: domain.UserActive, PasswordHash: "hash"}
 	}
-	r := &linkRig{links: mock.NewIdentityLinks(), users: users, events: &mock.Events{}, sess: mock.NewSessions()}
+	r := &linkRig{links: mock.NewIdentityLinks(), users: users, events: &mock.Events{}, sess: mock.NewSessions(), mfa: mock.NewMFA()}
 	cmd := commands.NewIdentityLinks(commands.IdentityLinksDeps{
-		Users: users, Links: r.links, Sessions: r.sess, APITokens: mock.NewAPITokens(users), MFA: mock.NewMFA(), Events: r.events, Tx: mock.Tx{},
+		Users: users, Links: r.links, Sessions: r.sess, APITokens: mock.NewAPITokens(users), MFA: r.mfa, Events: r.events, Tx: mock.Tx{},
 		PasskeysOn: true, ProviderOn: func(p string) bool { return p == "google" || p == "microsoft" },
 		Log: slog.New(slog.NewTextHandler(devNull{}, nil)), Now: func() time.Time { return mfaNow },
 	})
@@ -162,8 +163,22 @@ func TestIssue16_MeRemoveOrder(t *testing.T) {
 	r.users.Rows[mfaUser] = u
 	r.add("l1", mfaUser, "google")
 	wantProblem(t, "last method", call(r.h, http.MethodDelete, path, "me-fresh", ""), http.StatusConflict, "last_login_method")
-	if len(r.links.Rows) != 1 || len(r.events.Audits) != 0 {
+	// A second link, but no local factor: the removal is refused (P23).
+	r.add("l2", mfaUser, "microsoft")
+	wantFresh(t, "no local factor", call(r.h, http.MethodDelete, path, "me-fresh", ""))
+	// A user with a TOTP factor has a local factor. A token of a login with only
+	// an upstream account does not show one, so it is refused. A token with pwd
+	// is good.
+	r.mfa.TOTP[mfaUser] = domain.TOTPRecord{}
+	wantFresh(t, "fed token", call(r.h, http.MethodDelete, path, "me-fresh-fed", ""))
+	if len(r.links.Rows) != 2 {
 		t.Fatal("a refusal changes nothing")
+	}
+	if rec := call(r.h, http.MethodDelete, path, "me-fresh", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("with a local factor: %d %s", rec.Code, rec.Body)
+	}
+	if len(r.links.Rows) != 1 || len(r.events.Audits) != 1 {
+		t.Fatal("the removal writes one audit entry, and the refusals none")
 	}
 }
 

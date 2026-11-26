@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,25 +28,25 @@ var bg = context.Background()
 func newClient(t *testing.T, p *oidcprovider.Provider, tenant string, domains ...string) *adapter.Client {
 	t.Helper()
 	return adapter.New(adapter.Config{
-		Issuer: "https://id.example.com", HTTPTimeout: 3 * time.Second,
+		Issuer: "https://id.example.com", HTTPTimeout: 3 * time.Second, Transport: p.Transport(),
 		Google: adapter.ProviderConfig{
-			ClientID: oidcprovider.GoogleClientID, ClientSecret: oidcprovider.GoogleSecret, BaseURL: p.GoogleBase(), AllowedDomains: domains,
+			ClientID: oidcprovider.GoogleClientID, ClientSecret: oidcprovider.GoogleSecret, AllowedDomains: domains,
 		},
 		Microsoft: adapter.ProviderConfig{
-			ClientID: oidcprovider.MSClientID, ClientSecret: oidcprovider.MSSecret, BaseURL: p.MicrosoftBase(), Tenant: tenant,
+			ClientID: oidcprovider.MSClientID, ClientSecret: oidcprovider.MSSecret, Tenant: tenant,
 		},
 	})
 }
 
 // authorize does the browser steps: the authorization request at the provider.
 // It returns the code and the iss parameter of the redirect.
-func authorize(t *testing.T, c *adapter.Client, provider string, p upstreamidp.AuthParams) (code, iss, errCode string) {
+func authorize(t *testing.T, c *adapter.Client, pr *oidcprovider.Provider, provider string, p upstreamidp.AuthParams) (code, iss, errCode string) {
 	t.Helper()
 	loc, err := c.AuthCodeURL(bg, provider, p)
 	if err != nil {
 		t.Fatalf("AuthCodeURL: %v", err)
 	}
-	hc := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	hc := &http.Client{Transport: pr.Transport(), CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	req, _ := http.NewRequestWithContext(bg, http.MethodGet, loc, nil)
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -69,7 +70,7 @@ func exchange(t *testing.T, c *adapter.Client, p *oidcprovider.Provider, login o
 	t.Helper()
 	p.Expect(login)
 	ap := params()
-	code, iss, _ := authorize(t, c, login.Provider, ap)
+	code, iss, _ := authorize(t, c, p, login.Provider, ap)
 	return c.Exchange(bg, login.Provider, upstreamidp.ExchangeParams{Code: code, Verifier: ap.Verifier, Nonce: ap.Nonce, Iss: iss})
 }
 
@@ -245,7 +246,7 @@ func TestIssue16_GoogleIssParamAndTokenErrors(t *testing.T) {
 	p.SetSecret("google", oidcprovider.GoogleSecret)
 	p.Expect(googleLogin(nil))
 	ap := params()
-	code, iss, _ := authorize(t, c, "google", ap)
+	code, iss, _ := authorize(t, c, p, "google", ap)
 	ep := upstreamidp.ExchangeParams{Code: code, Verifier: ap.Verifier, Nonce: ap.Nonce, Iss: iss}
 	if _, err := c.Exchange(bg, "google", ep); err != nil {
 		t.Fatal(err)
@@ -255,7 +256,7 @@ func TestIssue16_GoogleIssParamAndTokenErrors(t *testing.T) {
 	}
 	// A wrong PKCE verifier.
 	p.Expect(googleLogin(nil))
-	code, iss, _ = authorize(t, c, "google", ap)
+	code, iss, _ = authorize(t, c, p, "google", ap)
 	if _, err := c.Exchange(bg, "google", upstreamidp.ExchangeParams{Code: code, Verifier: strings.Repeat("w", 43), Nonce: ap.Nonce, Iss: iss}); !errors.Is(err, upstreamidp.ErrProvider) {
 		t.Errorf("wrong verifier: %v", err)
 	}
@@ -337,8 +338,8 @@ func TestIssue16_MicrosoftTenantGUID(t *testing.T) {
 func TestIssue16_Timeouts(t *testing.T) {
 	p := oidcprovider.Start(t)
 	c := adapter.New(adapter.Config{
-		Issuer: "https://id.example.com", HTTPTimeout: time.Second,
-		Google: adapter.ProviderConfig{ClientID: oidcprovider.GoogleClientID, ClientSecret: oidcprovider.GoogleSecret, BaseURL: p.GoogleBase()},
+		Issuer: "https://id.example.com", HTTPTimeout: time.Second, Transport: p.Transport(),
+		Google: adapter.ProviderConfig{ClientID: oidcprovider.GoogleClientID, ClientSecret: oidcprovider.GoogleSecret},
 	})
 	p.SetDelay("discovery", 5*time.Second)
 	start := time.Now()
@@ -366,7 +367,7 @@ func TestIssue16_OnlyTheProviderHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, h := range p.Hosts() {
-		if h != p.Host() {
+		if !slices.Contains(oidcprovider.ProviderHosts(), h) {
 			t.Errorf("a call to the host %q", h)
 		}
 	}

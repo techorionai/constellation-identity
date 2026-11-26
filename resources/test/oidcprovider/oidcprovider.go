@@ -4,8 +4,11 @@
 // sets of Google and of Microsoft. The service calls it over HTTP in the same
 // way as a real provider. Import it from test code only.
 //
-// The discovery documents are copies of the real documents (see testdata). Only
-// the hosts are different.
+// The discovery documents are copies of the real documents (see testdata). The
+// issuers and the hosts are the real values. The service sends its requests
+// through Provider.Transport, which sends each request to the test server. The
+// transport records the host of each request and refuses a host that is not a
+// provider host, so a test can find a call to another host.
 package oidcprovider
 
 import (
@@ -20,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +31,8 @@ import (
 
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+
+	"github.com/techorionai/constellation-identity/internal/domain"
 )
 
 //go:embed testdata/google.json testdata/microsoft.json
@@ -179,14 +185,57 @@ func (p *Provider) now() time.Time {
 	return time.Now()
 }
 
-// GoogleBase returns the issuer of the Google side.
-func (p *Provider) GoogleBase() string { return p.URL + "/google" }
+// GoogleBase returns the issuer of Google. It is the real issuer.
+func (p *Provider) GoogleBase() string { return domain.GoogleIssuer }
 
-// MicrosoftBase returns the login base of the Microsoft side.
-func (p *Provider) MicrosoftBase() string { return p.URL + "/ms" }
+// MicrosoftBase returns the login base of Microsoft. It is the real value.
+func (p *Provider) MicrosoftBase() string { return domain.MicrosoftLoginBase }
 
-// Host returns the host and the port of the server.
-func (p *Provider) Host() string { return strings.TrimPrefix(p.URL, "http://") }
+// hostPrefixes gives the path prefix of the test server for each provider host.
+var hostPrefixes = map[string]string{
+	"accounts.google.com":          "/google",
+	"oauth2.googleapis.com":        "/google/oauth2googleapis",
+	"www.googleapis.com":           "/google/wwwgoogleapis",
+	"openidconnect.googleapis.com": "/google/openidconnect",
+	"login.microsoftonline.com":    "/ms",
+}
+
+// ProviderHosts returns the hosts of the providers. A call to any other host is
+// an error of the service.
+func ProviderHosts() []string {
+	out := make([]string, 0, len(hostPrefixes))
+	for h := range hostPrefixes {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Transport returns the HTTP transport that sends the requests to the provider
+// hosts to the test server. It records the host of each request. It refuses
+// each other host with an error.
+func (p *Provider) Transport() http.RoundTripper { return providerTransport{p: p} }
+
+type providerTransport struct{ p *Provider }
+
+func (t providerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	p := t.p
+	p.mu.Lock()
+	p.hosts = append(p.hosts, r.URL.Host)
+	p.mu.Unlock()
+	prefix, ok := hostPrefixes[r.URL.Host]
+	if !ok {
+		return nil, fmt.Errorf("oidcprovider: the request goes to the host %q, which is not a provider host", r.URL.Host)
+	}
+	base, err := url.Parse(p.URL)
+	if err != nil {
+		return nil, err
+	}
+	out := r.Clone(r.Context())
+	out.URL.Scheme, out.URL.Host, out.Host = base.Scheme, base.Host, base.Host
+	out.URL.Path, out.URL.RawPath = prefix+r.URL.Path, ""
+	return http.DefaultTransport.RoundTrip(out)
+}
 
 // Expect sets the identity of the next authorization request.
 func (p *Provider) Expect(l Login) {
@@ -227,8 +276,9 @@ func (p *Provider) LastAuthRequest(t testing.TB) AuthRequest {
 	return r[len(r)-1]
 }
 
-// Hosts returns the Host header of each request that the provider got. A test
-// uses it to check that the service calls the test provider only.
+// Hosts returns the host of each request that went through Transport, also a
+// request that the transport refused. A test uses it to check that the service
+// calls the hosts of the providers only.
 func (p *Provider) Hosts() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -238,7 +288,6 @@ func (p *Provider) Hosts() []string {
 func (p *Provider) wait(r *http.Request, endpoint string) bool {
 	p.mu.Lock()
 	d := p.delays[endpoint]
-	p.hosts = append(p.hosts, r.Host)
 	p.mu.Unlock()
 	if d <= 0 {
 		return true
@@ -256,7 +305,18 @@ func (p *Provider) fixture(name string) string {
 	if err != nil {
 		panic(err)
 	}
-	return strings.ReplaceAll(string(b), "{BASE}", p.URL)
+	doc := string(b)
+	for _, r := range [][2]string{
+		{"{BASE}/google/o/oauth2/v2/auth", "https://accounts.google.com/o/oauth2/v2/auth"},
+		{"{BASE}/google/oauth2googleapis/", "https://oauth2.googleapis.com/"},
+		{"{BASE}/google/wwwgoogleapis/", "https://www.googleapis.com/"},
+		{"{BASE}/google/openidconnect/", "https://openidconnect.googleapis.com/"},
+		{"{BASE}/google", "https://accounts.google.com"},
+		{"{BASE}/ms/", "https://login.microsoftonline.com/"},
+	} {
+		doc = strings.ReplaceAll(doc, r[0], r[1])
+	}
+	return doc
 }
 
 func (p *Provider) discoveryGoogle(w http.ResponseWriter, r *http.Request) {

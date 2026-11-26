@@ -46,12 +46,18 @@ var (
 	ErrIdpMismatch = errors.New("the account does not match the invitation")
 	// ErrIdpReauth means the link flow needs a fresh session.
 	ErrIdpReauth = errors.New("a fresh login is necessary")
+	// ErrIdpConfirm means the link flow needs the check of a local factor first
+	// (P23). The hosted page sends the user to the confirm page.
+	ErrIdpConfirm = errors.New("a local factor check is necessary")
 	// ErrIdpUnavailable means the store of the flow does not answer.
 	ErrIdpUnavailable = errors.New("the flow store is not available")
 )
 
 // IdpFlowTTL is the life of the record of a flow.
 const IdpFlowTTL = 10 * time.Minute
+
+// IdpConfirmTTL is the life of the record that a local factor check leaves.
+const IdpConfirmTTL = 5 * time.Minute
 
 // Values of the attribute outcome of the metric identity.idp.logins.
 const (
@@ -64,7 +70,22 @@ const (
 	IdpOutcomeTokenInvalid    = "token_invalid"
 	IdpOutcomeNotFresh        = "not_fresh"
 	IdpOutcomeLimited         = "limited"
+	// IdpOutcomeRefused is a start that the rules refuse: a purpose that is not
+	// valid, or a request from another site (R15).
+	IdpOutcomeRefused = "refused"
+	// IdpOutcomeUserInactive is a login of a user that is not active (R15).
+	IdpOutcomeUserInactive = "user_inactive"
 )
+
+// LocalFactors is the check of the local factors of a user (P23). The use cases
+// of the second factor implement it.
+type LocalFactors interface {
+	// HasLocalFactor reports whether the user has a password, a TOTP factor, or a
+	// passkey.
+	HasLocalFactor(ctx context.Context, userID string) (bool, error)
+	// VerifyLocalFactor checks a password or a code of the user.
+	VerifyLocalFactor(ctx context.Context, in LocalFactor) error
+}
 
 // IdpDeps are the ports of the upstream flows.
 type IdpDeps struct {
@@ -78,9 +99,12 @@ type IdpDeps struct {
 	// UserRoles is for the rule "MFA for admins". Pending holds the pending logins.
 	UserRoles userroles.Repository
 	Pending   mfaflow.PendingLogins
-	Events    securityevents.Events
-	Tx        transaction.Transactor
-	Policy    domain.SessionPolicy
+	// Factors checks the local factors of a user for the purpose link. A nil
+	// value means that no user has a local factor.
+	Factors LocalFactors
+	Events  securityevents.Events
+	Tx      transaction.Transactor
+	Policy  domain.SessionPolicy
 	// LookupAuthRequest checks that an auth request exists.
 	LookupAuthRequest func(ctx context.Context, id string) (AuthRequestInfo, error)
 	// PasskeysOn is true when the service accepts passkeys.
@@ -148,6 +172,8 @@ type StartIdp struct {
 	Fresh bool
 	// SecFetchSite is the value of the request header Sec-Fetch-Site.
 	SecFetchSite string
+	// Confirm is the value that ConfirmLink gave (purpose link). It is a secret.
+	Confirm string
 }
 
 // StartedIdp is the result of the start.
@@ -157,6 +183,8 @@ type StartedIdp struct {
 	// Binding is the value of the cookie that binds the flow to the browser. It
 	// is a secret.
 	Binding string
+	// Flow is the ID of the flow. The name of the cookie has it (R8).
+	Flow string
 }
 
 // Start checks the request, makes the flow record, and returns the URL of the
@@ -166,7 +194,7 @@ func (i *Idp) Start(ctx context.Context, in StartIdp) (StartedIdp, error) {
 		return StartedIdp{}, ErrIdpProviderOff
 	}
 	if !domain.ValidFlowPurpose(in.Purpose) || !domain.SecFetchSiteAllowed(in.Purpose, in.SecFetchSite) {
-		i.failed(ctx, in.Provider, in.Purpose, IdpOutcomeProviderError)
+		i.failed(ctx, in.Provider, in.Purpose, IdpOutcomeRefused)
 		return StartedIdp{}, ErrIdpFailed
 	}
 	rec := domain.IdpFlow{Provider: in.Provider, Purpose: in.Purpose, Fresh: in.Fresh}
@@ -185,6 +213,19 @@ func (i *Idp) Start(ctx context.Context, in StartIdp) (StartedIdp, error) {
 			return StartedIdp{}, ErrIdpReauth
 		}
 		rec.SessionHash, rec.Fresh = sess.TokenHash, true
+		// A user with a local factor must prove it before the link. A user with
+		// no local factor needs an ID token with a valid auth_time (P23).
+		has, err := i.hasLocalFactor(ctx, sess.UserID)
+		if err != nil {
+			return StartedIdp{}, err
+		}
+		if has {
+			if err := i.takeConfirm(ctx, in.Confirm, in.Provider, sess); err != nil {
+				return StartedIdp{}, err
+			}
+		} else {
+			rec.NeedAuthTime = true
+		}
 	case domain.FlowInvite:
 		if err := checkTokenValid(ctx, i.d.Tokens, in.InviteToken, domain.PurposeInvite, i.now()); err != nil {
 			return StartedIdp{}, i.invalidStart(ctx, in, err)
@@ -221,7 +262,80 @@ func (i *Idp) Start(ctx context.Context, in StartIdp) (StartedIdp, error) {
 		i.d.Log.ErrorContext(ctx, "identity.idp.flow_unavailable", "event", "identity.idp.flow_unavailable", "error", err)
 		return StartedIdp{}, ErrIdpUnavailable
 	}
-	return StartedIdp{Location: loc, Binding: binding}, nil
+	return StartedIdp{Location: loc, Binding: binding, Flow: domain.FlowID(state)}, nil
+}
+
+// hasLocalFactor reports whether the user has a local factor.
+func (i *Idp) hasLocalFactor(ctx context.Context, userID string) (bool, error) {
+	if i.d.Factors == nil {
+		return false, nil
+	}
+	return i.d.Factors.HasLocalFactor(ctx, userID)
+}
+
+// takeConfirm uses the record of a local factor check one time. The record must
+// be for the same provider and the same session.
+func (i *Idp) takeConfirm(ctx context.Context, confirm, provider string, sess domain.Session) error {
+	if confirm == "" || len(confirm) > domain.MaxTokenValueLength {
+		return ErrIdpConfirm
+	}
+	rec, err := i.d.Flows.Take(ctx, domain.HashSecret(confirm))
+	if errors.Is(err, idpflow.ErrNotFound) {
+		return ErrIdpConfirm
+	}
+	if err != nil {
+		i.d.Log.ErrorContext(ctx, "identity.idp.flow_unavailable", "event", "identity.idp.flow_unavailable", "error", err)
+		return ErrIdpUnavailable
+	}
+	if rec.Purpose != domain.FlowConfirm || rec.Provider != provider ||
+		subtle.ConstantTimeCompare([]byte(rec.SessionHash), []byte(sess.TokenHash)) != 1 {
+		return ErrIdpConfirm
+	}
+	return nil
+}
+
+// ConfirmLink is the input of the check of a local factor before a link.
+type ConfirmLink struct {
+	Provider string
+	// SessionToken, Password, and Code are secrets.
+	SessionToken string
+	Password     string
+	Code         string
+}
+
+// ConfirmLink checks the local factor of the user of the session before the
+// start of a link flow. It returns the value that the start needs, or an empty
+// value for a user that has no local factor: that user needs no check, and the
+// callback needs an ID token with a valid auth_time (P23). The value works one
+// time, for the same provider and the same session.
+func (i *Idp) ConfirmLink(ctx context.Context, in ConfirmLink) (string, error) {
+	if !domain.ValidProvider(in.Provider) || !i.d.Client.Enabled(in.Provider) {
+		return "", ErrIdpProviderOff
+	}
+	sess, err := i.session(ctx, in.SessionToken)
+	if err != nil {
+		return "", err
+	}
+	if !domain.FreshLogin(sess.AuthTime, i.now()) {
+		return "", ErrIdpReauth
+	}
+	has, err := i.hasLocalFactor(ctx, sess.UserID)
+	if err != nil || !has {
+		return "", err
+	}
+	if err := i.d.Factors.VerifyLocalFactor(ctx, LocalFactor{UserID: sess.UserID, Password: in.Password, Code: in.Code}); err != nil {
+		return "", err
+	}
+	value, hash, err := domain.NewSecret()
+	if err != nil {
+		return "", err
+	}
+	rec := domain.IdpFlow{Provider: in.Provider, Purpose: domain.FlowConfirm, SessionHash: sess.TokenHash}
+	if err := i.d.Flows.Put(ctx, hash, rec, IdpConfirmTTL); err != nil {
+		i.d.Log.ErrorContext(ctx, "identity.idp.flow_unavailable", "event", "identity.idp.flow_unavailable", "error", err)
+		return "", ErrIdpUnavailable
+	}
+	return value, nil
 }
 
 func (i *Idp) invalidStart(ctx context.Context, in StartIdp, err error) error {
@@ -343,6 +457,11 @@ func (i *Idp) Callback(ctx context.Context, in CallbackIdp) (IdpResult, error) {
 		i.failed(ctx, in.Provider, rec.Purpose, IdpOutcomeNotFresh)
 		return IdpResult{}, ErrIdpFailed
 	}
+	if rec.NeedAuthTime && !domain.UpstreamAuthTimeFresh(id.AuthTime, i.now()) {
+		// The user has no local factor, so the ID token must prove a recent login.
+		i.failed(ctx, in.Provider, rec.Purpose, IdpOutcomeNotFresh)
+		return IdpResult{}, ErrIdpFailed
+	}
 	switch rec.Purpose {
 	case domain.FlowLink:
 		return i.link(ctx, in, rec, id)
@@ -390,7 +509,7 @@ func (i *Idp) login(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id 
 	}
 	user, err := i.d.Users.GetByID(ctx, link.UserID)
 	if errors.Is(err, users.ErrNotFound) || (err == nil && user.Status != domain.UserActive) {
-		i.failed(ctx, in.Provider, domain.FlowLogin, IdpOutcomeNotLinked)
+		i.failed(ctx, in.Provider, domain.FlowLogin, IdpOutcomeUserInactive)
 		return IdpResult{}, ErrIdpFailed
 	}
 	if err != nil {
@@ -423,7 +542,7 @@ func (i *Idp) continueLogin(ctx context.Context, in CallbackIdp, rec domain.IdpF
 		}
 		expires := i.now().Add(PendingLoginTTL)
 		err = i.d.Pending.Put(ctx, hash, domain.PendingLogin{
-			UserID: userID, Methods: domain.MethodsFederated(), AuthRequest: rec.AuthRequest, ReturnTo: rec.ReturnTo, ExpiresAt: expires,
+			UserID: userID, Methods: domain.MethodsFederated(), Provider: in.Provider, AuthRequest: rec.AuthRequest, ReturnTo: rec.ReturnTo, ExpiresAt: expires,
 		}, PendingLoginTTL)
 		if err != nil {
 			i.d.Log.ErrorContext(ctx, "identity.mfa.pending_failed", "event", "identity.mfa.pending_failed", "error", err)
@@ -433,8 +552,29 @@ func (i *Idp) continueLogin(ctx context.Context, in CallbackIdp, rec domain.IdpF
 		res.Session = IssuedSession{UserID: userID, PendingToken: value, PendingExpiresAt: expires}
 		return res, nil
 	}
-	issued, err := sessionStarter{sessionIssuer{repo: i.d.Sessions, policy: i.d.Policy, now: i.d.Now}}.
-		start(ctx, userID, in.PreviousToken, in.UserAgent, in.IP, domain.MethodsFederated())
+	// The link is read again in the transaction that starts the session. A
+	// removal of the link locks the user row, so it runs before this read or
+	// after the session exists and revokes it (R2).
+	var issued IssuedSession
+	err = i.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if _, err := i.d.Users.LockByID(ctx, userID); err != nil {
+			return err
+		}
+		if _, err := i.d.Links.GetByUserProvider(ctx, userID, in.Provider); err != nil {
+			if errors.Is(err, identitylinks.ErrNotFound) {
+				return ErrIdpFailed
+			}
+			return err
+		}
+		var err error
+		issued, err = sessionStarter{sessionIssuer{repo: i.d.Sessions, policy: i.d.Policy, now: i.d.Now}}.
+			start(ctx, userID, in.PreviousToken, in.UserAgent, in.IP, domain.MethodsFederated())
+		return err
+	}, txName("login_upstream"))
+	if errors.Is(err, ErrIdpFailed) {
+		i.failed(ctx, in.Provider, domain.FlowLogin, IdpOutcomeNotLinked)
+		return IdpResult{}, ErrIdpFailed
+	}
 	if err != nil {
 		return IdpResult{}, err
 	}
@@ -552,6 +692,12 @@ func (i *Idp) invite(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id
 		i.failed(ctx, in.Provider, domain.FlowInvite, IdpOutcomeEmailMismatch)
 		return IdpResult{}, ErrIdpMismatch
 	}
+	// The MFA policy is read before the commit. A failure of the read must not
+	// leave a used invite with no session (R4).
+	needsMFA, _, err := i.mfaPolicy(ctx, invited.ID)
+	if err != nil {
+		return IdpResult{}, err
+	}
 	var issued IssuedSession
 	err = i.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		uid, ok, err := i.d.Tokens.FindValid(ctx, rec.InviteHash, domain.PurposeInvite, now)
@@ -597,10 +743,6 @@ func (i *Idp) invite(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id
 		return IdpResult{}, ErrIdpAlreadyLinked
 	case err != nil:
 		return IdpResult{}, fmt.Errorf("accept the invite: %w", err)
-	}
-	needsMFA, _, err := i.mfaPolicy(ctx, invited.ID)
-	if err != nil {
-		return IdpResult{}, err
 	}
 	issued.SetupRequired = needsMFA
 	i.linked(ctx, in.Provider, domain.FlowInvite, invited.ID, invited.ID)

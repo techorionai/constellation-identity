@@ -99,7 +99,21 @@ type IdpFlow struct {
 	SessionHash string `json:"session_hash,omitempty"`
 	// InviteHash is the hash of the invite token (purpose invite).
 	InviteHash string `json:"invite_hash,omitempty"`
+	// NeedAuthTime is true when the callback must refuse an ID token with no
+	// valid auth_time. The start sets it for a link of a user that has no local
+	// factor (P23).
+	NeedAuthTime bool `json:"need_auth_time,omitempty"`
 }
+
+// FlowID returns the short ID of a flow. It is the start of the hash of the
+// state, so it tells nothing about the state. The name of the binding cookie of
+// the flow has it, so two flows of one browser have two cookies (R8).
+func FlowID(state string) string { return HashSecret(state)[:16] }
+
+// FlowConfirm is the purpose of the record that a local factor check leaves. It
+// is not the purpose of an upstream flow. The record has the provider and the
+// hash of the session, and the start of the purpose link takes it one time.
+const FlowConfirm = "confirm"
 
 var guidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
@@ -228,6 +242,29 @@ func UpstreamFresh(provider string, authTime, issuedAt, now time.Time) bool {
 		return false
 	}
 	return t.Before(now.Add(clockSkew)) && now.Sub(t) <= MaxFreshAge
+}
+
+// UpstreamAuthTimeFresh is the strict freshness rule of P23. The ID token must
+// have an auth_time, and it must be at most MaxFreshAge old. A token with no
+// auth_time does not pass, for any provider. The rule has the same tolerance
+// for the clock of the provider as UpstreamFresh.
+func UpstreamAuthTimeFresh(authTime, now time.Time) bool {
+	if authTime.IsZero() {
+		return false
+	}
+	return authTime.Before(now.Add(clockSkew)) && now.Sub(authTime) <= MaxFreshAge
+}
+
+// HasLocalFactor reports whether a user has a local factor: a password, a TOTP
+// factor, or a passkey that the service accepts (P23). A login method at a
+// provider is not a local factor.
+func HasLocalFactor(hasPassword bool, s MFAState) bool {
+	return hasPassword || s.HasTOTP || s.AcceptedPasskeys() > 0
+}
+
+// LocalFactorMethod reports whether an amr value is the proof of a local factor.
+func LocalFactorMethod(m string) bool {
+	return m == AMRPassword || m == AMROTP || m == AMRRecovery || m == AMRHardwareKey
 }
 
 // SecFetchSiteAllowed is the rule of the start of an upstream flow. The purposes

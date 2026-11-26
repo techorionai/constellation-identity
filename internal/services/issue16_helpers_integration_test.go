@@ -3,8 +3,10 @@
 package services_test
 
 import (
+	"html"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/techorionai/constellation-identity/internal/handlers/http/pages"
@@ -48,7 +50,7 @@ func (r *idpRig) start(web *testserver.Web, path string) (testserver.Response, [
 	for _, k := range []string{"state", "nonce"} {
 		r.f.a.ledger.add(&r.f.a.ledger.flow, q.Get(k))
 	}
-	if v := web.Cookie(pages.IdpCookieName); v != "" {
+	for _, v := range web.CookiesWithPrefix(pages.IdpCookieName) {
 		r.f.a.ledger.add(&r.f.a.ledger.flow, v)
 	}
 	return resp, body, loc
@@ -62,7 +64,7 @@ func (r *idpRig) finish(web *testserver.Web, authURL string) (testserver.Respons
 	if err != nil {
 		r.f.t.Fatal(err)
 	}
-	resp, err := noRedirect.Do(req)
+	resp, err := (&http.Client{Transport: r.p.Transport(), CheckRedirect: noRedirect.CheckRedirect}).Do(req)
 	if err != nil {
 		r.f.t.Fatal(err)
 	}
@@ -146,7 +148,7 @@ func (r *idpRig) fedTokens(web *testserver.Web, provider string, l oidcprovider.
 // asserts the redirect to the account page.
 func (r *idpRig) link(web *testserver.Web, provider string, l oidcprovider.Login) {
 	r.f.t.Helper()
-	resp, body := r.run(web, "/login/oidc/"+provider+"?purpose=link", l)
+	resp, body := r.run(web, r.confirmLink(web, provider, userPassword), l)
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/account/security" {
 		r.f.t.Fatalf("link: %d %q %s", resp.StatusCode, resp.Header.Get("Location"), body)
 	}
@@ -196,4 +198,24 @@ func (f *fixture) page(web *testserver.Web, path string) string {
 	resp, body := web.Get(f.t, path)
 	status(f.t, resp, http.StatusOK, "GET "+path)
 	return string(body)
+}
+
+// continuePattern finds the link of the page that follows the local factor check.
+var continuePattern = regexp.MustCompile(`href="(/login/oidc/[^"]+)"`)
+
+// confirmLink does the local factor check of the link page (P23) with the
+// password. It returns the path of the start of the flow. A user with no local
+// factor gets the path with no confirm value.
+func (r *idpRig) confirmLink(web *testserver.Web, provider, password string) string {
+	r.f.t.Helper()
+	form := url.Values{"password": {password}}
+	resp, body := web.PostForm(r.f.t, "/account/identity-links/"+provider+"/link", form)
+	m := continuePattern.FindSubmatch(body)
+	if resp.StatusCode != http.StatusOK || m == nil {
+		r.f.t.Fatalf("confirm the link: %d %s", resp.StatusCode, body)
+	}
+	if v := regexp.MustCompile(`confirm=([^&"]+)`).FindSubmatch(m[1]); v != nil {
+		r.f.a.ledger.add(&r.f.a.ledger.flow, string(v[1]))
+	}
+	return html.UnescapeString(string(m[1]))
 }

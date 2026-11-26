@@ -48,7 +48,7 @@ func (e *linkEnv) rebuild(t *testing.T, passkeysOn bool) {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(e.logs, nil))
 	cmd, err := commands.NewMFA(commands.MFADeps{
-		Users: e.users, UserRoles: e.roles, Sessions: e.sessions, MFA: e.mfa, TOTP: e.totp, Sealer: mock.Sealer{},
+		Users: e.users, UserRoles: e.roles, Sessions: e.sessions, MFA: e.mfa, TOTP: e.totp, Sealer: mock.Sealer{}, Hasher: e.hasher,
 		Passkeys: e.keys, WebAuthn: e.wa, Ceremonies: e.ceremonies, PasskeysOn: passkeysOn,
 		Links: e.links, APITokens: e.tokens, ProviderOn: e.providerOn,
 		Pending: e.pending, Setups: e.setups, Failures: e.failures, Limiter: e.limiter, Events: e.events, Tx: mock.Tx{},
@@ -293,11 +293,13 @@ func TestIssue16_ResetLastLoginMethod(t *testing.T) {
 // U14: the second factor after an upstream login keeps the first factor fed. The
 // TOTP setup in a fed session keeps it too.
 func TestIssue16_U14_SecondFactorKeepsFed(t *testing.T) {
-	m := newMFAEnv(t)
+	le := newLinkEnv(t)
+	m := le.mfaEnv
+	le.addLink(linkID1, userA, "google")
 	secret, codes := m.enable(t, userA, "a@example.com")
 	put := func(token string) {
 		err := m.pending.Put(ctx, domain.HashSecret(token), domain.PendingLogin{
-			UserID: userA, Methods: domain.MethodsFederated(), ExpiresAt: m.now.Add(time.Minute),
+			UserID: userA, Methods: domain.MethodsFederated(), Provider: "google", ExpiresAt: m.now.Add(time.Minute),
 		}, time.Minute)
 		if err != nil {
 			t.Fatal(err)
@@ -397,5 +399,154 @@ func TestIssue16_APITokenRecordsAMR(t *testing.T) {
 	got := rows()
 	if got["fed"].RevokedAt == nil || got["pwd"].RevokedAt != nil || got["old"].RevokedAt != nil || !got["hwk"].RevokedAt.Equal(first) {
 		t.Fatalf("revoked_at: fed %v, pwd %v, old %v, hwk %v", got["fed"].RevokedAt, got["pwd"].RevokedAt, got["old"].RevokedAt, got["hwk"].RevokedAt)
+	}
+}
+
+// U32 (R1, P22): the first password writes the audit entry and sends the notice.
+// A user with a password gets an error and no entry.
+func TestIssue16_U32_SetPasswordAudit(t *testing.T) {
+	e := newLinkEnv(t)
+	cmd := commands.NewSetPassword(commands.SetPasswordDeps{
+		Users: e.users, Hasher: e.hasher, Tx: mock.Tx{}, Events: e.events, Now: e.clock,
+	})
+	if err := cmd.Execute(ctx, commands.SetPassword{UserID: userNoPassword, Password: "a long new password", Actor: userNoPassword}); err != nil {
+		t.Fatal(err)
+	}
+	if e.users.Rows[userNoPassword].PasswordHash == "" {
+		t.Fatal("the password must be set")
+	}
+	if len(e.events.Audits) != 1 || e.events.Audits[0].Action != "identity:password:set" ||
+		e.events.Audits[0].Actor != userNoPassword || e.events.Audits[0].TargetUserID != userNoPassword ||
+		e.events.Audits[0].Result != securityevents.ResultSuccess {
+		t.Fatalf("audits = %+v", e.events.Audits)
+	}
+	if len(e.events.Notices) != 1 || e.events.Notices[0].Kind != "password_set" || e.events.Notices[0].TargetUserID != userNoPassword {
+		t.Fatalf("notices = %+v", e.events.Notices)
+	}
+	if strings.Contains(e.logs.String(), "a long new password") {
+		t.Fatal("the log must not have the password")
+	}
+	// The user has a password now. A second call changes nothing and writes no entry.
+	err := cmd.Execute(ctx, commands.SetPassword{UserID: userNoPassword, Password: "another long password", Actor: userNoPassword})
+	if !errors.Is(err, commands.ErrPasswordSet) || len(e.events.Audits) != 1 || len(e.events.Notices) != 1 {
+		t.Fatalf("second call: %v, audits %d, notices %d", err, len(e.events.Audits), len(e.events.Notices))
+	}
+	// A password that breaks the rules writes no entry.
+	e.events.Audits, e.events.Notices = nil, nil
+	e.addUser(userB, "b2@example.com", domain.UserActive, "")
+	if err := cmd.Execute(ctx, commands.SetPassword{UserID: userB, Password: "short", Actor: userB}); err == nil {
+		t.Fatal("a short password must fail")
+	}
+	if len(e.events.Audits) != 0 || len(e.events.Notices) != 0 {
+		t.Fatal("a failed call writes no entry")
+	}
+}
+
+// U33 (R3, P23): the own removal of a link needs a local factor and its proof.
+// A user with no local factor cannot remove a link. The admin removal needs no
+// proof of the user.
+func TestIssue16_U33_RemovalNeedsLocalFactor(t *testing.T) {
+	e := newLinkEnv(t)
+	e.addLink(linkID1, userA, "google")
+	e.addLink(linkID2, userA, "microsoft")
+	rm := func(self, verified bool) error {
+		return e.links2.Remove(ctx, commands.RemoveIdentityLink{UserID: userA, Provider: "google", Actor: userA, Self: self, FactorVerified: verified})
+	}
+	// The user has a password, but the caller gave no proof.
+	if err := rm(true, false); !errors.Is(err, commands.ErrLocalFactorRequired) {
+		t.Fatalf("no proof: %v", err)
+	}
+	if len(e.links.Rows) != 2 {
+		t.Fatal("a refusal changes nothing")
+	}
+	// A user with two links, no password, and no TOTP has no local factor.
+	e.addLink("00000000-0000-4000-8000-0000000000d3", userNoPassword, "google")
+	e.addLink("00000000-0000-4000-8000-0000000000d4", userNoPassword, "microsoft")
+	err := e.links2.Remove(ctx, commands.RemoveIdentityLink{UserID: userNoPassword, Provider: "google", Actor: userNoPassword, Self: true, FactorVerified: true})
+	if !errors.Is(err, commands.ErrLocalFactorMissing) {
+		t.Fatalf("no local factor: %v", err)
+	}
+	if len(e.links.Rows) != 4 || len(e.events.Audits) != 0 {
+		t.Fatal("a refusal changes nothing")
+	}
+	// The admin removal is not a self removal.
+	if err := e.links2.Remove(ctx, commands.RemoveIdentityLink{UserID: userNoPassword, Provider: "google", Actor: adminID, CheckUser: true}); err != nil {
+		t.Fatalf("admin removal: %v", err)
+	}
+	// With the proof, the own removal works.
+	if err := rm(true, true); err != nil {
+		t.Fatalf("with proof: %v", err)
+	}
+	// A name that is not a provider gives not found and no proof check.
+	err = e.links2.Remove(ctx, commands.RemoveIdentityLink{UserID: userA, Provider: "okta", Actor: userA, Self: true})
+	if !errors.Is(err, commands.ErrIdentityLinkNotFound) {
+		t.Fatalf("wrong provider: %v", err)
+	}
+	err = e.links2.Remove(ctx, commands.RemoveIdentityLink{UserID: "00000000-0000-4000-8000-0000000000ff", Provider: "okta", Actor: adminID, CheckUser: true})
+	if !errors.Is(err, commands.ErrUserNotFound) {
+		t.Fatalf("wrong provider and no user: %v", err)
+	}
+}
+
+// U34 (R3, P23): the check of a local factor. The password and the TOTP code
+// work. A wrong value and a used code do not. A user with no password and no
+// code gets the error ErrLocalFactorMissing. The failure limit applies.
+func TestIssue16_U34_VerifyLocalFactor(t *testing.T) {
+	e := newLinkEnv(t)
+	secret, _ := e.enable(t, userB, "b@example.com")
+	check := func(in commands.LocalFactor) error { return e.cmd.VerifyLocalFactor(ctx, in) }
+	if err := check(commands.LocalFactor{UserID: userA, Password: "right password 1"}); err != nil {
+		t.Fatalf("password: %v", err)
+	}
+	if err := check(commands.LocalFactor{UserID: userA, Password: "wrong"}); !errors.Is(err, commands.ErrLocalFactorRequired) {
+		t.Fatalf("wrong password: %v", err)
+	}
+	if err := check(commands.LocalFactor{UserID: userA}); !errors.Is(err, commands.ErrLocalFactorRequired) {
+		t.Fatalf("empty: %v", err)
+	}
+	// A code is not a password, and a password does not open a user with another one.
+	if err := check(commands.LocalFactor{UserID: userA, Code: "123456"}); !errors.Is(err, commands.ErrLocalFactorRequired) {
+		t.Fatalf("code of a user with no TOTP: %v", err)
+	}
+	code := e.code(secret, e.now)
+	if err := check(commands.LocalFactor{UserID: userB, Code: code}); err != nil {
+		t.Fatalf("totp: %v", err)
+	}
+	if err := check(commands.LocalFactor{UserID: userB, Code: code}); !errors.Is(err, commands.ErrLocalFactorRequired) {
+		t.Fatalf("a used code: %v", err)
+	}
+	if err := check(commands.LocalFactor{UserID: userNoPassword, Password: "x", Code: "123456"}); !errors.Is(err, commands.ErrLocalFactorMissing) {
+		t.Fatalf("no factor: %v", err)
+	}
+	if err := check(commands.LocalFactor{UserID: "00000000-0000-4000-8000-0000000000ff", Password: "x"}); !errors.Is(err, commands.ErrUserNotFound) {
+		t.Fatalf("no user: %v", err)
+	}
+	// The failure limit of the second factor applies.
+	var limited bool
+	for i := 0; i < 40; i++ {
+		if err := check(commands.LocalFactor{UserID: userA, Password: "wrong"}); errors.Is(err, commands.ErrTooManyAttempts) {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("a guess loop must reach the limit")
+	}
+}
+
+// U35 (R13): the reset of the MFA of a user with a TOTP factor, no passkey, and
+// no login method except the factor itself is not blocked by the rule "last
+// login method", because the reset removes no login method.
+func TestIssue16_U35_ResetWithoutPasskey(t *testing.T) {
+	e := newLinkEnv(t)
+	e.enable(t, userNoPassword, "nopw@example.com")
+	if err := e.cmd.ResetMFA(ctx, commands.ResetMFA{UserID: userNoPassword, Actor: adminID}); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	// A user with a passkey that is the only login method is still protected.
+	e.addUser(userB, "b2@example.com", domain.UserActive, "")
+	e.addPasskey(userB, passkeyID1, "only")
+	if err := e.cmd.ResetMFA(ctx, commands.ResetMFA{UserID: userB, Actor: adminID}); !errors.Is(err, commands.ErrLastLoginMethod) {
+		t.Fatalf("passkey only: %v", err)
 	}
 }

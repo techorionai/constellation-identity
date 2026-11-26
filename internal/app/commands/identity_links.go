@@ -103,11 +103,19 @@ type RemoveIdentityLink struct {
 	// CheckUser is true for the admin operation: a user that does not exist gives
 	// ErrUserNotFound before any other check.
 	CheckUser bool
+	// Self is true when the user removes an own link. The removal then needs the
+	// proof of a local factor (P23). The admin operation is not a self removal.
+	Self bool
+	// FactorVerified is true when the caller proved a local factor of the user:
+	// the page checked a password or a code, or the token of the API call has a
+	// local factor in amr. It matters only with Self.
+	FactorVerified bool
 }
 
 // Remove removes the link of a user for a provider. The order of the checks:
-// ErrUserNotFound (only with CheckUser), ErrIdentityLinkNotFound, then
-// ErrLastLoginMethod. In one transaction after the lock of the user row, it
+// ErrUserNotFound (only with CheckUser), ErrIdentityLinkNotFound,
+// ErrLastLoginMethod, then ErrLocalFactorMissing and ErrLocalFactorRequired
+// (only with Self, P23). The proof of the factor comes before any change. In one transaction after the lock of the user row, it
 // removes the link, revokes the sessions and the refresh token families of the
 // user with fed in amr (also the current session), and revokes the personal API
 // tokens that a session with fed in amr made. Then it writes the audit entry
@@ -115,6 +123,18 @@ type RemoveIdentityLink struct {
 func (l *IdentityLinks) Remove(ctx context.Context, in RemoveIdentityLink) error {
 	if in.CheckUser && !uuidPattern.MatchString(in.UserID) {
 		return ErrUserNotFound
+	}
+	// A name that is not a provider takes no row lock (R18). The admin operation
+	// still gives ErrUserNotFound first, with a read that takes no lock.
+	if !domain.ValidProvider(in.Provider) {
+		if in.CheckUser {
+			if _, err := l.d.Users.GetByID(ctx, in.UserID); errors.Is(err, users.ErrNotFound) {
+				return ErrUserNotFound
+			} else if err != nil {
+				return fmt.Errorf("get the user: %w", err)
+			}
+		}
+		return ErrIdentityLinkNotFound
 	}
 	err := l.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		u, err := l.d.Users.LockByID(ctx, in.UserID)
@@ -124,22 +144,19 @@ func (l *IdentityLinks) Remove(ctx context.Context, in RemoveIdentityLink) error
 		if err != nil {
 			return err
 		}
-		if !domain.ValidProvider(in.Provider) {
-			return ErrIdentityLinkNotFound
+		var st domain.MFAState
+		if l.d.MFA != nil {
+			if st, err = l.d.MFA.State(ctx, u.ID); err != nil {
+				return err
+			}
 		}
+		st.PasskeysOn = l.d.PasskeysOn
 		if _, err := l.d.Links.GetByUserProvider(ctx, u.ID, in.Provider); errors.Is(err, identitylinks.ErrNotFound) {
 			return ErrIdentityLinkNotFound
 		} else if err != nil {
 			return err
 		}
-		passkeys := 0
-		if l.d.MFA != nil {
-			st, err := l.d.MFA.State(ctx, u.ID)
-			if err != nil {
-				return err
-			}
-			passkeys = st.Passkeys
-		}
+		passkeys := st.Passkeys
 		ms, err := readMethodsState(ctx, l.d.Links, l.d.ProviderOn, l.d.PasskeysOn, u, passkeys)
 		if err != nil {
 			return err
@@ -155,6 +172,17 @@ func (l *IdentityLinks) Remove(ctx context.Context, in RemoveIdentityLink) error
 		if !domain.HasLoginMethod(after) {
 			return ErrLastLoginMethod
 		}
+		// The check comes after the checks of the data and before the first change.
+		if in.Self {
+			// A user that has a local factor must prove it. A user with no local
+			// factor cannot prove anything, and the removal is refused (P23).
+			if !domain.HasLocalFactor(u.PasswordHash != "", st) {
+				return ErrLocalFactorMissing
+			}
+			if !in.FactorVerified {
+				return ErrLocalFactorRequired
+			}
+		}
 		if err := l.d.Links.Remove(ctx, u.ID, in.Provider); err != nil {
 			return err
 		}
@@ -169,7 +197,8 @@ func (l *IdentityLinks) Remove(ctx context.Context, in RemoveIdentityLink) error
 		}
 		return nil
 	}, txName("remove_identity_link"))
-	if errors.Is(err, ErrUserNotFound) || errors.Is(err, ErrIdentityLinkNotFound) || errors.Is(err, ErrLastLoginMethod) {
+	if errors.Is(err, ErrUserNotFound) || errors.Is(err, ErrIdentityLinkNotFound) || errors.Is(err, ErrLastLoginMethod) ||
+		errors.Is(err, ErrLocalFactorMissing) || errors.Is(err, ErrLocalFactorRequired) {
 		return err
 	}
 	if err != nil {

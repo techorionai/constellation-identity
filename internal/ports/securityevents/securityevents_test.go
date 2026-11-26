@@ -13,6 +13,8 @@ func TestIssue16_U25_Constants(t *testing.T) {
 		securityevents.ActionIdentityLinkRemove:  "identity:identity_link:remove",
 		securityevents.NoticeIdentityLinkAdded:   "identity_link_added",
 		securityevents.NoticeIdentityLinkRemoved: "identity_link_removed",
+		securityevents.ActionPasswordSet:         "identity:password:set",
+		securityevents.NoticePasswordSet:         "password_set",
 	} {
 		if got != want {
 			t.Errorf("constant = %q, want %q", got, want)

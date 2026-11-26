@@ -45,6 +45,20 @@ func (w *Web) Cookie(name string) string {
 	return w.cookies[name]
 }
 
+// CookiesWithPrefix returns the values of the cookies whose name starts with the
+// prefix. It skips an empty value.
+func (w *Web) CookiesWithPrefix(prefix string) []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []string
+	for name, v := range w.cookies {
+		if strings.HasPrefix(name, prefix) && v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // SetCookie sets a cookie value, for example an old session cookie.
 func (w *Web) SetCookie(name, value string) {
 	w.mu.Lock()

@@ -20,6 +20,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/ports/mfa"
 	"github.com/techorionai/constellation-identity/internal/ports/mfaflow"
 	"github.com/techorionai/constellation-identity/internal/ports/passkeys"
+	"github.com/techorionai/constellation-identity/internal/ports/passwordhasher"
 	"github.com/techorionai/constellation-identity/internal/ports/secretbox"
 	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
 	"github.com/techorionai/constellation-identity/internal/ports/sessions"
@@ -85,7 +86,10 @@ type MFADeps struct {
 	Sessions  sessions.Repository
 	MFA       mfa.Repository
 	TOTP      totp.Service
-	Sealer    secretbox.Sealer
+	// Hasher checks the password of the check of a local factor (P23). A nil
+	// value means that the check accepts a code only.
+	Hasher passwordhasher.Hasher
+	Sealer secretbox.Sealer
 	// Passkeys, WebAuthn, and Ceremonies are the ports of the passkeys. A nil
 	// Passkeys means that the use case has no passkeys. A nil WebAuthn or Ceremonies
 	// means that the use case cannot run a ceremony.
@@ -313,6 +317,9 @@ func (m *MFA) VerifyLogin(ctx context.Context, in VerifyLogin) (VerifiedLogin, e
 	var issued IssuedSession
 	errNotUsed := errors.New("the factor was not used")
 	err = m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if err := m.checkFedLink(ctx, p); err != nil {
+			return err
+		}
 		var err error
 		issued, err = sessionStarter{sessionIssuer{repo: m.d.Sessions, policy: m.d.Policy, now: m.d.Now}}.
 			start(ctx, p.UserID, in.PreviousToken, in.UserAgent, in.IP, methods)
@@ -805,16 +812,22 @@ func (m *MFA) ResetMFA(ctx context.Context, in ResetMFA) error {
 			return err
 		}
 		// The reset removes all passkeys. The rule "last login method" counts the
-		// user with no passkey.
+		// user with no passkey. It stops the reset only if the reset removes a login
+		// method: the user has a passkey that counts. Else the reset changes no
+		// login method, and the admin can reset the TOTP of the user (R13).
+		st, err := m.state(ctx, in.UserID)
+		if err != nil {
+			return fmt.Errorf("read the MFA state: %w", err)
+		}
 		ok, err := m.hasLoginMethodWith(ctx, u, 0)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			if !in.Operator {
+			if !in.Operator && st.AcceptedPasskeys() > 0 {
 				return ErrLastLoginMethod
 			}
-			noMethod = true
+			noMethod = in.Operator
 		}
 		if _, err := m.d.MFA.RemoveAll(ctx, in.UserID); err != nil {
 			return err

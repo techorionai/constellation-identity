@@ -244,7 +244,7 @@ func (e *Env) TryStart(t testing.TB, opts ...Option) (*Server, error) {
 		svcOpts = append(svcOpts, services.WithKeyIntervals(s.managerInterval, s.cacheInterval))
 	}
 	if s.idp != nil {
-		svcOpts = append(svcOpts, services.WithIdpBaseURLs(s.idp.Provider.GoogleBase(), s.idp.Provider.MicrosoftBase()))
+		svcOpts = append(svcOpts, services.WithIdpTransport(s.idp.Provider.Transport()))
 		if !s.idp.NoSecrets {
 			secretLog := slog.New(slog.NewTextHandler(io.Discard, nil))
 			if s.idp.Google {

@@ -557,6 +557,9 @@ func (m *MFA) FinishPasskeySecondFactor(ctx context.Context, in PasskeySecondFac
 	var issued IssuedSession
 	errNotAdvanced := errors.New("the sign count was not advanced")
 	err = m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if err := m.checkFedLink(ctx, p); err != nil {
+			return err
+		}
 		advanced, err := m.d.Passkeys.AdvanceSignCount(ctx, cred.ID, res.SignCount, res.BackupState, m.now())
 		if err != nil {
 			return err

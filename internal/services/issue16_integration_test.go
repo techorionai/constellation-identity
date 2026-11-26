@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -173,7 +174,7 @@ func TestIssue16TimeoutIntegration(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(body), "The login did not complete.") || time.Since(begin) > 4*time.Second {
 		t.Fatalf("slow discovery: %d after %s: %s", resp.StatusCode, time.Since(begin), body)
 	}
-	if web.Cookie(pages.IdpCookieName) != "" {
+	if len(web.CookiesWithPrefix(pages.IdpCookieName)) != 0 {
 		t.Fatal("a failed start sets no cookie")
 	}
 	// I19: the token endpoint is slow.
@@ -273,7 +274,7 @@ func TestIssue16Integration(t *testing.T) {
 			t.Fatal("no audit entry or notice for the link")
 		}
 		// The flow ends with a good link: the cookie of the flow is gone.
-		if web.Cookie(pages.IdpCookieName) != "" {
+		if len(web.CookiesWithPrefix(pages.IdpCookieName)) != 0 {
 			t.Fatal("the cookie of the flow must end")
 		}
 	})
@@ -334,7 +335,6 @@ func TestIssue16Integration(t *testing.T) {
 		// A good callback, then the same callback again (a used state).
 		resp, _, cb := r.finish(w, authURL)
 		status(t, resp, http.StatusSeeOther, "good callback")
-		w.SetCookie(pages.IdpCookieName, "")
 		resp, body = w.Get(t, cb.RequestURI())
 		status(t, resp, http.StatusBadRequest, "used state")
 		if !strings.Contains(string(body), "The login expired. Try again.") {
@@ -393,13 +393,13 @@ func TestIssue16Integration(t *testing.T) {
 		_, web := f.userWithPassword("i10a@example.com", demoRole)
 		r.link(web, "google", google("g-i10", "i10@example.com"))
 		idB, webB := f.userWithPassword("i10b@example.com", demoRole)
-		resp, body := r.run(webB, "/login/oidc/google?purpose=link", google("g-i10", "i10@example.com"))
+		resp, body := r.run(webB, r.confirmLink(webB, "google", userPassword), google("g-i10", "i10@example.com"))
 		status(t, resp, http.StatusConflict, "account of another user")
 		if !strings.Contains(string(body), "This account is linked to another user.") || f.linkCount(idB) != 0 {
 			t.Fatalf("body = %s", body)
 		}
 		// A second link of the same provider for the same user.
-		resp, body = r.run(web, "/login/oidc/google?purpose=link", google("g-i10-b", "i10@example.com"))
+		resp, body = r.run(web, r.confirmLink(web, "google", userPassword), google("g-i10-b", "i10@example.com"))
 		status(t, resp, http.StatusConflict, "second link")
 		if !strings.Contains(string(body), "You already linked a google account. Remove it first.") {
 			t.Fatalf("body = %s", body)
@@ -573,7 +573,7 @@ func TestIssue16Integration(t *testing.T) {
 				w.Header.Set("Sec-Fetch-Site", site)
 				resp, body := w.Get(t, path)
 				status(t, resp, http.StatusBadRequest, path+" "+site)
-				if !strings.Contains(string(body), "The login did not complete.") || resp.Header.Get("Location") != "" || w.Cookie(pages.IdpCookieName) != "" {
+				if !strings.Contains(string(body), "The login did not complete.") || resp.Header.Get("Location") != "" || len(w.CookiesWithPrefix(pages.IdpCookieName)) != 0 {
 					t.Fatalf("%s %s: %s", path, site, body)
 				}
 				w.Header.Del("Sec-Fetch-Site")
@@ -592,7 +592,7 @@ func TestIssue16Integration(t *testing.T) {
 			w := f.a.NewWeb()
 			resp, body := w.Get(t, "/login/oidc/google?"+q)
 			status(t, resp, http.StatusBadRequest, q)
-			if resp.Header.Get("Location") != "" || !strings.Contains(string(body), "The login did not complete.") || w.Cookie(pages.IdpCookieName) != "" {
+			if resp.Header.Get("Location") != "" || !strings.Contains(string(body), "The login did not complete.") || len(w.CookiesWithPrefix(pages.IdpCookieName)) != 0 {
 				t.Fatalf("%s: %s", q, body)
 			}
 		}
@@ -642,7 +642,7 @@ func TestIssue16Integration(t *testing.T) {
 		if loc := resp.Header.Get("Location"); !strings.HasPrefix(loc, "/login?return_to=") || !strings.Contains(loc, "prompt=login") {
 			t.Fatalf("Location = %q", loc)
 		}
-		resp, _ = web.PostForm(t, "/account/identity-links/microsoft/remove", nil)
+		resp, _ = web.PostForm(t, "/account/identity-links/microsoft/remove", url.Values{"password": {userPassword}})
 		status(t, resp, http.StatusSeeOther, "remove with an old session")
 		if !strings.HasPrefix(resp.Header.Get("Location"), "/login?") || f.linkCount(id) != 2 {
 			t.Fatalf("Location = %q, links = %d", resp.Header.Get("Location"), f.linkCount(id))
@@ -667,9 +667,9 @@ func TestIssue16Integration(t *testing.T) {
 			t.Fatalf("remove the only method: %d %v", resp.StatusCode, m)
 		}
 		// The page removal gives the same answer.
-		resp, body := web.PostForm(t, "/account/identity-links/google/remove", nil)
+		resp, body := web.PostForm(t, "/account/identity-links/google/remove", url.Values{"password": {userPassword}})
 		status(t, resp, http.StatusConflict, "page removal of the only method")
-		if !strings.Contains(string(body), "last login method") {
+		if !strings.Contains(string(body), "Set a password or an authenticator app first") {
 			t.Fatalf("body = %s", body)
 		}
 		// Set a password on the hosted page, then remove.
@@ -687,7 +687,13 @@ func TestIssue16Integration(t *testing.T) {
 		}
 		resp, _ = web.Get(t, "/account/password")
 		status(t, resp, http.StatusSeeOther, "password page with a password")
+		// The token of the upstream login shows no local factor (P23).
 		resp, m = f.api(tr.AccessToken, http.MethodDelete, "/v1/me/identity-links/google", nil)
+		if resp.StatusCode != http.StatusUnauthorized || code(m) != "reauthentication_required" || f.linkCount(id) != 1 {
+			t.Fatalf("remove with a fed token: %d %v", resp.StatusCode, m)
+		}
+		pwdTok, _ := f.login("i15@example.com", userPassword, "admin-ui", adminRedirect, linkScope)
+		resp, m = f.api(pwdTok.AccessToken, http.MethodDelete, "/v1/me/identity-links/google", nil)
 		if resp.StatusCode != http.StatusNoContent || f.linkCount(id) != 0 {
 			t.Fatalf("remove after the password: %d %v", resp.StatusCode, m)
 		}
@@ -808,7 +814,7 @@ func TestIssue16Integration(t *testing.T) {
 				resp, _ = f.api(fresh.AccessToken, http.MethodDelete, "/v1/me/identity-links/google", nil)
 				status(t, resp, http.StatusNoContent, "remove the link")
 			} else {
-				resp, _ = web.PostForm(t, "/account/identity-links/google/remove", nil)
+				resp, _ = web.PostForm(t, "/account/identity-links/google/remove", url.Values{"password": {userPassword}})
 				status(t, resp, http.StatusSeeOther, "remove the link on the page")
 				if resp.Header.Get("Location") != "/account/security" {
 					t.Fatalf("a user with no fed session goes to the account page: %q", resp.Header.Get("Location"))
@@ -832,7 +838,7 @@ func TestIssue16Integration(t *testing.T) {
 				w := f.a.NewWeb()
 				r.link(web, "google", login)
 				r.fedTokens(w, "google", login, linkScope)
-				resp, _ = w.PostForm(t, "/account/identity-links/google/remove", nil)
+				resp, _ = w.PostForm(t, "/account/identity-links/google/remove", url.Values{"password": {userPassword}})
 				// The session of this browser has fed and is not fresh enough only if it is old.
 				if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login?removed=1" {
 					t.Fatalf("remove in a fed session: %d %q", resp.StatusCode, resp.Header.Get("Location"))
@@ -902,7 +908,7 @@ func TestIssue16Integration(t *testing.T) {
 	// I21, I22: no secret in a log record or a span, and only the provider host.
 	t.Run("I21_I22_no_secrets", func(t *testing.T) {
 		for _, h := range p.Hosts() {
-			if h != p.Host() {
+			if !slices.Contains(oidcprovider.ProviderHosts(), h) {
 				t.Fatalf("a call to the host %q", h)
 			}
 		}

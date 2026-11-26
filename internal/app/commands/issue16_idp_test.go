@@ -31,7 +31,7 @@ func newIdpEnv(t *testing.T) *idpEnv {
 	}
 	idp, err := commands.NewIdp(commands.IdpDeps{
 		Client: e.client, Flows: e.flows, Links: e.links, Users: e.users, Sessions: e.sessions, Tokens: e.env.tokens,
-		MFA: e.mfa, UserRoles: e.roles, Pending: e.pending, Events: e.events, Tx: mock.Tx{}, Policy: policy,
+		MFA: e.mfa, UserRoles: e.roles, Pending: e.pending, Factors: e.cmd, Events: e.events, Tx: mock.Tx{}, Policy: policy,
 		LookupAuthRequest: func(_ context.Context, id string) (commands.AuthRequestInfo, error) {
 			if id == "gone" {
 				return commands.AuthRequestInfo{}, commands.ErrAuthRequestGone
@@ -294,6 +294,8 @@ func TestIssue16_LinkFlow(t *testing.T) {
 		ExpiresAt: e.now.Add(time.Hour), IdleExpiresAt: e.now.Add(time.Hour),
 	}
 	link := commands.StartIdp{Provider: "google", Purpose: domain.FlowLink, SessionToken: sessionToken, SecFetchSite: "same-origin"}
+	// The user has a password, so each start needs the check of the local factor (P23).
+	link.Confirm = e.confirm(t, "google", sessionToken, "right password 1")
 	// A session that is too old needs a new login.
 	old := e.sessions.Rows["s1"]
 	old.AuthTime = e.now.Add(-6 * time.Minute)
@@ -315,6 +317,7 @@ func TestIssue16_LinkFlow(t *testing.T) {
 	if _, err := e.callback(state, binding, commands.CallbackIdp{SessionToken: "other-session"}); !errors.Is(err, commands.ErrIdpReauth) {
 		t.Fatalf("another session: %v", err)
 	}
+	link.Confirm = e.confirm(t, "google", sessionToken, "right password 1")
 	state, binding = e.start(t, link)
 	res, err := e.callback(state, binding, commands.CallbackIdp{SessionToken: sessionToken})
 	if err != nil || res.Kind != commands.IdpLinked {
@@ -332,6 +335,7 @@ func TestIssue16_LinkFlow(t *testing.T) {
 		t.Fatalf("notices = %+v", e.events.Notices)
 	}
 	// A second link of the same provider.
+	link.Confirm = e.confirm(t, "google", sessionToken, "right password 1")
 	state, binding = e.start(t, link)
 	if _, err := e.callback(state, binding, commands.CallbackIdp{SessionToken: sessionToken}); !errors.Is(err, commands.ErrIdpAlreadyLinked) {
 		t.Fatalf("second link: %v", err)
@@ -339,7 +343,10 @@ func TestIssue16_LinkFlow(t *testing.T) {
 	// I10: an account that another user has.
 	e.addLink(linkID2, userB, "microsoft")
 	e.client.Identity = domain.UpstreamIdentity{Subject: "subject-" + linkID2, AuthTime: e.now, IssuedAt: e.now}
-	state, binding = e.start(t, commands.StartIdp{Provider: "microsoft", Purpose: domain.FlowLink, SessionToken: sessionToken})
+	state, binding = e.start(t, commands.StartIdp{
+		Provider: "microsoft", Purpose: domain.FlowLink, SessionToken: sessionToken,
+		Confirm: e.confirm(t, "microsoft", sessionToken, "right password 1"),
+	})
 	if _, err := e.callback(state, binding, commands.CallbackIdp{Provider: "microsoft", SessionToken: sessionToken}); !errors.Is(err, commands.ErrIdpLinkedElsewhere) {
 		t.Fatalf("account of another user: %v", err)
 	}
@@ -409,4 +416,189 @@ func TestIssue16_InviteFlow(t *testing.T) {
 	if _, err := e.idp.Start(ctx, in); !errors.Is(err, commands.ErrIdpFailed) {
 		t.Fatalf("used token: %v", err)
 	}
+}
+
+// confirm does the check of the local factor (password) before a link and returns
+// the value for the start.
+func (e *idpEnv) confirm(t *testing.T, provider, sessionToken, password string) string {
+	t.Helper()
+	v, err := e.idp.ConfirmLink(ctx, commands.ConfirmLink{Provider: provider, SessionToken: sessionToken, Password: password})
+	if err != nil || v == "" {
+		t.Fatalf("confirm: %q, %v", v, err)
+	}
+	return v
+}
+
+func (e *idpEnv) addSessionToken(id, userID, token string) {
+	e.sessions.Rows[id] = domain.Session{
+		ID: id, UserID: userID, TokenHash: domain.HashSecret(token), AuthTime: e.now,
+		ExpiresAt: e.now.Add(time.Hour), IdleExpiresAt: e.now.Add(time.Hour),
+	}
+}
+
+// U28 (R3, P23): a user that has a local factor must prove it before a link. A
+// session without the proof cannot start the flow. The proof works one time, for
+// one provider and one session. A wrong password makes no proof.
+func TestIssue16_U28_LinkNeedsLocalFactor(t *testing.T) {
+	e := newIdpEnv(t)
+	e.addSessionToken("s1", userA, "session-1")
+	e.addSessionToken("s2", userB, "session-2")
+	link := func(token, confirm string) commands.StartIdp {
+		return commands.StartIdp{Provider: "google", Purpose: domain.FlowLink, SessionToken: token, SecFetchSite: "same-origin", Confirm: confirm}
+	}
+	// The exploit: a holder of a young session starts the link with no proof.
+	for _, c := range []string{"", "unknown-value"} {
+		if _, err := e.idp.Start(ctx, link("session-1", c)); !errors.Is(err, commands.ErrIdpConfirm) {
+			t.Fatalf("confirm %q: err = %v, want ErrIdpConfirm", c, err)
+		}
+	}
+	if len(e.flows.Rows) != 0 {
+		t.Fatal("a refused start makes no flow record")
+	}
+	// A wrong password and an empty request give no proof.
+	for _, pw := range []string{"wrong password 1", ""} {
+		_, err := e.idp.ConfirmLink(ctx, commands.ConfirmLink{Provider: "google", SessionToken: "session-1", Password: pw})
+		if !errors.Is(err, commands.ErrLocalFactorRequired) {
+			t.Fatalf("password %q: err = %v", pw, err)
+		}
+	}
+	if len(e.flows.Rows) != 0 {
+		t.Fatal("a wrong password makes no record")
+	}
+	// A proof of another provider, or of another session, does not work.
+	v := e.confirm(t, "microsoft", "session-1", "right password 1")
+	if _, err := e.idp.Start(ctx, link("session-1", v)); !errors.Is(err, commands.ErrIdpConfirm) {
+		t.Fatalf("proof of another provider: %v", err)
+	}
+	v = e.confirm(t, "google", "session-1", "right password 1")
+	if _, err := e.idp.Start(ctx, link("session-2", v)); !errors.Is(err, commands.ErrIdpConfirm) {
+		t.Fatalf("proof of another session: %v", err)
+	}
+	// A good proof works one time.
+	v = e.confirm(t, "google", "session-1", "right password 1")
+	e.start(t, link("session-1", v))
+	if _, err := e.idp.Start(ctx, link("session-1", v)); !errors.Is(err, commands.ErrIdpConfirm) {
+		t.Fatalf("second use of the proof: %v", err)
+	}
+	// A user that has a local factor needs no auth_time in the ID token.
+	for _, rec := range e.flows.Rows {
+		if rec.NeedAuthTime {
+			t.Fatal("a user with a local factor must not need the auth_time rule")
+		}
+	}
+	// The state of a flow is not a proof.
+	state := e.client.Last.State
+	if _, err := e.idp.Start(ctx, link("session-1", state)); !errors.Is(err, commands.ErrIdpConfirm) {
+		t.Fatalf("a state as proof: %v", err)
+	}
+}
+
+// U29 (R3, P23): a user with no local factor needs an ID token with a valid
+// auth_time. An ID token with no auth_time, or with an old auth_time, is refused
+// and adds no link. This is the case of Google, which sends no auth_time.
+func TestIssue16_U29_LinkWithoutFactorNeedsAuthTime(t *testing.T) {
+	e := newIdpEnv(t)
+	e.addSessionToken("s1", userNoPassword, "session-1")
+	link := commands.StartIdp{Provider: "google", Purpose: domain.FlowLink, SessionToken: "session-1", SecFetchSite: "same-origin"}
+	for name, c := range map[string]struct {
+		id   domain.UpstreamIdentity
+		want error
+	}{
+		"no auth_time (Google)":   {domain.UpstreamIdentity{Subject: "new", IssuedAt: e.now}, commands.ErrIdpFailed},
+		"auth_time of 10 minutes": {domain.UpstreamIdentity{Subject: "new", AuthTime: e.now.Add(-10 * time.Minute), IssuedAt: e.now}, commands.ErrIdpFailed},
+		"auth_time of 1 minute":   {domain.UpstreamIdentity{Subject: "new", AuthTime: e.now.Add(-time.Minute), IssuedAt: e.now}, nil},
+	} {
+		e.links.Rows = map[string]domain.IdentityLink{}
+		e.events.Audits, e.events.Notices = nil, nil
+		state, binding := e.start(t, link)
+		for _, rec := range e.flows.Rows {
+			if !rec.NeedAuthTime {
+				t.Fatalf("%s: the record must need the auth_time", name)
+			}
+		}
+		e.client.Identity = c.id
+		res, err := e.callback(state, binding, commands.CallbackIdp{SessionToken: "session-1"})
+		if !errors.Is(err, c.want) {
+			t.Fatalf("%s: err = %v, want %v", name, err, c.want)
+		}
+		if c.want != nil {
+			if len(e.links.Rows) != 0 || len(e.events.Audits) != 0 {
+				t.Fatalf("%s: a refused link changes nothing", name)
+			}
+			continue
+		}
+		if res.Kind != commands.IdpLinked || len(e.links.Rows) != 1 {
+			t.Fatalf("%s: result %+v", name, res)
+		}
+	}
+	// The iat is not a substitute for the auth_time here (Microsoft).
+	e.links.Rows = map[string]domain.IdentityLink{}
+	state, binding := e.start(t, commands.StartIdp{Provider: "microsoft", Purpose: domain.FlowLink, SessionToken: "session-1", SecFetchSite: "same-origin"})
+	e.client.Identity = domain.UpstreamIdentity{Subject: "new-ms", IssuedAt: e.now}
+	if _, err := e.callback(state, binding, commands.CallbackIdp{Provider: "microsoft", SessionToken: "session-1"}); !errors.Is(err, commands.ErrIdpFailed) {
+		t.Fatalf("Microsoft with iat only: %v", err)
+	}
+	if len(e.links.Rows) != 0 {
+		t.Fatal("no link without an auth_time")
+	}
+}
+
+// U30 (R3, P23): the confirm step for a user with no local factor returns no
+// value and no error. The start then sets the auth_time rule.
+func TestIssue16_U30_ConfirmWithoutFactor(t *testing.T) {
+	e := newIdpEnv(t)
+	e.addSessionToken("s1", userNoPassword, "session-1")
+	v, err := e.idp.ConfirmLink(ctx, commands.ConfirmLink{Provider: "google", SessionToken: "session-1"})
+	if err != nil || v != "" {
+		t.Fatalf("confirm = %q, %v", v, err)
+	}
+	if len(e.flows.Rows) != 0 {
+		t.Fatal("no record")
+	}
+}
+
+// U31 (R2): a pending login with the method fed ends when the link is removed
+// before the second factor. The second factor then makes no session.
+func TestIssue16_U31_PendingFedEndsAfterRemoval(t *testing.T) {
+	e := newLinkEnv(t)
+	m := e.mfaEnv
+	e.addLink(linkID1, userA, "google")
+	secret, _ := m.enable(t, userA, "a@example.com")
+	e.addSession("pwd", userA, "pwd")
+	put := func(token string) {
+		err := m.pending.Put(ctx, domain.HashSecret(token), domain.PendingLogin{
+			UserID: userA, Methods: domain.MethodsFederated(), Provider: "google", ExpiresAt: m.now.Add(time.Minute),
+		}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("pending-1")
+	put("pending-2")
+	// Step 3 of the exploit: the user removes the link. The user has a password,
+	// so the rule "last login method" allows it.
+	if err := e.links2.Remove(ctx, commands.RemoveIdentityLink{UserID: userA, Provider: "google", Actor: userA}); err != nil {
+		t.Fatal(err)
+	}
+	n := len(m.sessions.Rows)
+	// Step 4: the attacker sends the TOTP code. It must not make a session.
+	_, err := m.cmd.VerifyLogin(ctx, commands.VerifyLogin{PendingToken: "pending-1", Code: m.code(secret, m.now), IP: "1.1.1.1"})
+	if !errors.Is(err, commands.ErrMFAPendingGone) {
+		t.Fatalf("err = %v, want ErrMFAPendingGone", err)
+	}
+	if len(m.sessions.Rows) != n {
+		t.Fatal("the second factor must not make a session after the removal")
+	}
+	// A pending login for a provider that is off ends too.
+	e.addLink(linkID2, userA, "microsoft")
+	e.on["microsoft"] = false
+	err = nil
+	pending := domain.PendingLogin{UserID: userA, Methods: domain.MethodsFederated(), Provider: "microsoft", ExpiresAt: m.now.Add(time.Minute)}
+	if err := m.pending.Put(ctx, domain.HashSecret("pending-3"), pending, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.cmd.VerifyLogin(ctx, commands.VerifyLogin{PendingToken: "pending-3", Code: m.code(secret, m.now), IP: "1.1.1.1"}); !errors.Is(err, commands.ErrMFAPendingGone) {
+		t.Fatalf("provider off: %v", err)
+	}
+	_ = err
 }

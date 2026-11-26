@@ -181,7 +181,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	}
 	st.oidc = oidc
 	mfaCmd, err := commands.NewMFA(commands.MFADeps{
-		Users: userRepo, UserRoles: roles, Sessions: sessionRepo, MFA: mfaRepo, TOTP: adaptertotp.New(),
+		Users: userRepo, UserRoles: roles, Sessions: sessionRepo, MFA: mfaRepo, TOTP: adaptertotp.New(), Hasher: hasher,
 		Sealer: adaptersecrets.NewSealer(a.ring), Pending: mfaFlow.Pending(), Setups: mfaFlow.Setups(),
 		Passkeys: passkeyRepo, WebAuthn: webauthnService, Ceremonies: mfaFlow.Ceremonies(), PasskeysOn: passkeysOn,
 		Links: linkRepo, APITokens: apiTokenRepo, ProviderOn: providerOn,
@@ -206,7 +206,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	})
 	idpCmd, err := commands.NewIdp(commands.IdpDeps{
 		Client: idpClient, Flows: adaptervalkey.NewIdpFlow(store), Links: linkRepo, Users: userRepo, Sessions: sessionRepo,
-		Tokens: tokens, MFA: mfaRepo, UserRoles: roles, Pending: mfaFlow.Pending(), Events: events, Tx: tx, Policy: policy,
+		Tokens: tokens, MFA: mfaRepo, UserRoles: roles, Pending: mfaFlow.Pending(), Factors: mfaCmd, Events: events, Tx: tx, Policy: policy,
 		LookupAuthRequest: oidc.LookupAuthRequest, PasskeysOn: passkeysOn, RequireMFAForAdmins: cfg.MFA.RequireForAdmins,
 		Timeout: cfg.IDP.HTTPTimeout, Log: log, Now: clock,
 	})
@@ -214,7 +214,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		return nil, err
 	}
 	st.idp, st.links, st.providers, st.passkeysOn = idpCmd, linkRepo, providers, passkeysOn
-	setPassword := commands.NewSetPassword(commands.SetPasswordDeps{Users: userRepo, Hasher: hasher, Tx: tx, Log: log, Now: clock})
+	setPassword := commands.NewSetPassword(commands.SetPasswordDeps{Users: userRepo, Hasher: hasher, Tx: tx, Events: events, Log: log, Now: clock})
 	st.apiTokenRepo, st.userRoles = apiTokenRepo, roles
 	st.apiTokens = commands.NewAPITokens(commands.APITokensDeps{
 		Tokens: apiTokenRepo, Users: userRepo, UserRoles: roles, Tx: tx, Log: log, Now: clock, RateLimits: a.limits,

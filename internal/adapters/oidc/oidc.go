@@ -9,9 +9,11 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
@@ -25,8 +27,15 @@ import (
 // offline access, so no provider gives a refresh token.
 var scopes = []string{"openid", "email", "profile"}
 
-// discoveryTTL is the time that the service keeps a discovery document.
+// discoveryTTL is the time that the service keeps a discovery document. After
+// that time the service reads it again. If the read fails, it keeps the old copy
+// until discoveryMaxStale, so a short error of the provider does not stop the
+// logins (R9).
 const discoveryTTL = time.Hour
+
+// discoveryMaxStale is the age after which a copy of a discovery document is not
+// used any more.
+const discoveryMaxStale = 24 * time.Hour
 
 // maxIDTokenBytes is the largest ID token that the service reads.
 const maxIDTokenBytes = 16 << 10
@@ -41,10 +50,6 @@ type ProviderConfig struct {
 	AllowedDomains []string
 	// Tenant is the Microsoft tenant: a GUID or "organizations".
 	Tenant string
-	// BaseURL replaces the issuer of Google, or the Microsoft login base. A test
-	// uses it to point the adapter at a test provider. Production code leaves it
-	// empty.
-	BaseURL string
 }
 
 // Config is the setting of the adapter.
@@ -56,6 +61,14 @@ type Config struct {
 	Microsoft ProviderConfig
 	// HTTPTimeout is the time limit of one call to a provider.
 	HTTPTimeout time.Duration
+	// Transport sends the HTTP requests. The default is http.DefaultTransport. A
+	// test gives a transport that sends the requests to a test provider. The
+	// issuer, the endpoints, and the hosts of the providers are never changed,
+	// so the token checks of a test are the same as the checks of production
+	// (R14).
+	Transport http.RoundTripper
+	// Log is the logger. The default is slog.Default().
+	Log *slog.Logger
 	// Now is the clock. The default is time.Now.
 	Now func() time.Time
 }
@@ -66,8 +79,17 @@ type Client struct {
 	http *http.Client
 	now  func() time.Time
 
+	log *slog.Logger
+
 	mu    sync.Mutex
 	found map[string]*discovered
+	// flight has one lock for each provider. The call that reads a discovery
+	// document holds it, so parallel calls wait for one read (R9).
+	flight map[string]*sync.Mutex
+	// failures counts the HTTP calls that failed with a transport error or a
+	// status 5xx. Exchange uses it to tell a provider error from a bad token
+	// (R5).
+	failures atomic.Int64
 }
 
 var _ upstreamidp.Client = (*Client)(nil)
@@ -88,15 +110,43 @@ func New(cfg Config) *Client {
 	if cfg.HTTPTimeout <= 0 {
 		cfg.HTTPTimeout = 10 * time.Second
 	}
-	return &Client{
-		cfg: cfg,
-		http: &http.Client{
-			Timeout:       cfg.HTTPTimeout,
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		},
-		now:   cfg.Now,
-		found: map[string]*discovered{},
+	if cfg.Log == nil {
+		cfg.Log = slog.Default()
 	}
+	base := cfg.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	c := &Client{
+		cfg:    cfg,
+		log:    cfg.Log,
+		now:    cfg.Now,
+		found:  map[string]*discovered{},
+		flight: map[string]*sync.Mutex{domain.ProviderGoogle: {}, domain.ProviderMicrosoft: {}},
+	}
+	c.http = &http.Client{
+		Timeout:       cfg.HTTPTimeout,
+		Transport:     &countingTransport{base: base, failures: &c.failures},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	return c
+}
+
+// countingTransport counts the calls that fail with a transport error or with a
+// status 5xx. go-oidc wraps the error of a key set read with %v, so the adapter
+// cannot find the cause with errors.As. The counter tells the adapter that a
+// call failed while it checked a token (R5).
+type countingTransport struct {
+	base     http.RoundTripper
+	failures *atomic.Int64
+}
+
+func (t *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(r)
+	if err != nil || resp.StatusCode >= http.StatusInternalServerError {
+		t.failures.Add(1)
+	}
+	return resp, err
 }
 
 func (c *Client) provider(provider string) (ProviderConfig, bool) {
@@ -116,20 +166,10 @@ func (c *Client) Enabled(provider string) bool {
 }
 
 // googleIssuer returns the issuer of the Google discovery document.
-func (c *Client) googleIssuer() string {
-	if c.cfg.Google.BaseURL != "" {
-		return strings.TrimSuffix(c.cfg.Google.BaseURL, "/")
-	}
-	return domain.GoogleIssuer
-}
+func (c *Client) googleIssuer() string { return domain.GoogleIssuer }
 
 // microsoftBase returns the base URL of the Microsoft login service.
-func (c *Client) microsoftBase() string {
-	if c.cfg.Microsoft.BaseURL != "" {
-		return strings.TrimSuffix(c.cfg.Microsoft.BaseURL, "/")
-	}
-	return domain.MicrosoftLoginBase
-}
+func (c *Client) microsoftBase() string { return domain.MicrosoftLoginBase }
 
 func (c *Client) redirectURI(provider string) string {
 	return c.cfg.Issuer + "/login/oidc/" + provider + "/callback"
@@ -137,18 +177,26 @@ func (c *Client) redirectURI(provider string) string {
 
 // discover reads the discovery document, or uses the copy in memory.
 func (c *Client) discover(ctx context.Context, provider string) (*discovered, error) {
-	c.mu.Lock()
-	d, ok := c.found[provider]
-	c.mu.Unlock()
-	if ok && c.now().Sub(d.at) < discoveryTTL {
+	if d, ok := c.cached(provider); ok && c.now().Sub(d.at) < discoveryTTL {
 		return d, nil
 	}
 	pc, on := c.provider(provider)
 	if !on {
 		return nil, fmt.Errorf("%w: the provider is off", upstreamidp.ErrProvider)
 	}
+	// One call reads the document. The other calls wait and then use the new copy.
+	lock := c.flight[provider]
+	lock.Lock()
+	defer lock.Unlock()
+	old, haveOld := c.cached(provider)
+	if haveOld && c.now().Sub(old.at) < discoveryTTL {
+		return old, nil
+	}
 	ctx = gooidc.ClientContext(ctx, c.http)
-	var err error
+	var (
+		d   *discovered
+		err error
+	)
 	switch provider {
 	case domain.ProviderGoogle:
 		d, err = c.discoverGoogle(ctx, pc)
@@ -156,6 +204,10 @@ func (c *Client) discover(ctx context.Context, provider string) (*discovered, er
 		d, err = c.discoverMicrosoft(ctx, pc)
 	}
 	if err != nil {
+		if haveOld && c.now().Sub(old.at) < discoveryMaxStale {
+			c.log.WarnContext(ctx, "identity.idp.discovery_stale", "event", "identity.idp.discovery_stale", "provider", provider, "error", err)
+			return old, nil
+		}
 		return nil, fmt.Errorf("%w: discovery: %w", upstreamidp.ErrProvider, err)
 	}
 	d.at = c.now()
@@ -163,6 +215,13 @@ func (c *Client) discover(ctx context.Context, provider string) (*discovered, er
 	c.found[provider] = d
 	c.mu.Unlock()
 	return d, nil
+}
+
+func (c *Client) cached(provider string) (*discovered, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	d, ok := c.found[provider]
+	return d, ok
 }
 
 func (c *Client) discoverGoogle(ctx context.Context, pc ProviderConfig) (*discovered, error) {
@@ -196,7 +255,7 @@ func (c *Client) discoverMicrosoft(ctx context.Context, pc ProviderConfig) (*dis
 	if err := p.Claims(&doc); err != nil || doc.JWKSURI == "" {
 		return nil, errors.New("the discovery document has no jwks_uri")
 	}
-	keys := &msKeySet{url: doc.JWKSURI, client: c.http}
+	keys := &msKeySet{url: doc.JWKSURI, client: c.http, now: c.now}
 	// The issuer check is off here. The method checkMicrosoft does it.
 	v := gooidc.NewVerifier(template, keys, &gooidc.Config{ClientID: pc.ClientID, SkipIssuerCheck: true, Now: c.now})
 	return &discovered{oauth: p.Endpoint(), verifier: v}, nil
@@ -258,10 +317,12 @@ func (c *Client) Exchange(ctx context.Context, provider string, p upstreamidp.Ex
 	}
 	// The access token and the refresh token have no use. They stay in this
 	// function only, and nothing keeps or logs them.
+	failed := c.failures.Load()
 	idToken, err := d.verifier.Verify(ctx, raw)
 	if err != nil {
-		var transport interface{ Timeout() bool }
-		if errors.As(err, &transport) {
+		// go-oidc wraps the error of the key set with %v, so errors.As finds no
+		// cause. A failed HTTP call during the check means a provider error (R5).
+		if c.failures.Load() != failed {
 			return domain.UpstreamIdentity{}, fmt.Errorf("%w: keys: %w", upstreamidp.ErrProvider, err)
 		}
 		return domain.UpstreamIdentity{}, fmt.Errorf("%w: %w", upstreamidp.ErrToken, err)

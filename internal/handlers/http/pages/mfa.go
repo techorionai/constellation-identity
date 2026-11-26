@@ -250,9 +250,12 @@ func (h *Handler) securityPage(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, p := range h.idpLinks(domain.FlowLink, nil) {
 			if !linked[p.Provider] {
+				// The link goes to the page of the local factor check (P23).
+				p.URL = "/account/identity-links/" + p.Provider + "/link"
 				v.Linkable = append(v.Linkable, p)
 			}
 		}
+		v.FactorOn = domain.HasLocalFactor(res.User.PasswordHash != "", st.State)
 	}
 	h.render(w, r, http.StatusOK, "account_security", v)
 }

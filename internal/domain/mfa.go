@@ -191,9 +191,12 @@ func (s MFAState) Enabled() bool {
 type PendingLogin struct {
 	UserID string `json:"user_id"`
 	// Methods are the methods of the first factor.
-	Methods     []string `json:"methods"`
-	AuthRequest string   `json:"auth_request"`
-	ReturnTo    string   `json:"return_to"`
+	Methods []string `json:"methods"`
+	// Provider is the upstream provider of a login with the method fed. The
+	// second factor checks again that the user keeps the link of this provider.
+	Provider    string `json:"provider,omitempty"`
+	AuthRequest string `json:"auth_request"`
+	ReturnTo    string `json:"return_to"`
 	// LimiterEmail and LimiterIP are the keys of the login counters. The
 	// second factor resets them after a full login.
 	LimiterEmail string `json:"limiter_email"`
