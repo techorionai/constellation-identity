@@ -521,6 +521,19 @@ func TestIssue14Integration(t *testing.T) {
 		if f.countWhere(`SELECT count(*) FROM user_totp WHERE user_id = $1`, u.id)+f.countWhere(`SELECT count(*) FROM recovery_codes WHERE user_id = $1`, u.id) != 0 {
 			t.Fatal("the rows must be gone")
 		}
+		// The port got one audit entry and one notice (I40).
+		var audits, notices int
+		for _, r := range f.a.logs.Records(t) {
+			if r["msg"] == "identity.audit" && r["action"] == "identity:mfa:totp_remove" && r["target_user_id"] == u.id && r["actor"] == u.id && r["result"] == "success" {
+				audits++
+			}
+			if r["msg"] == "identity.security_notice" && r["kind"] == "mfa_totp_removed" && r["target_user_id"] == u.id {
+				notices++
+			}
+		}
+		if audits != 1 || notices != 1 {
+			t.Fatalf("audit records = %d, notice records = %d, want 1 each", audits, notices)
+		}
 		// The next login asks for the password only.
 		f.passwordLogin(f.a.NewWeb(), u.email, u.password, "/login/done")
 		// The next call gives 404 totp_not_found.
@@ -592,9 +605,28 @@ func TestIssue14Integration(t *testing.T) {
 		}
 	})
 
+	// U18: a refresh of a family from before the upgrade (auth_time NULL, amr empty)
+	// gives an access token with no amr and no auth_time. The rule is off for this user.
+	t.Run("U18_family_before_upgrade", func(t *testing.T) {
+		u := f.newTOTPUser("u18@example.com", demoRole)
+		first := f.mfaToken(u, "admin-ui", adminRedirect, mfaOfflineFlow, nil)
+		if amrOf(t, first.AccessToken) == "" || authTimeOf(t, first.AccessToken) == 0 {
+			t.Fatal("the first token needs amr and auth_time")
+		}
+		if _, err := f.a.Pool(t).Exec(ctx, `UPDATE refresh_token_families SET auth_time = NULL, amr = '{}' WHERE user_id = $1`, u.id); err != nil {
+			t.Fatal(err)
+		}
+		resp, r := f.a.TokenRequest(t, testserver.RefreshForm("admin-ui", first.RefreshToken))
+		status(t, resp, http.StatusOK, "refresh of an old family")
+		if amrOf(t, r.AccessToken) != "" || authTimeOf(t, r.AccessToken) != 0 {
+			t.Fatalf("an old family must give no amr and no auth_time: %q %v", amrOf(t, r.AccessToken), authTimeOf(t, r.AccessToken))
+		}
+	})
+
 	// I15, I30, I31, I32, I33: the reset of the MFA of a user.
 	g := newFixture(t, h, mfaOptions(requireAdmins())...)
 	gAdmin := g.newMFAAdmin()
+	// I10, U11: an admin with no factor gets no code. The setup goes to the first page.
 	t.Run("I10_first_admin", func(t *testing.T) {
 		// A new login of the admin (no second factor yet is not possible: TOTP is set up).
 		// The session of the setup has [pwd] only. It gets no code before the setup.
@@ -760,10 +792,17 @@ func TestIssue14Integration(t *testing.T) {
 		}
 	})
 
-	// I17, I37: the subcommand reset-mfa for the last admin.
+	// I17, I37, I24: the subcommand reset-mfa for the last admin.
 	t.Run("I17_reset_mfa_subcommand", func(t *testing.T) {
+		// I24: the admin has a fresh MFA token. The operator resets the MFA of the
+		// admin. The admin calls DELETE /v1/me/totp with the token of the first
+		// login. The result is 404 totp_not_found, before 409 mfa_required.
+		fresh := g.mfaToken(gAdmin, "admin-ui", adminRedirect, mfaScope, nil)
 		if err := services.ResetMFA(ctx, g.a.Config, "admin@example.com", g.a.logs.Logger()); err != nil {
 			t.Fatal(err)
+		}
+		if resp, m := g.api(fresh.AccessToken, http.MethodDelete, "/v1/me/totp", nil); resp.StatusCode != http.StatusNotFound || m["code"] != "totp_not_found" {
+			t.Fatalf("I24: %d %v", resp.StatusCode, m)
 		}
 		if err := services.ResetMFA(ctx, g.a.Config, "nobody@example.com", g.a.logs.Logger()); err == nil {
 			t.Fatal("an unknown email must fail")

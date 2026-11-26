@@ -192,6 +192,8 @@ func TestI12_ReauthenticationRefusal(t *testing.T) {
 	if !r.has(mfaUser) {
 		t.Fatal("TOTP must stay")
 	}
+	// I25: a stale admin token and an unknown user ID give 401 before 404.
+	wantReauth(t, "reset of an unknown user with a stale token", call(r.h, http.MethodDelete, "/v1/users/"+mfaUnknown+"/mfa", "admin-stale", ""))
 	// I21: a stale admin token, and an API token of the admin.
 	for _, tok := range []string{"admin-stale", "admin-api"} {
 		rec = call(r.h, http.MethodDelete, "/v1/users/"+mfaOther+"/mfa", tok, "")
