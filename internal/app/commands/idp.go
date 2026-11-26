@@ -644,7 +644,7 @@ func (i *Idp) continueLogin(ctx context.Context, in CallbackIdp, rec domain.IdpF
 		}
 		var err error
 		issued, err = sessionStarter{sessionIssuer{repo: i.d.Sessions, policy: i.d.Policy, now: i.d.Now}}.
-			start(ctx, userID, in.PreviousToken, in.UserAgent, in.IP, domain.MethodsFederatedFor(authTimeValid))
+			start(ctx, userID, in.PreviousToken, in.UserAgent, in.IP, domain.MethodsFederated(), withUpstreamAuth(authTimeValid))
 		return err
 	}, txName("login_upstream"))
 	if errors.Is(err, ErrIdpFailed) {
@@ -844,7 +844,7 @@ func (i *Idp) invite(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id
 			return err
 		}
 		issued, err = sessionIssuer{repo: i.d.Sessions, policy: i.d.Policy, now: i.d.Now}.
-			issue(ctx, user.ID, in.UserAgent, in.IP, domain.MethodsFederatedFor(domain.UpstreamAuthTimeFresh(id.AuthTime, now)))
+			issue(ctx, user.ID, in.UserAgent, in.IP, domain.MethodsFederated(), withUpstreamAuth(domain.UpstreamAuthTimeFresh(id.AuthTime, now)))
 		return err
 	}, txName("accept_invite_upstream"))
 	switch {

@@ -89,6 +89,7 @@ func (r *Sessions) Reauthenticate(_ context.Context, a sessions.Reauth) (string,
 	for id, s := range r.Rows {
 		if s.TokenHash == a.OldHash && s.UserID == a.UserID && s.Valid(a.Now) {
 			s.TokenHash, s.AuthTime, s.LastSeenAt, s.IdleExpiresAt, s.AuthMethods = a.NewHash, a.Now, a.Now, a.IdleExpires, a.Methods
+			s.UpstreamAuthValid = a.UpstreamAuthValid
 			r.Rows[id] = s
 			return id, true, nil
 		}

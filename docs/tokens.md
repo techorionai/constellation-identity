@@ -157,12 +157,11 @@ A client must not refresh the token to answer this. A refresh keeps the old `aut
 | Password and passkey | `["pwd","hwk","mfa"]`, and `["pwd","hwk","user","mfa"]` with user verification |
 | Passkey only | `["hwk","user","mfa"]` |
 | Google or Microsoft | `["fed"]` |
-| Google or Microsoft, with a valid `auth_time` in the ID token | `["fed","fed_auth_time"]` |
 | Google or Microsoft and TOTP | `["fed","otp","mfa"]` |
 | Google or Microsoft and recovery code | `["fed","rec","mfa"]` |
 | Google or Microsoft and passkey | `["fed","hwk","mfa"]`, and `["fed","hwk","user","mfa"]` with user verification |
 
-The value `fed_auth_time` is not in the list of the contract. It shows that the ID token of the upstream login had an `auth_time` of 5 minutes or less at the login. `MeIdentityLinks_remove` uses it for a user with no local factor. A client must not use it for another decision.
+The `auth_time` of the ID token of the upstream provider stays inside the service. No token and no API response has it, and `amr` has no extra value for it. If the ID token had a valid `auth_time` (5 minutes old or less at the login), the service stores this fact in its database: with the session, with the refresh token family, and with the `jti` of each access token that it issues from that session or family (table `upstream_auth_tokens`). `MeIdentityLinks_remove` reads the stored fact through the `jti` of the access token for a user with no local factor. A refresh keeps the fact, because the family stores it. The contract does not change.
 
 ## Personal API tokens
 

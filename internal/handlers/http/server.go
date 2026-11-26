@@ -4,6 +4,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -108,7 +109,7 @@ func New(d Deps) *Server {
 // /v1 route is auth.Middleware, then auth.RequireScopes with the scopes of the
 // operation, then the handler.
 func (s *Server) Handler() http.Handler {
-	strict := gen.NewStrictHandlerWithOptions(s, []gen.StrictMiddlewareFunc{captureTokenRequest}, gen.StrictHTTPServerOptions{
+	strict := gen.NewStrictHandlerWithOptions(s, []gen.StrictMiddlewareFunc{captureTokenRequest, captureAccessTokenID}, gen.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  s.requestError,
 		ResponseErrorHandlerFunc: s.responseError,
 	})
@@ -170,6 +171,50 @@ func captureTokenRequest(f gen.StrictHandlerFunc, operation string) gen.StrictHa
 		}
 		return f(context.WithValue(ctx, tokenRequestKey{}, tr), w, r, request)
 	}
+}
+
+type accessTokenIDKey struct{}
+
+// captureAccessTokenID puts the jti of the bearer token in the context for the
+// link removal. The auth middleware verified the token before this step, so the
+// step only reads the claim.
+func captureAccessTokenID(f gen.StrictHandlerFunc, operation string) gen.StrictHandlerFunc {
+	if operation != "MeIdentityLinksRemove" {
+		return f
+	}
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error) {
+		return f(context.WithValue(ctx, accessTokenIDKey{}, bearerJTI(r.Header.Get("Authorization"))), w, r, request)
+	}
+}
+
+// accessTokenID returns the jti that captureAccessTokenID stored, or "".
+func accessTokenID(ctx context.Context) string {
+	v, _ := ctx.Value(accessTokenIDKey{}).(string)
+	return v
+}
+
+// bearerJTI reads the jti claim of a bearer token without a signature check. Use
+// it only after the verification of the token.
+func bearerJTI(header string) string {
+	scheme, token, ok := strings.Cut(header, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return ""
+	}
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var c struct {
+		JTI string `json:"jti"`
+	}
+	if json.Unmarshal(raw, &c) != nil {
+		return ""
+	}
+	return c.JTI
 }
 
 // hasBasicAuthorization reports whether the request has an Authorization header

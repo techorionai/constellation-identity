@@ -3,6 +3,7 @@
 package services_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -186,8 +187,31 @@ func TestIssue16R3Integration(t *testing.T) {
 		// The client asks for a new login, so Microsoft sends a new auth_time.
 		ms := microsoft("oid-r3a2", "r3a2@example.com")
 		ms.AuthTime = f.clock.Now()
-		mTok := r.fedTokens(f.a.NewWeb(), "microsoft", ms, linkScope)
-		resp, m = f.api(mTok.AccessToken, http.MethodDelete, "/v1/me/identity-links/google", nil)
+		mTok := r.fedTokens(f.a.NewWeb(), "microsoft", ms, linkScope+" offline_access")
+		// P24: no token has the value of the upstream auth_time. amr is only "fed".
+		for name, tok := range map[string]string{"access token": mTok.AccessToken, "ID token": mTok.IDToken} {
+			if tok == "" {
+				t.Fatalf("no %s", name)
+			}
+			_, claims := testserver.JWTClaims(t, tok)
+			if amr, _ := claims["amr"].([]any); len(amr) != 1 || amr[0] != "fed" {
+				t.Fatalf("%s amr = %v", name, claims["amr"])
+			}
+			raw, _ := json.Marshal(claims)
+			if strings.Contains(string(raw), "fed_auth_time") {
+				t.Fatalf("%s has fed_auth_time: %s", name, raw)
+			}
+		}
+		// A refreshed access token keeps the proof, because the family keeps the flag.
+		_, refreshed := f.a.TokenRequest(t, testserver.RefreshForm("admin-ui", mTok.RefreshToken))
+		if refreshed.AccessToken == "" {
+			t.Fatalf("refresh: %v", refreshed.Error)
+		}
+		_, rc := testserver.JWTClaims(t, refreshed.AccessToken)
+		if raw, _ := json.Marshal(rc); strings.Contains(string(raw), "fed_auth_time") {
+			t.Fatalf("refreshed token has fed_auth_time: %s", raw)
+		}
+		resp, m = f.api(refreshed.AccessToken, http.MethodDelete, "/v1/me/identity-links/google", nil)
 		if resp.StatusCode != http.StatusNoContent || f.linkCount(id) != 1 {
 			t.Fatalf("API removal with an auth_time: %d %v", resp.StatusCode, m)
 		}

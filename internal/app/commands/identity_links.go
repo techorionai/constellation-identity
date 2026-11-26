@@ -114,6 +114,11 @@ type RemoveIdentityLink struct {
 	// with a valid auth_time (P23). It counts for a user with no local factor. It
 	// matters only with Self.
 	UpstreamFresh bool
+	// AccessTokenID is the jti of the access token of the API call. For a user
+	// with no local factor, the removal passes if the service stored this jti at
+	// the login with a valid upstream auth_time (P24). The value is not in a
+	// token. It matters only with Self.
+	AccessTokenID string
 }
 
 // Remove removes the link of a user for a provider. The order of the checks:
@@ -186,7 +191,15 @@ func (l *IdentityLinks) Remove(ctx context.Context, in RemoveIdentityLink) error
 					return ErrLocalFactorRequired
 				}
 			} else if !in.UpstreamFresh {
-				return ErrLocalFactorMissing
+				marked := false
+				if in.AccessTokenID != "" {
+					if marked, err = l.d.Sessions.AccessTokenMarked(ctx, in.AccessTokenID, u.ID, l.now()); err != nil {
+						return err
+					}
+				}
+				if !marked {
+					return ErrLocalFactorMissing
+				}
 			}
 		}
 		if err := l.d.Links.Remove(ctx, u.ID, in.Provider); err != nil {

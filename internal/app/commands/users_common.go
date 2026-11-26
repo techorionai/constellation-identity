@@ -99,8 +99,29 @@ type sessionIssuer struct {
 	now    Clock
 }
 
+// sessionOption changes the data of a new session.
+type sessionOption func(*sessionOptions)
+
+type sessionOptions struct {
+	upstreamAuthValid bool
+}
+
+// withUpstreamAuth sets the flag of the session for a login with an upstream ID
+// token that had a valid auth_time. The flag stays in the service (P24).
+func withUpstreamAuth(valid bool) sessionOption {
+	return func(o *sessionOptions) { o.upstreamAuthValid = valid }
+}
+
+func applySessionOptions(opts []sessionOption) sessionOptions {
+	var o sessionOptions
+	for _, f := range opts {
+		f(&o)
+	}
+	return o
+}
+
 // issue stores a new session for the user and returns the cookie value.
-func (s sessionIssuer) issue(ctx context.Context, userID, userAgent, ip string, methods []string) (IssuedSession, error) {
+func (s sessionIssuer) issue(ctx context.Context, userID, userAgent, ip string, methods []string, opts ...sessionOption) (IssuedSession, error) {
 	value, hash, err := domain.NewSecret()
 	if err != nil {
 		return IssuedSession{}, err
@@ -108,6 +129,7 @@ func (s sessionIssuer) issue(ctx context.Context, userID, userAgent, ip string, 
 	id := newUUID()
 	sess := s.policy.NewSession(userID, s.now().UTC(), methods)
 	sess.ID, sess.TokenHash = id, hash
+	sess.UpstreamAuthValid = applySessionOptions(opts).upstreamAuthValid
 	sess.UserAgent, sess.IPAddress = clip(userAgent, 512), clip(ip, 64)
 	if err := s.repo.Create(ctx, sess); err != nil {
 		return IssuedSession{}, err
@@ -188,13 +210,13 @@ type sessionStarter struct {
 }
 
 // start makes or keeps the session of a login.
-func (s sessionStarter) start(ctx context.Context, userID, previousToken, userAgent, ip string, methods []string) (IssuedSession, error) {
-	if kept, ok, err := s.reauthenticate(ctx, userID, previousToken, userAgent, ip, methods); err != nil {
+func (s sessionStarter) start(ctx context.Context, userID, previousToken, userAgent, ip string, methods []string, opts ...sessionOption) (IssuedSession, error) {
+	if kept, ok, err := s.reauthenticate(ctx, userID, previousToken, userAgent, ip, methods, opts...); err != nil {
 		return IssuedSession{}, err
 	} else if ok {
 		return kept, nil
 	}
-	issued, err := s.issue(ctx, userID, userAgent, ip, methods)
+	issued, err := s.issue(ctx, userID, userAgent, ip, methods, opts...)
 	if err != nil {
 		return IssuedSession{}, fmt.Errorf("make the session: %w", err)
 	}
@@ -205,7 +227,7 @@ func (s sessionStarter) start(ctx context.Context, userID, previousToken, userAg
 // user. The cookie value always changes, and the old value stops in the same
 // statement. If the statement changes no row (a parallel logout), or in any
 // other case, it revokes the previous session and the caller makes a new one.
-func (s sessionStarter) reauthenticate(ctx context.Context, userID, previousToken, userAgent, ip string, methods []string) (IssuedSession, bool, error) {
+func (s sessionStarter) reauthenticate(ctx context.Context, userID, previousToken, userAgent, ip string, methods []string, opts ...sessionOption) (IssuedSession, bool, error) {
 	if previousToken == "" {
 		return IssuedSession{}, false, nil
 	}
@@ -224,6 +246,7 @@ func (s sessionStarter) reauthenticate(ctx context.Context, userID, previousToke
 			OldHash: oldHash, NewHash: hash, UserID: userID, Now: now,
 			IdleExpires: s.policy.IdleExpiry(prev, now),
 			UserAgent:   clip(userAgent, 512), IPAddress: clip(ip, 64), Methods: methods,
+			UpstreamAuthValid: applySessionOptions(opts).upstreamAuthValid,
 		})
 		if err != nil {
 			return IssuedSession{}, false, fmt.Errorf("keep the session: %w", err)

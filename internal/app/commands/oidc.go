@@ -386,7 +386,7 @@ func (o *OIDC) complete(ctx context.Context, req domain.AuthRequest, sess domain
 	rec := domain.AuthCode{
 		ClientID: client.ID, RedirectURI: req.RedirectURI, CodeChallenge: req.CodeChallenge, Nonce: req.Nonce,
 		SessionID: sess.ID, UserID: user.ID, Scope: selected, OIDCScopes: req.OIDCScopes, AuthTime: sess.AuthTime,
-		AuthMethods: sess.AuthMethods,
+		AuthMethods: sess.AuthMethods, UpstreamAuthValid: sess.UpstreamAuthValid,
 	}
 	if err := o.d.Codes.Put(ctx, hash, rec, o.d.CodeTTL); err != nil {
 		return AuthorizeOutcome{}, fmt.Errorf("store the code: %w", err)
@@ -570,7 +570,7 @@ func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode) (UserTokenResu
 	}
 	// 7. The tokens are signed before the code is claimed. If the key or the
 	// signer fails, the code stays valid and the client can try again.
-	access, idToken, err := o.mint(client, user, rec.Scope, rec.OIDCScopes, tokenAuth{AuthTime: rec.AuthTime, Methods: rec.AuthMethods}, &idTokenInput{
+	access, idToken, err := o.mint(ctx, client, user, rec.Scope, rec.OIDCScopes, tokenAuth{AuthTime: rec.AuthTime, Methods: rec.AuthMethods, UpstreamAuthValid: rec.UpstreamAuthValid}, &idTokenInput{
 		Nonce: rec.Nonce, AuthTime: rec.AuthTime, SessionID: sess.ID,
 	})
 	if err != nil {
@@ -597,7 +597,7 @@ func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode) (UserTokenResu
 		fam := domain.RefreshFamily{
 			ID: newUUID(), SessionID: sess.ID, ClientID: client.ID, UserID: user.ID,
 			Scope: rec.Scope, OIDCScopes: rec.OIDCScopes, CreatedAt: now,
-			AuthTime: rec.AuthTime, AuthMethods: rec.AuthMethods,
+			AuthTime: rec.AuthTime, AuthMethods: rec.AuthMethods, UpstreamAuthValid: rec.UpstreamAuthValid,
 		}
 		tok := domain.RefreshToken{Hash: tokenHash, FamilyID: fam.ID, CreatedAt: now, ExpiresAt: sess.ExpiresAt}
 		inserted, err := o.d.Refresh.InsertFamilyIfSessionValid(ctx, fam, tok, now)
@@ -654,22 +654,32 @@ type idTokenInput struct {
 type tokenAuth struct {
 	AuthTime time.Time
 	Methods  []string
+	// UpstreamAuthValid makes the service store the jti of the access token. The
+	// value is not in a token (P24).
+	UpstreamAuthValid bool
 }
 
 // mint signs the access token, and the ID token if the scope has openid.
-func (o *OIDC) mint(client domain.Client, user domain.User, scopes, oidcScopes []string, auth tokenAuth, idt *idTokenInput) (string, string, error) {
+func (o *OIDC) mint(ctx context.Context, client domain.Client, user domain.User, scopes, oidcScopes []string, auth tokenAuth, idt *idTokenInput) (string, string, error) {
 	key, err := o.d.Keys.ActiveKey()
 	if err != nil {
 		return "", "", unavailableErr(err)
 	}
 	now := o.now()
+	jti := newUUID()
 	access, err := o.d.Signer.Sign(key, domain.UserAccessToken{
 		Issuer: o.d.Issuer, Audience: client.App, UserID: user.ID, ClientID: client.ID,
-		Scopes: scopes, Now: now, TTL: o.d.UserTokenTTL, JTI: newUUID(),
+		Scopes: scopes, Now: now, TTL: o.d.UserTokenTTL, JTI: jti,
 		AuthMethods: auth.Methods, AuthTime: auth.AuthTime,
 	}.Claims(), map[string]any{"typ": domain.AccessTokenType})
 	if err != nil {
 		return "", "", serverErr(err)
+	}
+	if auth.UpstreamAuthValid {
+		// The service keeps the fact in its storage. The tokens do not have it.
+		if err := o.d.Sessions.MarkAccessToken(ctx, jti, user.ID, now.Add(o.d.UserTokenTTL), now); err != nil {
+			return "", "", serverErr(err)
+		}
 	}
 	if idt == nil || !slices.Contains(oidcScopes, domain.ScopeOpenID) {
 		return access, "", nil
@@ -818,7 +828,7 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 		if !ok {
 			return errRefreshRejected
 		}
-		if access, _, mintErr = o.mint(client, u, effective, nil, tokenAuth{AuthTime: f.AuthTime, Methods: f.AuthMethods}, nil); mintErr != nil {
+		if access, _, mintErr = o.mint(ctx, client, u, effective, nil, tokenAuth{AuthTime: f.AuthTime, Methods: f.AuthMethods, UpstreamAuthValid: f.UpstreamAuthValid}, nil); mintErr != nil {
 			return mintErr
 		}
 		// 5. Mark the token as used.

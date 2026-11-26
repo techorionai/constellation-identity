@@ -62,6 +62,7 @@ The `.golangci.yml` file has `depguard` rules for the import table of the guide.
 | WebAuthn ceremonies | `internal/ports/webauthn` | `internal/adapters/webauthn` (`github.com/go-webauthn/webauthn`) |
 | Audit entries and security notices | `internal/ports/securityevents` | `internal/adapters/securityevents` (log only) |
 | Links to upstream accounts (table `identity_links`) | `internal/ports/identitylinks` | `internal/adapters/postgres` |
+| Upstream `auth_time` flag (columns `sessions.upstream_auth_valid` and `refresh_token_families.upstream_auth_valid`, table `upstream_auth_tokens`, migration `0015`) | `internal/ports/sessions` | `internal/adapters/postgres` |
 | Upstream providers (Google, Microsoft) | `internal/ports/upstreamidp` | `internal/adapters/oidc` (`go-oidc`, `x/oauth2`, and a key set for the Microsoft tenant `organizations`) |
 | Records of the upstream flows | `internal/ports/idpflow` | `internal/adapters/valkey` (`SET`, `GETDEL`) |
 | Client secrets of the upstream providers | `internal/ports/idpsecrets` | `internal/adapters/secrets` (`platform-go` `secrets.Service`) |

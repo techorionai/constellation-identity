@@ -193,6 +193,46 @@ func TestIssue16_R3_RemovalWithUpstreamAuthTime(t *testing.T) {
 	if len(e.links.Rows) != 4 {
 		t.Fatal("a refusal changes nothing")
 	}
+	// P24: the stored mark of the access token replaces the amr value. A jti
+	// with no mark, a mark of another user, and a mark that ended do not pass.
+	rmJTI := func(user, jti string) error {
+		return e.links2.Remove(ctx, commands.RemoveIdentityLink{
+			UserID: user, Provider: "google", Actor: user, Self: true, AccessTokenID: jti,
+		})
+	}
+	if err := e.sessions.MarkAccessToken(ctx, "jti-other", userA, e.now.Add(5*time.Minute), e.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.sessions.MarkAccessToken(ctx, "jti-ended", userNoPassword, e.now.Add(-time.Second), e.now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for name, jti := range map[string]string{"no mark": "jti-none", "empty": "", "mark of another user": "jti-other", "mark ended": "jti-ended"} {
+		if err := rmJTI(userNoPassword, jti); !errors.Is(err, commands.ErrLocalFactorMissing) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if len(e.links.Rows) != 4 {
+		t.Fatal("a refusal changes nothing")
+	}
+	// A user with a local factor does not pass with a mark.
+	if err := e.sessions.MarkAccessToken(ctx, "jti-a", userA, e.now.Add(5*time.Minute), e.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := rmJTI(userA, "jti-a"); !errors.Is(err, commands.ErrLocalFactorRequired) {
+		t.Fatalf("local factor with a mark only: %v", err)
+	}
+	// No local factor and a valid mark: the removal works.
+	if err := e.sessions.MarkAccessToken(ctx, "jti-good", userNoPassword, e.now.Add(5*time.Minute), e.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := rmJTI(userNoPassword, "jti-good"); err != nil {
+		t.Fatalf("with the mark: %v", err)
+	}
+	if len(e.links.Rows) != 3 || len(e.events.Audits) != 1 {
+		t.Fatalf("links = %d, audits = %d", len(e.links.Rows), len(e.events.Audits))
+	}
+	e.addLink(linkID1, userNoPassword, "google")
+	e.events.Audits = nil
 	// No local factor and a valid auth_time: the removal works.
 	if err := rm(userNoPassword, true, false); err != nil {
 		t.Fatalf("with auth_time: %v", err)
@@ -352,9 +392,10 @@ func TestIssue16_R3_UnlinkFlow(t *testing.T) {
 	})
 }
 
-// R3 (P23): a login with an upstream ID token that has a valid auth_time gets
-// the marker in amr. A login with no auth_time, or with an old auth_time, does
-// not. The marker serves the removal through the API.
+// R3 (P23, P24): a login with an upstream ID token that has a valid auth_time
+// sets the flag of the session in the storage of the service. A login with no
+// auth_time, or with an old auth_time, does not. In all cases, amr has only
+// "fed". The flag serves the removal through the API.
 func TestIssue16_R3_LoginMarker(t *testing.T) {
 	e := newIdpEnv(t)
 	e.addLink(linkID1, userNoPassword, "google")
@@ -374,8 +415,11 @@ func TestIssue16_R3_LoginMarker(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 		methods := res.Session.AuthMethods
-		if !slices.Contains(methods, domain.AMRFederated) || slices.Contains(methods, domain.AMRFederatedAuthTime) != c.marker {
+		if !slices.Equal(methods, []string{domain.AMRFederated}) {
 			t.Fatalf("%s: methods = %v", name, methods)
+		}
+		if got := e.sessions.Rows[res.Session.SessionID].UpstreamAuthValid; got != c.marker {
+			t.Fatalf("%s: stored flag = %v", name, got)
 		}
 	}
 }

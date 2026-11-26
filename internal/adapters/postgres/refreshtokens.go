@@ -34,8 +34,8 @@ func (r *RefreshTokens) InsertFamilyIfSessionValid(ctx context.Context, f domain
 	var id string
 	err := clientspg.Conn(ctx, r.pool).QueryRow(ctx, `
 		WITH fam AS (
-			INSERT INTO refresh_token_families (id, session_id, client_id, user_id, scope, oidc_scopes, created_at, auth_time, amr)
-			SELECT $1, s.id, $3, $4, $5, $6, $7, $11::timestamptz, $12::text[] FROM sessions s
+			INSERT INTO refresh_token_families (id, session_id, client_id, user_id, scope, oidc_scopes, created_at, auth_time, amr, upstream_auth_valid)
+			SELECT $1, s.id, $3, $4, $5, $6, $7, $11::timestamptz, $12::text[], $13::boolean FROM sessions s
 			WHERE s.id = $2 AND s.revoked_at IS NULL AND s.expires_at > $8 AND s.idle_expires_at > $8
 			FOR UPDATE OF s
 			RETURNING id
@@ -46,7 +46,7 @@ func (r *RefreshTokens) InsertFamilyIfSessionValid(ctx context.Context, f domain
 		)
 		SELECT id FROM fam`,
 		f.ID, f.SessionID, f.ClientID, f.UserID, strings.Join(f.Scope, " "), strings.Join(f.OIDCScopes, " "), f.CreatedAt, now,
-		t.Hash, t.ExpiresAt, nullTime(f.AuthTime), nonNil(f.AuthMethods)).Scan(&id)
+		t.Hash, t.ExpiresAt, nullTime(f.AuthTime), nonNil(f.AuthMethods), f.UpstreamAuthValid).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -82,11 +82,11 @@ func (r *RefreshTokens) LockFamilyOfToken(ctx context.Context, tokenHash string)
 		authTime    *time.Time
 	)
 	err := clientspg.Conn(ctx, r.pool).QueryRow(ctx, `
-		SELECT id, session_id, client_id, user_id, scope, oidc_scopes, created_at, revoked_at, auth_time, amr
+		SELECT id, session_id, client_id, user_id, scope, oidc_scopes, created_at, revoked_at, auth_time, amr, upstream_auth_valid
 		FROM refresh_token_families
 		WHERE id = (SELECT family_id FROM refresh_tokens WHERE token_hash = $1)
 		FOR UPDATE`, tokenHash).
-		Scan(&f.ID, &f.SessionID, &f.ClientID, &f.UserID, &scope, &oidc, &f.CreatedAt, &f.RevokedAt, &authTime, &f.AuthMethods)
+		Scan(&f.ID, &f.SessionID, &f.ClientID, &f.UserID, &scope, &oidc, &f.CreatedAt, &f.RevokedAt, &authTime, &f.AuthMethods, &f.UpstreamAuthValid)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.RefreshFamily{}, false, nil
 	}
@@ -174,7 +174,7 @@ func (r *RefreshTokens) RefreshState(ctx context.Context, familyID string) (refr
 	var st refreshtokens.State
 	row := clientspg.Conn(ctx, r.pool).QueryRow(ctx, `
 		SELECT c.disabled, u.status = 'active',
-		       s.id, s.user_id, s.token_hash, s.created_at, s.auth_time, s.amr, s.last_seen_at, s.idle_expires_at, s.expires_at, s.revoked_at, s.user_agent, s.ip_address
+		       s.id, s.user_id, s.token_hash, s.created_at, s.auth_time, s.amr, s.upstream_auth_valid, s.last_seen_at, s.idle_expires_at, s.expires_at, s.revoked_at, s.user_agent, s.ip_address
 		FROM refresh_token_families f
 		JOIN clients c ON c.id = f.client_id
 		JOIN users u ON u.id = f.user_id
@@ -182,7 +182,7 @@ func (r *RefreshTokens) RefreshState(ctx context.Context, familyID string) (refr
 		WHERE f.id = $1`, familyID)
 	s := &st.Session
 	err := row.Scan(&st.ClientDisabled, &st.UserActive,
-		&s.ID, &s.UserID, &s.TokenHash, &s.CreatedAt, &s.AuthTime, &s.AuthMethods, &s.LastSeenAt, &s.IdleExpiresAt, &s.ExpiresAt, &s.RevokedAt, &s.UserAgent, &s.IPAddress)
+		&s.ID, &s.UserID, &s.TokenHash, &s.CreatedAt, &s.AuthTime, &s.AuthMethods, &s.UpstreamAuthValid, &s.LastSeenAt, &s.IdleExpiresAt, &s.ExpiresAt, &s.RevokedAt, &s.UserAgent, &s.IPAddress)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return refreshtokens.State{}, fmt.Errorf("refresh state: %w", refreshtokens.ErrNotFound)
 	}

@@ -25,6 +25,9 @@ type Reauth struct {
 	IPAddress   string
 	// Methods are the methods (amr) of the new login.
 	Methods []string
+	// UpstreamAuthValid is true if the login was an upstream login with a valid
+	// auth_time (P24).
+	UpstreamAuthValid bool
 }
 
 // Repository stores the sessions. A call joins the transaction in the context.
@@ -68,6 +71,13 @@ type Repository interface {
 	// token families, in the lock order of RevokeCascade. It returns the number
 	// of sessions that it revoked.
 	RevokeAllOfUser(ctx context.Context, userID string, now time.Time) (int, error)
+	// MarkAccessToken stores the jti of an access token that comes from a login
+	// with a valid upstream auth_time. The row ends at expiresAt. The call also
+	// deletes the rows that ended before now.
+	MarkAccessToken(ctx context.Context, jti, userID string, expiresAt, now time.Time) error
+	// AccessTokenMarked reports whether the jti has a row for the user that has
+	// not ended at the time now.
+	AccessTokenMarked(ctx context.Context, jti, userID string, now time.Time) (bool, error)
 	// CountActive returns the number of sessions that are not revoked and have
 	// not expired at the time now.
 	CountActive(ctx context.Context, now time.Time) (int64, error)
