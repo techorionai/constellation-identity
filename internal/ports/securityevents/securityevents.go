@@ -13,12 +13,20 @@ import (
 const (
 	ActionTotpRemove = "identity:mfa:totp_remove"
 	ActionMfaReset   = "identity:mfa:reset"
+	// ActionPasskeyAdd, ActionPasskeyRemove, and ActionPasskeyRename are the
+	// actions of the passkey changes.
+	ActionPasskeyAdd    = "identity:mfa:passkey_add"    //nolint:gosec // G101: This is the name of an action, not a credential.
+	ActionPasskeyRemove = "identity:mfa:passkey_remove" //nolint:gosec // G101: This is the name of an action, not a credential.
+	ActionPasskeyRename = "identity:mfa:passkey_rename" //nolint:gosec // G101: This is the name of an action, not a credential.
 )
 
 // The kinds of the security notices.
 const (
 	NoticeTotpRemoved = "mfa_totp_removed"
 	NoticeMfaReset    = "mfa_reset"
+	// NoticePasskeyAdded and NoticePasskeyRemoved tell the user about a change of the passkeys.
+	NoticePasskeyAdded   = "mfa_passkey_added"   //nolint:gosec // G101: This is the name of a notice, not a credential.
+	NoticePasskeyRemoved = "mfa_passkey_removed" //nolint:gosec // G101: This is the name of a notice, not a credential.
 	// NoticeMfaLimited means a limit of second factor failures is reached.
 	// Someone can know the password of the user.
 	NoticeMfaLimited = "mfa_attempts_limited"
@@ -39,6 +47,9 @@ type AuditEntry struct {
 	TargetUserID string
 	Result       string
 	At           time.Time
+	// Changes is a short summary of the change, for example the old name and the
+	// new name. It has no secret. It can be empty.
+	Changes map[string]string
 }
 
 // Notice is a security notice for a user.

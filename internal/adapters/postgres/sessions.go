@@ -149,16 +149,57 @@ func (r *Sessions) SetMethods(ctx context.Context, id string, methods []string) 
 // DropSecondFactor removes the methods of the second factor from the sessions
 // and the refresh token families of a user.
 func (r *Sessions) DropSecondFactor(ctx context.Context, userID string) error {
-	drop := []string{domain.AMROTP, domain.AMRRecovery, domain.AMRMFA}
+	drop := []string{domain.AMROTP, domain.AMRRecovery}
 	return inTx(ctx, r.pool, func(ctx context.Context, q clientspg.Querier) error {
 		for _, table := range []string{"sessions", "refresh_token_families"} {
-			if _, err := q.Exec(ctx, `UPDATE `+table+` SET amr = ARRAY(SELECT m FROM unnest(amr) AS m WHERE m <> ALL($2::text[]))
-				WHERE user_id = $1 AND revoked_at IS NULL`, userID, drop); err != nil {
+			// A row with a passkey keeps the method mfa. The passkey is a second
+			// factor of its own.
+			if _, err := q.Exec(ctx, `UPDATE `+table+` SET amr = ARRAY(SELECT m FROM unnest(amr) AS m
+					WHERE m <> ALL($2::text[]) AND (m <> $3 OR $4 = ANY(amr)))
+				WHERE user_id = $1 AND revoked_at IS NULL`, userID, drop, domain.AMRMFA, domain.AMRHardwareKey); err != nil {
 				return fmt.Errorf("drop second factor from %s: %w", table, err)
 			}
 		}
 		return nil
 	})
+}
+
+// RevokeWithMethod revokes the sessions and the refresh token families of a
+// user that have a method in amr. The lock order is the order of
+// RevokeCascade: the session rows first, then the family rows in ascending ID
+// order.
+func (r *Sessions) RevokeWithMethod(ctx context.Context, userID, method string, now time.Time) (int, error) {
+	n := 0
+	err := inTx(ctx, r.pool, func(ctx context.Context, q clientspg.Querier) error {
+		rows, err := q.Query(ctx, `SELECT id FROM sessions WHERE user_id = $1 AND $2 = ANY(amr) ORDER BY id FOR UPDATE`, userID, method)
+		if err != nil {
+			return fmt.Errorf("lock sessions: %w", err)
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan session id: %w", err)
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("lock sessions: %w", err)
+		}
+		if len(ids) > 0 {
+			tag, err := q.Exec(ctx, `UPDATE sessions SET revoked_at = $2 WHERE id = ANY($1::uuid[]) AND revoked_at IS NULL`, ids, now)
+			if err != nil {
+				return fmt.Errorf("revoke sessions: %w", err)
+			}
+			n = int(tag.RowsAffected())
+		}
+		// A family has its own amr. It is revoked also when its session has no
+		// method hwk any more.
+		return revokeFamilies(ctx, q, `user_id = $1::uuid AND $2 = ANY(amr)`, userID, now, method)
+	})
+	return n, err
 }
 
 // RevokeByTokenHash revokes a session.
@@ -252,8 +293,8 @@ func revokeSessions(ctx context.Context, q clientspg.Querier, ids []string, now 
 
 // revokeFamilies locks the families that the condition selects in ascending ID
 // order, then revokes them.
-func revokeFamilies(ctx context.Context, q clientspg.Querier, cond string, arg any, now time.Time) error {
-	rows, err := q.Query(ctx, `SELECT id FROM refresh_token_families WHERE `+cond+` ORDER BY id FOR UPDATE`, arg)
+func revokeFamilies(ctx context.Context, q clientspg.Querier, cond string, arg any, now time.Time, extra ...any) error {
+	rows, err := q.Query(ctx, `SELECT id FROM refresh_token_families WHERE `+cond+` ORDER BY id FOR UPDATE`, append([]any{arg}, extra...)...)
 	if err != nil {
 		return fmt.Errorf("lock families: %w", err)
 	}

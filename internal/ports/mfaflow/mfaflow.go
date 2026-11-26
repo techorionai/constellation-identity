@@ -47,3 +47,21 @@ type Failures interface {
 	// Release takes one attempt back. The count never goes below 0.
 	Release(ctx context.Context, userID string) error
 }
+
+// The kinds of a WebAuthn ceremony. The kind is part of the key.
+const (
+	// CeremonyRegister is a registration. The key is the hash of the session ID.
+	CeremonyRegister = "reg"
+	// CeremonyLogin is a login with no password. The key is the hash of the cookie value.
+	CeremonyLogin = "login"
+	// CeremonySecondFactor is a second factor. The key is the hash of the cookie value of the pending login.
+	CeremonySecondFactor = "mfa"
+)
+
+// Ceremonies stores the state of the WebAuthn ceremonies.
+type Ceremonies interface {
+	// Put stores the state for the time ttl. It replaces an older value.
+	Put(ctx context.Context, kind, hash string, c domain.Ceremony, ttl time.Duration) error
+	// Take reads and deletes the state in one step. It wraps ErrNotFound.
+	Take(ctx context.Context, kind, hash string) (domain.Ceremony, error)
+}

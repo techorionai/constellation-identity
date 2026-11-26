@@ -16,12 +16,14 @@ import (
 	"github.com/techorionai/constellation-identity/internal/ports/loginlimiter"
 	"github.com/techorionai/constellation-identity/internal/ports/mfa"
 	"github.com/techorionai/constellation-identity/internal/ports/mfaflow"
+	"github.com/techorionai/constellation-identity/internal/ports/passkeys"
 	"github.com/techorionai/constellation-identity/internal/ports/secretbox"
 	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
 	"github.com/techorionai/constellation-identity/internal/ports/sessions"
 	"github.com/techorionai/constellation-identity/internal/ports/totp"
 	"github.com/techorionai/constellation-identity/internal/ports/userroles"
 	"github.com/techorionai/constellation-identity/internal/ports/users"
+	"github.com/techorionai/constellation-identity/internal/ports/webauthn"
 )
 
 // Errors of the second factor. A handler maps them to a page or a status.
@@ -77,13 +79,22 @@ type MFADeps struct {
 	MFA       mfa.Repository
 	TOTP      totp.Service
 	Sealer    secretbox.Sealer
-	Pending   mfaflow.PendingLogins
-	Setups    mfaflow.SetupSecrets
-	Failures  mfaflow.Failures
-	Limiter   loginlimiter.Limiter
-	Events    securityevents.Events
-	Tx        transaction.Transactor
-	Policy    domain.SessionPolicy
+	// Passkeys, WebAuthn, and Ceremonies are the ports of the passkeys. A nil
+	// Passkeys means that the use case has no passkeys. A nil WebAuthn or Ceremonies
+	// means that the use case cannot run a ceremony.
+	Passkeys   passkeys.Repository
+	WebAuthn   webauthn.Service
+	Ceremonies mfaflow.Ceremonies
+	// PasskeysOn is true when the service accepts passkeys. A stored passkey is a
+	// second factor only then.
+	PasskeysOn bool
+	Pending    mfaflow.PendingLogins
+	Setups     mfaflow.SetupSecrets
+	Failures   mfaflow.Failures
+	Limiter    loginlimiter.Limiter
+	Events     securityevents.Events
+	Tx         transaction.Transactor
+	Policy     domain.SessionPolicy
 	// RequireMFAForAdmins is the setting IDENTITY_MFA__REQUIRE_FOR_ADMINS.
 	RequireMFAForAdmins bool
 	// Issuer is the issuer name in the authenticator app.
@@ -100,6 +111,7 @@ type MFADeps struct {
 type MFA struct {
 	d             MFADeps
 	verifications metric.Int64Counter
+	ceremonies    metric.Int64Counter
 }
 
 // NewMFA makes the use cases.
@@ -115,7 +127,22 @@ func NewMFA(d MFADeps) (*MFA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("make the MFA counter: %w", err)
 	}
-	return &MFA{d: d, verifications: c}, nil
+	ceremonies, err := otel.Meter("identity").Int64Counter("identity.passkey.ceremonies",
+		metric.WithDescription("Passkey ceremonies by type and outcome."))
+	if err != nil {
+		return nil, fmt.Errorf("make the passkey counter: %w", err)
+	}
+	return &MFA{d: d, verifications: c, ceremonies: ceremonies}, nil
+}
+
+// state reads the MFA data of a user and sets the flag of the passkey rule.
+func (m *MFA) state(ctx context.Context, userID string) (domain.MFAState, error) {
+	st, err := m.d.MFA.State(ctx, userID)
+	if err != nil {
+		return domain.MFAState{}, err
+	}
+	st.PasskeysOn = m.d.PasskeysOn
+	return st, nil
 }
 
 func (m *MFA) now() time.Time { return m.d.Now().UTC().Truncate(time.Microsecond) }
@@ -157,6 +184,11 @@ type VerifiedLogin struct {
 type PendingInfo struct {
 	// AuthRequest is the ID of the auth request of the login, or empty.
 	AuthRequest string
+	// HasTOTP, HasRecoveryCodes, and HasPasskey tell which second factors the
+	// page offers. HasPasskey is true only when the service accepts passkeys.
+	HasTOTP          bool
+	HasRecoveryCodes bool
+	HasPasskey       bool
 }
 
 // CheckPending tells whether the pending login exists and has not expired. It
@@ -166,7 +198,14 @@ func (m *MFA) CheckPending(ctx context.Context, token string) (PendingInfo, erro
 	if err != nil {
 		return PendingInfo{}, err
 	}
-	return PendingInfo{AuthRequest: p.AuthRequest}, nil
+	st, err := m.state(ctx, p.UserID)
+	if err != nil {
+		return PendingInfo{}, m.unavailable(ctx, "read the MFA state", err)
+	}
+	return PendingInfo{
+		AuthRequest: p.AuthRequest, HasTOTP: st.HasTOTP, HasRecoveryCodes: st.CodesRemaining > 0,
+		HasPasskey: st.AcceptedPasskeys() > 0,
+	}, nil
 }
 
 func (m *MFA) pending(ctx context.Context, token string) (domain.PendingLogin, error) {
@@ -435,7 +474,7 @@ func (m *MFA) Status(ctx context.Context, userID string) (MFAStatus, error) {
 }
 
 func (m *MFA) status(ctx context.Context, userID string) (MFAStatus, error) {
-	state, err := m.d.MFA.State(ctx, userID)
+	state, err := m.state(ctx, userID)
 	if err != nil {
 		return MFAStatus{}, fmt.Errorf("read the MFA state: %w", err)
 	}
@@ -518,7 +557,7 @@ func (m *MFA) createSetup(ctx context.Context, userID, key string) ([]byte, erro
 // BeginSetup makes the secret of the setup, or reads the secret that the same
 // session made before. It returns ErrTOTPEnabled if the user has a factor.
 func (m *MFA) BeginSetup(ctx context.Context, in BeginSetup) (SetupInfo, error) {
-	state, err := m.d.MFA.State(ctx, in.UserID)
+	state, err := m.state(ctx, in.UserID)
 	if err != nil {
 		return SetupInfo{}, fmt.Errorf("read the MFA state: %w", err)
 	}
@@ -627,7 +666,7 @@ func (m *MFA) FinishSetup(ctx context.Context, in FinishSetup) (SetupResult, err
 // RegenerateRecoveryCodes replaces the recovery codes of a user that has TOTP.
 // It returns the new codes in the form of two groups of 5.
 func (m *MFA) RegenerateRecoveryCodes(ctx context.Context, userID string) ([]string, error) {
-	state, err := m.d.MFA.State(ctx, userID)
+	state, err := m.state(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("read the MFA state: %w", err)
 	}
@@ -659,11 +698,12 @@ type RemoveTOTP struct {
 	Actor string
 }
 
-// RemoveTOTP removes the TOTP factor and the recovery codes of a user. The
-// order of the checks: ErrTOTPNotFound, then ErrMFARequired when the policy
-// needs MFA for the user. It writes the audit entry and sends the notice.
+// RemoveTOTP removes the TOTP factor and the recovery codes of a user. It does
+// not remove the passkeys. The order of the checks: ErrTOTPNotFound, then
+// ErrMFARequired when the policy needs MFA for the user and no passkey that the
+// service accepts stays. It writes the audit entry and sends the notice.
 func (m *MFA) RemoveTOTP(ctx context.Context, in RemoveTOTP) error {
-	state, err := m.d.MFA.State(ctx, in.UserID)
+	state, err := m.state(ctx, in.UserID)
 	if err != nil {
 		return fmt.Errorf("read the MFA state: %w", err)
 	}
@@ -674,7 +714,8 @@ func (m *MFA) RemoveTOTP(ctx context.Context, in RemoveTOTP) error {
 	if err != nil {
 		return err
 	}
-	if required {
+	// A passkey that the service accepts stays as the second factor.
+	if required && state.AcceptedPasskeys() == 0 {
 		return ErrMFARequired
 	}
 	// The other sessions and the refresh token families of the user lose the
@@ -719,6 +760,11 @@ func (m *MFA) ResetMFA(ctx context.Context, in ResetMFA) error {
 	err := m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		if _, err := m.d.MFA.RemoveAll(ctx, in.UserID); err != nil {
 			return err
+		}
+		if m.d.Passkeys != nil {
+			if _, err := m.d.Passkeys.RemoveAll(ctx, in.UserID); err != nil {
+				return err
+			}
 		}
 		if _, err := m.d.Sessions.RevokeAllOfUser(ctx, in.UserID, m.now()); err != nil {
 			return err

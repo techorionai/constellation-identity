@@ -142,11 +142,26 @@ type MFAState struct {
 	LastUsedAt *time.Time
 	// CodesRemaining is the number of recovery codes that are not used.
 	CodesRemaining int
+	// Passkeys is the number of stored passkeys.
+	Passkeys int
+	// PasskeysOn is true when the service accepts passkeys. The command layer
+	// sets it. A stored passkey is a second factor only when it is true.
+	PasskeysOn bool
 }
 
-// Enabled reports whether the user has a second factor: a TOTP row or an
-// unused recovery code.
-func (s MFAState) Enabled() bool { return s.HasTOTP || s.CodesRemaining > 0 }
+// AcceptedPasskeys is the number of passkeys that count as a second factor.
+func (s MFAState) AcceptedPasskeys() int {
+	if !s.PasskeysOn {
+		return 0
+	}
+	return s.Passkeys
+}
+
+// Enabled reports whether the user has a second factor: a TOTP row, an unused
+// recovery code, or a passkey that the service accepts.
+func (s MFAState) Enabled() bool {
+	return s.HasTOTP || s.CodesRemaining > 0 || s.AcceptedPasskeys() > 0
+}
 
 // PendingLogin is the state between the first factor and the second factor of
 // a login. The store keeps it for a short time. The login that makes it has

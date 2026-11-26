@@ -20,6 +20,8 @@ type MFA struct {
 	TOTP map[string]domain.TOTPRecord
 	// Codes has the used_at of each code. The key of the inner map is the hash.
 	Codes map[string]map[string]*time.Time
+	// Passkeys gives the number of passkeys in the state. It can be nil.
+	Passkeys *Passkeys
 }
 
 var _ mfa.Repository = (*MFA)(nil)
@@ -111,6 +113,9 @@ func (r *MFA) State(_ context.Context, userID string) (domain.MFAState, error) {
 		if used == nil {
 			st.CodesRemaining++
 		}
+	}
+	if r.Passkeys != nil {
+		st.Passkeys, _ = r.Passkeys.Count(context.Background(), userID)
 	}
 	return st, nil
 }

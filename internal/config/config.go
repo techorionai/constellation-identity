@@ -126,6 +126,21 @@ type MFA struct {
 	FailureWindow      time.Duration `env:"FAILURE_WINDOW" envDefault:"15m"`
 }
 
+// Limits of the WebAuthn settings.
+const (
+	MinRPNameLength = 1
+	MaxRPNameLength = 64
+)
+
+// WebAuthn is the config of the passkeys.
+type WebAuthn struct {
+	// Enabled turns the passkeys on. An issuer with an IP address as host turns
+	// them off, because WebAuthn does not accept an IP address as the RP ID.
+	Enabled bool `env:"ENABLED" envDefault:"true"`
+	// RPName is the name of the relying party that the authenticator shows.
+	RPName string `env:"RP_NAME" envDefault:"Constellation"`
+}
+
 // Retention is the config of the retention jobs. A job deletes the rows 7 days
 // after the end of the token or session, unless Period says otherwise.
 type Retention struct {
@@ -194,6 +209,7 @@ type Config struct {
 	Password    Password        `envPrefix:"PASSWORD__"`
 	Login       Login           `envPrefix:"LOGIN__"`
 	MFA         MFA             `envPrefix:"MFA__"`
+	WebAuthn    WebAuthn        `envPrefix:"WEBAUTHN__"`
 	Retention   Retention       `envPrefix:"RETENTION__"`
 	OIDC        OIDC            `envPrefix:"OIDC__"`
 	APIToken    APIToken        `envPrefix:"API_TOKEN__"`
@@ -259,6 +275,9 @@ func (c Config) validateUsers() []error {
 	}
 	if n := utf8.RuneCountInString(c.MFA.TOTPIssuer); n < MinTOTPIssuerLength || n > MaxTOTPIssuerLength {
 		bad("MFA__TOTP_ISSUER", fmt.Sprintf("must have %d to %d characters", MinTOTPIssuerLength, MaxTOTPIssuerLength))
+	}
+	if n := utf8.RuneCountInString(c.WebAuthn.RPName); n < MinRPNameLength || n > MaxRPNameLength {
+		bad("WEBAUTHN__RP_NAME", fmt.Sprintf("must have %d to %d characters", MinRPNameLength, MaxRPNameLength))
 	}
 	if c.MFA.MaxFailuresPerUser < 1 || c.MFA.MaxFailuresPerUser > MaxMFAFailures {
 		bad("MFA__MAX_FAILURES_PER_USER", fmt.Sprintf("must be from 1 to %d", MaxMFAFailures))

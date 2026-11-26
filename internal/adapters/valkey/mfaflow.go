@@ -195,3 +195,25 @@ func (f FailureStore) Release(ctx context.Context, userID string) error {
 	}
 	return nil
 }
+
+func (m *MFAFlow) ceremonyKey(kind, h string) string { return m.s.keys.Key("webauthn", kind, h) }
+
+// Ceremonies returns the adapter of the port mfaflow.Ceremonies.
+func (m *MFAFlow) Ceremonies() CeremonyStore { return CeremonyStore{m: m} }
+
+// CeremonyStore is the adapter of the state of the WebAuthn ceremonies.
+type CeremonyStore struct{ m *MFAFlow }
+
+var _ mfaflow.Ceremonies = CeremonyStore{}
+
+// Put stores the state of a ceremony.
+func (c CeremonyStore) Put(ctx context.Context, kind, hash string, v domain.Ceremony, ttl time.Duration) error {
+	return c.m.s.put(ctx, c.m.ceremonyKey(kind, hash), v, ttl)
+}
+
+// Take reads and deletes the state of a ceremony in one step.
+func (c CeremonyStore) Take(ctx context.Context, kind, hash string) (domain.Ceremony, error) {
+	var v domain.Ceremony
+	err := c.m.s.read(ctx, c.m.ceremonyKey(kind, hash), true, &v)
+	return v, notFound(err)
+}
