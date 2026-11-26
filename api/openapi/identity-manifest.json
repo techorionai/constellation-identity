@@ -54,6 +54,18 @@
       "description": "Revoke the API token of any user."
     },
     {
+      "key": "identity:mfa:manage_own",
+      "description": "Read and change the own MFA factors."
+    },
+    {
+      "key": "identity:mfa:read",
+      "description": "Read the MFA state of any user."
+    },
+    {
+      "key": "identity:mfa:reset",
+      "description": "Reset the MFA of any user. An operation with this permission also needs identity:admin."
+    },
+    {
       "key": "identity:agent:read",
       "description": "Read agents."
     },
@@ -85,6 +97,9 @@
         "identity:api_token:manage_own",
         "identity:api_token:read",
         "identity:api_token:revoke",
+        "identity:mfa:manage_own",
+        "identity:mfa:read",
+        "identity:mfa:reset",
         "identity:agent:read",
         "identity:agent:write",
         "identity:token:exchange"
@@ -103,7 +118,8 @@
       "name": "User",
       "description": "Role of every active user. Every active user has it implicitly. It has no database row. A role list shows it with the source config.",
       "permissions": [
-        "identity:api_token:manage_own"
+        "identity:api_token:manage_own",
+        "identity:mfa:manage_own"
       ]
     }
   ]
