@@ -584,7 +584,7 @@ func (m *MFA) ResetMFA(ctx context.Context, in ResetMFA) error {
 			return err
 		}
 		return nil
-	}, txName("ResetMFA"))
+	}, txName("reset_mfa"))
 	if err != nil {
 		return fmt.Errorf("reset the MFA: %w", err)
 	}

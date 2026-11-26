@@ -74,6 +74,8 @@ type options struct {
 	rateRules map[string]ratelimit.Rule
 	// rateLimiter replaces the Valkey rate limiter. A test uses it for a mock.
 	rateLimiter ratelimit.Limiter
+	// verifierClock is the clock of the token verifier of the /v1 routes. Nil means time.Now.
+	verifierClock func() time.Time
 }
 
 // Option changes the composition. The options are for tests. Production code
@@ -121,6 +123,13 @@ func WithRateRules(rules map[string]ratelimit.Rule) Option {
 
 // WithRateLimiter replaces the Valkey rate limiter.
 func WithRateLimiter(l ratelimit.Limiter) Option { return func(o *options) { o.rateLimiter = l } }
+
+// WithVerifierClock sets the clock of the verifier of the /v1 routes. A test
+// that moves the clock of the use cases uses it, so that the time claims of its
+// tokens are right for the verifier.
+func WithVerifierClock(now func() time.Time) Option {
+	return func(o *options) { o.verifierClock = now }
+}
 
 func newOptions(opts []Option) options {
 	o := options{managerInterval: defaultKeyManagerInterval, cacheInterval: defaultCacheInterval, log: slog.Default()}
@@ -330,7 +339,11 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		queries.NewGetJWKS(a.cache), "GetJWKS"), "GetJWKS")
 	discovery := decorators.ApplyTracing(decorators.ApplyLogging(
 		queries.NewGetDiscovery(cfg.Issuer), "GetDiscovery"), "GetDiscovery")
-	if a.verify, err = NewVerifier(cfg.Issuer, a.cache); err != nil {
+	var verifyOpts []jwt.Option
+	if o.verifierClock != nil {
+		verifyOpts = append(verifyOpts, jwt.WithClock(o.verifierClock))
+	}
+	if a.verify, err = NewVerifier(cfg.Issuer, a.cache, verifyOpts...); err != nil {
 		return nil, err
 	}
 	a.verify.Start(context.WithoutCancel(ctx))
