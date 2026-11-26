@@ -233,8 +233,6 @@ github.com/stretchr/testify v1.5.1/go.mod h1:5W2xD1RspED5o8YsWQXVCued0rvSQ+mT+I5
 github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
-github.com/techorionai/constellation-platform-go v0.4.0 h1:GO5XzR6krMWuNpupvrREhh0dJkN0MBJz75n/i2TJwg8=
-github.com/techorionai/constellation-platform-go v0.4.0/go.mod h1:eoByuWwFkCzVqx3kJTmgBgWAeGknbkKpQkiNs6v9Vuc=
 github.com/techorionai/constellation-platform-go v0.5.0 h1:mZgDJJI6xrmiFAoGjTHFAwUkOFgapFRp09aHSerWR+s=
 github.com/techorionai/constellation-platform-go v0.5.0/go.mod h1:eoByuWwFkCzVqx3kJTmgBgWAeGknbkKpQkiNs6v9Vuc=
 github.com/testcontainers/testcontainers-go v0.45.0 h1:ss9Stm9KDX6JLgGL4jr2fC5dwpabTbCBsRcGadBPR9k=
