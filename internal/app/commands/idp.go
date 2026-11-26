@@ -1,0 +1,609 @@
+package commands
+
+import (
+	"context"
+	"crypto/subtle"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/techorionai/constellation-platform-go/transaction"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
+	"github.com/techorionai/constellation-identity/internal/domain"
+	"github.com/techorionai/constellation-identity/internal/ports/identitylinks"
+	"github.com/techorionai/constellation-identity/internal/ports/idpflow"
+	"github.com/techorionai/constellation-identity/internal/ports/mfa"
+	"github.com/techorionai/constellation-identity/internal/ports/mfaflow"
+	"github.com/techorionai/constellation-identity/internal/ports/onetimetokens"
+	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/sessions"
+	"github.com/techorionai/constellation-identity/internal/ports/upstreamidp"
+	"github.com/techorionai/constellation-identity/internal/ports/userroles"
+	"github.com/techorionai/constellation-identity/internal/ports/users"
+)
+
+// Errors of the upstream flows. A handler maps each one to a page.
+var (
+	// ErrIdpProviderOff means the provider name is not valid or the provider is off.
+	ErrIdpProviderOff = errors.New("the provider is off")
+	// ErrIdpFailed means the flow did not complete. The page does not tell why.
+	ErrIdpFailed = errors.New("the login did not complete")
+	// ErrIdpProviderDown means the provider did not answer at the start (502).
+	ErrIdpProviderDown = errors.New("the provider did not answer")
+	// ErrIdpExpired means the state is unknown, used, or bound to another browser.
+	ErrIdpExpired = errors.New("the login expired")
+	// ErrIdpNotLinked means no user has the upstream account.
+	ErrIdpNotLinked = errors.New("the account is not linked")
+	// ErrIdpLinkedElsewhere means another user has the upstream account.
+	ErrIdpLinkedElsewhere = errors.New("the account is linked to another user")
+	// ErrIdpAlreadyLinked means the user has a link for the provider.
+	ErrIdpAlreadyLinked = errors.New("the user has a link for the provider")
+	// ErrIdpMismatch means the account does not match the invitation.
+	ErrIdpMismatch = errors.New("the account does not match the invitation")
+	// ErrIdpReauth means the link flow needs a fresh session.
+	ErrIdpReauth = errors.New("a fresh login is necessary")
+	// ErrIdpUnavailable means the store of the flow does not answer.
+	ErrIdpUnavailable = errors.New("the flow store is not available")
+)
+
+// IdpFlowTTL is the life of the record of a flow.
+const IdpFlowTTL = 10 * time.Minute
+
+// Values of the attribute outcome of the metric identity.idp.logins.
+const (
+	IdpOutcomeOK              = "ok"
+	IdpOutcomeNotLinked       = "not_linked"
+	IdpOutcomeLinkedElsewhere = "linked_elsewhere"
+	IdpOutcomeEmailMismatch   = "email_mismatch"
+	IdpOutcomeBadState        = "bad_state"
+	IdpOutcomeProviderError   = "provider_error"
+	IdpOutcomeTokenInvalid    = "token_invalid"
+	IdpOutcomeNotFresh        = "not_fresh"
+	IdpOutcomeLimited         = "limited"
+)
+
+// IdpDeps are the ports of the upstream flows.
+type IdpDeps struct {
+	Client   upstreamidp.Client
+	Flows    idpflow.Store
+	Links    identitylinks.Repository
+	Users    users.Repository
+	Sessions sessions.Repository
+	Tokens   onetimetokens.Repository
+	MFA      mfa.Repository
+	// UserRoles is for the rule "MFA for admins". Pending holds the pending logins.
+	UserRoles userroles.Repository
+	Pending   mfaflow.PendingLogins
+	Events    securityevents.Events
+	Tx        transaction.Transactor
+	Policy    domain.SessionPolicy
+	// LookupAuthRequest checks that an auth request exists.
+	LookupAuthRequest func(ctx context.Context, id string) (AuthRequestInfo, error)
+	// PasskeysOn is true when the service accepts passkeys.
+	PasskeysOn          bool
+	RequireMFAForAdmins bool
+	// Timeout is the one deadline of the outbound calls of one request.
+	Timeout time.Duration
+	Log     *slog.Logger
+	// Now is the clock. The default is time.Now.
+	Now Clock
+}
+
+// Idp has the use cases of the upstream flows.
+type Idp struct {
+	d      IdpDeps
+	logins metric.Int64Counter
+}
+
+// NewIdp makes the use cases.
+func NewIdp(d IdpDeps) (*Idp, error) {
+	if d.Log == nil {
+		d.Log = slog.Default()
+	}
+	if d.Now == nil {
+		d.Now = time.Now
+	}
+	if d.Timeout <= 0 {
+		d.Timeout = 10 * time.Second
+	}
+	c, err := otel.Meter("identity").Int64Counter("identity.idp.logins",
+		metric.WithDescription("Upstream login flows by provider, purpose, and outcome."))
+	if err != nil {
+		return nil, fmt.Errorf("make the upstream login counter: %w", err)
+	}
+	return &Idp{d: d, logins: c}, nil
+}
+
+func (i *Idp) now() time.Time { return i.d.Now().UTC().Truncate(time.Microsecond) }
+
+func (i *Idp) count(ctx context.Context, provider, purpose, outcome string) {
+	i.logins.Add(context.WithoutCancel(ctx), 1, metric.WithAttributes(
+		attribute.String("provider", provider), attribute.String("purpose", purpose), attribute.String("outcome", outcome)))
+}
+
+func (i *Idp) failed(ctx context.Context, provider, purpose, outcome string) {
+	i.count(ctx, provider, purpose, outcome)
+	i.d.Log.InfoContext(ctx, "identity.idp.login_failed", "event", "identity.idp.login_failed",
+		"provider", provider, "purpose", purpose, "outcome", outcome)
+}
+
+// --- start ---
+
+// StartIdp is the input of the start of a flow.
+type StartIdp struct {
+	Provider string
+	Purpose  string
+	// AuthRequest and ReturnTo are the place to go after a login (purpose login).
+	AuthRequest string
+	ReturnTo    string
+	// InviteToken is the invite token (purpose invite). It is a secret.
+	InviteToken string
+	// SessionToken is the session cookie value (purpose link). It is a secret.
+	SessionToken string
+	// Fresh is true when the login page asked for prompt=login.
+	Fresh bool
+	// SecFetchSite is the value of the request header Sec-Fetch-Site.
+	SecFetchSite string
+}
+
+// StartedIdp is the result of the start.
+type StartedIdp struct {
+	// Location is the URL of the authorization request of the provider.
+	Location string
+	// Binding is the value of the cookie that binds the flow to the browser. It
+	// is a secret.
+	Binding string
+}
+
+// Start checks the request, makes the flow record, and returns the URL of the
+// provider. The checks come first, so a wrong request makes no record.
+func (i *Idp) Start(ctx context.Context, in StartIdp) (StartedIdp, error) {
+	if !domain.ValidProvider(in.Provider) || !i.d.Client.Enabled(in.Provider) {
+		return StartedIdp{}, ErrIdpProviderOff
+	}
+	if !domain.ValidFlowPurpose(in.Purpose) || !domain.SecFetchSiteAllowed(in.Purpose, in.SecFetchSite) {
+		i.failed(ctx, in.Provider, in.Purpose, IdpOutcomeProviderError)
+		return StartedIdp{}, ErrIdpFailed
+	}
+	rec := domain.IdpFlow{Provider: in.Provider, Purpose: in.Purpose, Fresh: in.Fresh}
+	switch in.Purpose {
+	case domain.FlowLogin:
+		if err := i.checkPlace(ctx, in.AuthRequest, in.ReturnTo); err != nil {
+			return StartedIdp{}, err
+		}
+		rec.AuthRequest, rec.ReturnTo = in.AuthRequest, in.ReturnTo
+	case domain.FlowLink:
+		sess, err := i.session(ctx, in.SessionToken)
+		if err != nil {
+			return StartedIdp{}, err
+		}
+		if !domain.FreshLogin(sess.AuthTime, i.now()) {
+			return StartedIdp{}, ErrIdpReauth
+		}
+		rec.SessionHash, rec.Fresh = sess.TokenHash, true
+	case domain.FlowInvite:
+		if err := checkTokenValid(ctx, i.d.Tokens, in.InviteToken, domain.PurposeInvite, i.now()); err != nil {
+			return StartedIdp{}, i.invalidStart(ctx, in, err)
+		}
+		rec.InviteHash = domain.HashSecret(in.InviteToken)
+	}
+	ctx, cancel := context.WithTimeout(ctx, i.d.Timeout)
+	defer cancel()
+	state, stateHash, err := domain.NewSecret()
+	if err != nil {
+		return StartedIdp{}, err
+	}
+	nonce, _, err := domain.NewSecret()
+	if err != nil {
+		return StartedIdp{}, err
+	}
+	verifier, _, err := domain.NewSecret()
+	if err != nil {
+		return StartedIdp{}, err
+	}
+	binding, bindingHash, err := domain.NewSecret()
+	if err != nil {
+		return StartedIdp{}, err
+	}
+	rec.Nonce, rec.Verifier, rec.BindingHash = nonce, verifier, bindingHash
+	loc, err := i.d.Client.AuthCodeURL(ctx, in.Provider, upstreamidp.AuthParams{
+		State: state, Nonce: nonce, Verifier: verifier, Fresh: rec.Fresh,
+	})
+	if err != nil {
+		i.failed(ctx, in.Provider, in.Purpose, IdpOutcomeProviderError)
+		return StartedIdp{}, fmt.Errorf("%w: %w", ErrIdpProviderDown, err)
+	}
+	if err := i.d.Flows.Put(ctx, stateHash, rec, IdpFlowTTL); err != nil {
+		i.d.Log.ErrorContext(ctx, "identity.idp.flow_unavailable", "event", "identity.idp.flow_unavailable", "error", err)
+		return StartedIdp{}, ErrIdpUnavailable
+	}
+	return StartedIdp{Location: loc, Binding: binding}, nil
+}
+
+func (i *Idp) invalidStart(ctx context.Context, in StartIdp, err error) error {
+	if errors.Is(err, ErrTokenInvalid) {
+		i.failed(ctx, in.Provider, in.Purpose, IdpOutcomeProviderError)
+		return ErrIdpFailed
+	}
+	return err
+}
+
+// checkPlace checks the place to go after a login: the auth request must exist,
+// and the return_to value must be a local path.
+func (i *Idp) checkPlace(ctx context.Context, authRequest, returnTo string) error {
+	if authRequest != "" && i.d.LookupAuthRequest != nil {
+		if _, err := i.d.LookupAuthRequest(ctx, authRequest); err != nil {
+			if errors.Is(err, ErrAuthRequestGone) {
+				return ErrIdpFailed
+			}
+			return err
+		}
+	}
+	if returnTo != "" {
+		if _, ok := domain.SafeReturnTo(returnTo); !ok {
+			return ErrIdpFailed
+		}
+	}
+	return nil
+}
+
+// session returns the valid session of a cookie value.
+func (i *Idp) session(ctx context.Context, token string) (domain.Session, error) {
+	if token == "" || len(token) > domain.MaxTokenValueLength {
+		return domain.Session{}, ErrIdpReauth
+	}
+	sess, err := i.d.Sessions.GetByTokenHash(ctx, domain.HashSecret(token))
+	if errors.Is(err, sessions.ErrNotFound) {
+		return domain.Session{}, ErrIdpReauth
+	}
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("get the session: %w", err)
+	}
+	if !sess.Valid(i.now()) {
+		return domain.Session{}, ErrIdpReauth
+	}
+	return sess, nil
+}
+
+// --- callback ---
+
+// CallbackIdp is the input of the callback.
+type CallbackIdp struct {
+	Provider string
+	// State, Code, and Iss are the query values of the redirect. They are secrets.
+	State string
+	Code  string
+	Iss   string
+	// ProviderError is true when the redirect has an error parameter.
+	ProviderError bool
+	// Binding is the value of the cookie of the flow. SessionToken is the session
+	// cookie value. Both are secrets.
+	Binding      string
+	SessionToken string
+	// IP, UserAgent, and PreviousToken are for the session.
+	IP            string
+	UserAgent     string
+	PreviousToken string
+}
+
+// The kinds of the result of a callback.
+const (
+	// IdpSession means the login made a session.
+	IdpSession = "session"
+	// IdpPending means the login needs a second factor.
+	IdpPending = "pending"
+	// IdpLinked means the flow added a link. The user goes to the account page.
+	IdpLinked = "linked"
+)
+
+// IdpResult is the result of a good callback.
+type IdpResult struct {
+	Kind    string
+	Purpose string
+	// Session is the new session, or the pending login.
+	Session IssuedSession
+	// AuthRequest and ReturnTo are the place to go after a login.
+	AuthRequest string
+	ReturnTo    string
+}
+
+// Callback checks the answer of the provider and continues with the purpose of
+// the flow. It uses only the values of the flow record, not the request.
+func (i *Idp) Callback(ctx context.Context, in CallbackIdp) (IdpResult, error) {
+	if !domain.ValidProvider(in.Provider) || !i.d.Client.Enabled(in.Provider) {
+		return IdpResult{}, ErrIdpProviderOff
+	}
+	ctx, cancel := context.WithTimeout(ctx, i.d.Timeout)
+	defer cancel()
+	rec, err := i.takeFlow(ctx, in)
+	if err != nil {
+		return IdpResult{}, err
+	}
+	if in.ProviderError {
+		i.failed(ctx, in.Provider, rec.Purpose, IdpOutcomeProviderError)
+		return IdpResult{}, ErrIdpFailed
+	}
+	id, err := i.d.Client.Exchange(ctx, in.Provider, upstreamidp.ExchangeParams{
+		Code: in.Code, Verifier: rec.Verifier, Nonce: rec.Nonce, Iss: in.Iss,
+	})
+	switch {
+	case errors.Is(err, upstreamidp.ErrToken):
+		i.d.Log.InfoContext(ctx, "identity.idp.token_refused", "event", "identity.idp.token_refused", "provider", in.Provider)
+		i.failed(ctx, in.Provider, rec.Purpose, IdpOutcomeTokenInvalid)
+		return IdpResult{}, ErrIdpFailed
+	case err != nil:
+		i.failed(ctx, in.Provider, rec.Purpose, IdpOutcomeProviderError)
+		return IdpResult{}, ErrIdpFailed
+	}
+	if rec.Fresh && !domain.UpstreamFresh(in.Provider, id.AuthTime, id.IssuedAt, i.now()) {
+		i.failed(ctx, in.Provider, rec.Purpose, IdpOutcomeNotFresh)
+		return IdpResult{}, ErrIdpFailed
+	}
+	switch rec.Purpose {
+	case domain.FlowLink:
+		return i.link(ctx, in, rec, id)
+	case domain.FlowInvite:
+		return i.invite(ctx, in, rec, id)
+	}
+	return i.login(ctx, in, rec, id)
+}
+
+// takeFlow reads the flow record of the state and checks the provider and the
+// binding of the browser. A record is used one time.
+func (i *Idp) takeFlow(ctx context.Context, in CallbackIdp) (domain.IdpFlow, error) {
+	if in.State == "" || len(in.State) > domain.MaxTokenValueLength {
+		i.failed(ctx, in.Provider, "", IdpOutcomeBadState)
+		return domain.IdpFlow{}, ErrIdpExpired
+	}
+	rec, err := i.d.Flows.Take(ctx, domain.HashSecret(in.State))
+	if errors.Is(err, idpflow.ErrNotFound) {
+		i.failed(ctx, in.Provider, "", IdpOutcomeBadState)
+		return domain.IdpFlow{}, ErrIdpExpired
+	}
+	if err != nil {
+		i.d.Log.ErrorContext(ctx, "identity.idp.flow_unavailable", "event", "identity.idp.flow_unavailable", "error", err)
+		return domain.IdpFlow{}, ErrIdpUnavailable
+	}
+	bound := in.Binding != "" && subtle.ConstantTimeCompare([]byte(domain.HashSecret(in.Binding)), []byte(rec.BindingHash)) == 1
+	if rec.Provider != in.Provider || !bound {
+		i.failed(ctx, in.Provider, rec.Purpose, IdpOutcomeBadState)
+		return domain.IdpFlow{}, ErrIdpExpired
+	}
+	return rec, nil
+}
+
+// login is the purpose login: the upstream account must have a link.
+func (i *Idp) login(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id domain.UpstreamIdentity) (IdpResult, error) {
+	link, err := i.d.Links.GetBySubject(ctx, in.Provider, id.Subject)
+	if errors.Is(err, identitylinks.ErrNotFound) {
+		// The service does not look up the email. A match by email would let an
+		// attacker with an upstream account take over a user.
+		i.failed(ctx, in.Provider, domain.FlowLogin, IdpOutcomeNotLinked)
+		return IdpResult{}, ErrIdpNotLinked
+	}
+	if err != nil {
+		return IdpResult{}, fmt.Errorf("get the link: %w", err)
+	}
+	user, err := i.d.Users.GetByID(ctx, link.UserID)
+	if errors.Is(err, users.ErrNotFound) || (err == nil && user.Status != domain.UserActive) {
+		i.failed(ctx, in.Provider, domain.FlowLogin, IdpOutcomeNotLinked)
+		return IdpResult{}, ErrIdpFailed
+	}
+	if err != nil {
+		return IdpResult{}, fmt.Errorf("get the user: %w", err)
+	}
+	if err := i.d.Links.Touch(ctx, link.ID, id.Email, i.now()); err != nil {
+		i.d.Log.WarnContext(ctx, "identity.idp.touch_failed", "event", "identity.idp.touch_failed", "error", err)
+	}
+	res, err := i.continueLogin(ctx, in, rec, user.ID)
+	if err != nil {
+		return IdpResult{}, err
+	}
+	i.count(ctx, in.Provider, domain.FlowLogin, IdpOutcomeOK)
+	i.d.Log.InfoContext(ctx, "identity.login.ok", "event", "identity.login.ok", "user_id", user.ID, "method", domain.AMRFederated)
+	return res, nil
+}
+
+// continueLogin makes the session, or the pending login if the user has a local
+// second factor.
+func (i *Idp) continueLogin(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, userID string) (IdpResult, error) {
+	needsMFA, hasFactor, err := i.mfaPolicy(ctx, userID)
+	if err != nil {
+		return IdpResult{}, err
+	}
+	res := IdpResult{Purpose: rec.Purpose, AuthRequest: rec.AuthRequest, ReturnTo: rec.ReturnTo}
+	if hasFactor {
+		value, hash, err := domain.NewSecret()
+		if err != nil {
+			return IdpResult{}, err
+		}
+		expires := i.now().Add(PendingLoginTTL)
+		err = i.d.Pending.Put(ctx, hash, domain.PendingLogin{
+			UserID: userID, Methods: domain.MethodsFederated(), AuthRequest: rec.AuthRequest, ReturnTo: rec.ReturnTo, ExpiresAt: expires,
+		}, PendingLoginTTL)
+		if err != nil {
+			i.d.Log.ErrorContext(ctx, "identity.mfa.pending_failed", "event", "identity.mfa.pending_failed", "error", err)
+			return IdpResult{}, ErrMFAUnavailable
+		}
+		res.Kind = IdpPending
+		res.Session = IssuedSession{UserID: userID, PendingToken: value, PendingExpiresAt: expires}
+		return res, nil
+	}
+	issued, err := sessionStarter{sessionIssuer{repo: i.d.Sessions, policy: i.d.Policy, now: i.d.Now}}.
+		start(ctx, userID, in.PreviousToken, in.UserAgent, in.IP, domain.MethodsFederated())
+	if err != nil {
+		return IdpResult{}, err
+	}
+	issued.SetupRequired = needsMFA
+	res.Kind, res.Session = IdpSession, issued
+	return res, nil
+}
+
+// mfaPolicy reads the MFA data of the user. A read error fails the login.
+func (i *Idp) mfaPolicy(ctx context.Context, userID string) (needsMFA, hasFactor bool, err error) {
+	if i.d.MFA == nil {
+		return false, false, nil
+	}
+	state, err := i.d.MFA.State(ctx, userID)
+	if err != nil {
+		return false, false, fmt.Errorf("read the MFA state: %w", err)
+	}
+	state.PasskeysOn = i.d.PasskeysOn
+	if i.d.RequireMFAForAdmins && i.d.UserRoles != nil {
+		granted, err := i.d.UserRoles.GrantedPermissions(ctx, userID, domain.ImplicitUserRoles(domain.UserActive)...)
+		if err != nil {
+			return false, false, fmt.Errorf("get the permissions: %w", err)
+		}
+		needsMFA = domain.NeedsMFA(true, granted)
+	}
+	return needsMFA, state.Enabled(), nil
+}
+
+// link is the purpose link: the session of the start adds a link.
+func (i *Idp) link(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id domain.UpstreamIdentity) (IdpResult, error) {
+	sess, err := i.session(ctx, in.SessionToken)
+	if err != nil {
+		i.failed(ctx, in.Provider, domain.FlowLink, IdpOutcomeBadState)
+		return IdpResult{}, ErrIdpReauth
+	}
+	if subtle.ConstantTimeCompare([]byte(sess.TokenHash), []byte(rec.SessionHash)) != 1 {
+		i.failed(ctx, in.Provider, domain.FlowLink, IdpOutcomeBadState)
+		return IdpResult{}, ErrIdpExpired
+	}
+	err = i.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		u, err := i.d.Users.LockByID(ctx, sess.UserID)
+		if err != nil {
+			return err
+		}
+		if u.Status != domain.UserActive {
+			return ErrIdpFailed
+		}
+		return i.createLink(ctx, u.ID, id)
+	}, txName("link_identity"))
+	switch {
+	case errors.Is(err, ErrIdpAlreadyLinked):
+		i.failed(ctx, in.Provider, domain.FlowLink, IdpOutcomeNotLinked)
+		return IdpResult{}, ErrIdpAlreadyLinked
+	case errors.Is(err, ErrIdpLinkedElsewhere):
+		i.failed(ctx, in.Provider, domain.FlowLink, IdpOutcomeLinkedElsewhere)
+		return IdpResult{}, ErrIdpLinkedElsewhere
+	case errors.Is(err, ErrIdpFailed):
+		return IdpResult{}, ErrIdpFailed
+	case err != nil:
+		return IdpResult{}, fmt.Errorf("add the link: %w", err)
+	}
+	i.linked(ctx, in.Provider, domain.FlowLink, sess.UserID, sess.UserID)
+	return IdpResult{Kind: IdpLinked, Purpose: domain.FlowLink}, nil
+}
+
+// createLink adds the link of an upstream account. It runs in a transaction.
+func (i *Idp) createLink(ctx context.Context, userID string, id domain.UpstreamIdentity) error {
+	if _, err := i.d.Links.GetByUserProvider(ctx, userID, id.Provider); err == nil {
+		return ErrIdpAlreadyLinked
+	} else if !errors.Is(err, identitylinks.ErrNotFound) {
+		return err
+	}
+	err := i.d.Links.Create(ctx, domain.IdentityLink{
+		ID: newUUID(), UserID: userID, Provider: id.Provider, Subject: id.Subject, Email: id.Email, CreatedAt: i.now(),
+	})
+	switch {
+	case errors.Is(err, identitylinks.ErrSubjectLinked):
+		return ErrIdpLinkedElsewhere
+	case errors.Is(err, identitylinks.ErrProviderLinked):
+		return ErrIdpAlreadyLinked
+	}
+	return err
+}
+
+// linked writes the log record, the audit entry, and the notice of a new link.
+func (i *Idp) linked(ctx context.Context, provider, purpose, actor, target string) {
+	i.count(ctx, provider, purpose, IdpOutcomeOK)
+	i.d.Log.InfoContext(ctx, "identity.idp.linked", "event", "identity.idp.linked", "user_id", target, "provider", provider)
+	recordLinkEvent(ctx, i.d.Events, i.d.Log, securityevents.ActionIdentityLinkAdd,
+		securityevents.NoticeIdentityLinkAdded, actor, target, provider, i.now())
+}
+
+// invite is the purpose invite: the verified email of the upstream account must
+// be the email of the invited user.
+func (i *Idp) invite(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id domain.UpstreamIdentity) (IdpResult, error) {
+	now := i.now()
+	userID, ok, err := i.d.Tokens.FindValid(ctx, rec.InviteHash, domain.PurposeInvite, now)
+	if err != nil {
+		return IdpResult{}, fmt.Errorf("find the invite: %w", err)
+	}
+	if !ok {
+		i.failed(ctx, in.Provider, domain.FlowInvite, IdpOutcomeBadState)
+		return IdpResult{}, ErrIdpExpired
+	}
+	invited, err := i.d.Users.GetByID(ctx, userID)
+	if errors.Is(err, users.ErrNotFound) {
+		return IdpResult{}, ErrIdpExpired
+	}
+	if err != nil {
+		return IdpResult{}, fmt.Errorf("get the user: %w", err)
+	}
+	email, err := domain.NormalizeEmail(id.Email)
+	if err != nil || !id.EmailVerified || email != invited.Email {
+		// The token stays unused.
+		i.failed(ctx, in.Provider, domain.FlowInvite, IdpOutcomeEmailMismatch)
+		return IdpResult{}, ErrIdpMismatch
+	}
+	var issued IssuedSession
+	err = i.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		uid, ok, err := i.d.Tokens.FindValid(ctx, rec.InviteHash, domain.PurposeInvite, now)
+		if err != nil {
+			return err
+		}
+		if !ok || uid != invited.ID {
+			return ErrIdpExpired
+		}
+		user, err := i.d.Users.LockByID(ctx, uid)
+		if errors.Is(err, users.ErrNotFound) {
+			return ErrIdpExpired
+		}
+		if err != nil {
+			return err
+		}
+		if user.Status != domain.UserInvited {
+			return ErrIdpExpired
+		}
+		if _, ok, err := i.d.Tokens.Use(ctx, rec.InviteHash, domain.PurposeInvite, now); err != nil {
+			return err
+		} else if !ok {
+			return ErrIdpExpired
+		}
+		if err := i.createLink(ctx, user.ID, id); err != nil {
+			return err
+		}
+		if err := i.d.Users.Activate(ctx, user.ID, "", now); err != nil {
+			return err
+		}
+		issued, err = sessionIssuer{repo: i.d.Sessions, policy: i.d.Policy, now: i.d.Now}.
+			issue(ctx, user.ID, in.UserAgent, in.IP, domain.MethodsFederated())
+		return err
+	}, txName("accept_invite_upstream"))
+	switch {
+	case errors.Is(err, ErrIdpLinkedElsewhere):
+		i.failed(ctx, in.Provider, domain.FlowInvite, IdpOutcomeLinkedElsewhere)
+		return IdpResult{}, ErrIdpLinkedElsewhere
+	case errors.Is(err, ErrIdpExpired):
+		i.failed(ctx, in.Provider, domain.FlowInvite, IdpOutcomeBadState)
+		return IdpResult{}, ErrIdpExpired
+	case errors.Is(err, ErrIdpAlreadyLinked):
+		return IdpResult{}, ErrIdpAlreadyLinked
+	case err != nil:
+		return IdpResult{}, fmt.Errorf("accept the invite: %w", err)
+	}
+	needsMFA, _, err := i.mfaPolicy(ctx, invited.ID)
+	if err != nil {
+		return IdpResult{}, err
+	}
+	issued.SetupRequired = needsMFA
+	i.linked(ctx, in.Provider, domain.FlowInvite, invited.ID, invited.ID)
+	i.d.Log.InfoContext(ctx, "identity.invite.accepted", "event", "identity.invite.accepted", "user_id", invited.ID)
+	return IdpResult{Kind: IdpSession, Purpose: domain.FlowInvite, Session: issued}, nil
+}

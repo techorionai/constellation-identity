@@ -565,7 +565,8 @@ func (m *MFA) FinishPasskeySecondFactor(ctx context.Context, in PasskeySecondFac
 			return errNotAdvanced
 		}
 		issued, err = sessionStarter{sessionIssuer{repo: m.d.Sessions, policy: m.d.Policy, now: m.d.Now}}.
-			start(ctx, p.UserID, in.PreviousToken, in.UserAgent, in.IP, domain.MethodsPasskeySecondFactor(res.UserVerified))
+			start(ctx, p.UserID, in.PreviousToken, in.UserAgent, in.IP,
+				domain.WithSecondFactor(p.Methods, domain.PasskeyFactor(res.UserVerified)...))
 		return err
 	}, txName("verify_passkey_second_factor"))
 	if errors.Is(err, errNotAdvanced) {
@@ -678,7 +679,10 @@ type RemovePasskey struct {
 // refresh token families of the user that were made with a passkey. The order
 // of the checks: ErrPasskeyNotFound, then ErrMFARequired when the policy needs
 // MFA for the user and the passkey is the last second factor that the service
-// accepts. It writes the audit entry and sends the notice.
+// accepts, then ErrLastLoginMethod when the removal would leave the user with no
+// login method. The removal also revokes the sessions, the refresh token
+// families, and the personal API tokens that a passkey made. It writes the audit
+// entry and sends the notice.
 func (m *MFA) RemovePasskey(ctx context.Context, in RemovePasskey) error {
 	if m.d.Passkeys == nil || !uuidPattern.MatchString(in.PasskeyID) {
 		return ErrPasskeyNotFound
@@ -686,7 +690,8 @@ func (m *MFA) RemovePasskey(ctx context.Context, in RemovePasskey) error {
 	// The user row is locked first, so two removals of one user run in sequence.
 	// The check of the rule and the removal are in the same transaction (R1).
 	err := m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
-		if _, err := m.d.Users.LockByID(ctx, in.UserID); err != nil {
+		u, err := m.d.Users.LockByID(ctx, in.UserID)
+		if err != nil {
 			return err
 		}
 		if _, err := m.d.Passkeys.Get(ctx, in.UserID, in.PasskeyID); err != nil {
@@ -705,16 +710,28 @@ func (m *MFA) RemovePasskey(ctx context.Context, in RemovePasskey) error {
 		if required && !state.HasTOTP && state.AcceptedPasskeys() == 1 {
 			return ErrMFARequired
 		}
+		ok, err := m.hasLoginMethodWith(ctx, u, state.Passkeys-1)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrLastLoginMethod
+		}
 		if err := m.d.Passkeys.Remove(ctx, in.UserID, in.PasskeyID); err != nil {
 			return err
 		}
 		// A session does not record which passkey made it. All sessions and
 		// families with a passkey end.
-		_, err = m.d.Sessions.RevokeWithMethod(ctx, in.UserID, domain.AMRHardwareKey, m.now())
-		return err
+		if _, err := m.d.Sessions.RevokeWithMethod(ctx, in.UserID, domain.AMRHardwareKey, m.now()); err != nil {
+			return err
+		}
+		return m.revokeAPITokens(ctx, in.UserID, domain.AMRHardwareKey)
 	}, txName("remove_passkey"))
 	if errors.Is(err, ErrMFARequired) {
 		return ErrMFARequired
+	}
+	if errors.Is(err, ErrLastLoginMethod) {
+		return ErrLastLoginMethod
 	}
 	if errors.Is(err, users.ErrNotFound) {
 		return ErrPasskeyNotFound

@@ -10,6 +10,7 @@
 <main>
 <h1>{{.Title}}</h1>
 {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+{{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
 {{end}}
 {{define "footer"}}</main>
 {{if .Script}}<script src="/assets/passkey.js" defer></script>
@@ -26,7 +27,8 @@
 <input id="password" name="password" type="password" autocomplete="current-password" required>
 <button type="submit">Log in</button>
 </form>
-{{if .PasskeyOn}}<div class="passkey" data-passkey="login" data-options="/login/passkey/options" data-finish="/login/passkey/finish" data-auth-request="{{.AuthRequest}}" data-return-to="{{.ReturnTo}}">
+{{range .Providers}}<p><a class="idp" href="{{.URL}}">Log in with {{.Name}}</a></p>
+{{end}}{{if .PasskeyOn}}<div class="passkey" data-passkey="login" data-options="/login/passkey/options" data-finish="/login/passkey/finish" data-auth-request="{{.AuthRequest}}" data-return-to="{{.ReturnTo}}">
 <button type="button" class="passkey-button" hidden>Log in with a passkey</button>
 <p class="error passkey-error" role="alert" hidden></p>
 </div>
@@ -57,6 +59,9 @@
 <input id="password2" name="password2" type="password" autocomplete="new-password" required minlength="12" maxlength="512">
 <button type="submit">Set password</button>
 </form>
+{{if .Providers}}<p>Or accept your invite with an account that you already have.</p>
+{{range .Providers}}<p><a class="idp" href="{{.URL}}">Accept with {{.Name}}</a></p>
+{{end}}{{end}}
 {{template "footer" .}}{{end}}
 {{define "done"}}{{template "header" .}}
 <p>You are logged in as {{.UserName}}</p>
@@ -73,7 +78,8 @@
 </form>
 {{template "footer" .}}{{end}}
 {{define "mfa"}}{{template "header" .}}
-{{if .Recovery}}<p>Enter one of your recovery codes.</p>
+{{if .Federated}}<p>You logged in with your upstream account. Use your second factor to continue.</p>
+{{end}}{{if .Recovery}}<p>Enter one of your recovery codes.</p>
 <form method="post" action="/login/mfa">
 <input type="hidden" name="recovery" value="1">
 <label for="code">Recovery code</label>
@@ -110,6 +116,29 @@
 {{if .PasskeyOn}}<p>Passkeys: {{.PasskeyCount}}.</p>
 <p><a href="/account/passkeys">Manage passkeys</a></p>
 {{end}}
+{{if .Links}}<h2>Linked accounts</h2>
+<ul>
+{{range .Links}}<li>
+<strong>{{.Name}}</strong>{{if .Email}} {{.Email}}{{end}}
+<form method="post" action="/account/identity-links/{{.Provider}}/remove">
+<button type="submit">Remove</button>
+</form>
+</li>
+{{end}}</ul>
+{{end}}{{range .Linkable}}<p><a class="idp" href="{{.URL}}">Link {{.Name}}</a></p>
+{{end}}
+{{if not .HasPassword}}<p><a href="/account/password">Set a password</a></p>
+{{end}}
+{{template "footer" .}}{{end}}
+{{define "account_password"}}{{template "header" .}}
+<form method="post" action="/account/password">
+<label for="password">Password</label>
+<input id="password" name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="512">
+<label for="password2">Password again</label>
+<input id="password2" name="password2" type="password" autocomplete="new-password" required minlength="12" maxlength="512">
+<button type="submit">Set password</button>
+</form>
+<p><a href="/account/security">Account security</a></p>
 {{template "footer" .}}{{end}}
 {{define "account_totp"}}{{template "header" .}}
 {{if .Required}}<p>Your account must have MFA. Set up TOTP to continue.</p>{{end}}

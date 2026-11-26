@@ -98,6 +98,8 @@ func (s *Server) MePasskeysRemove(ctx context.Context, r gen.MePasskeysRemoveReq
 		return nil, passkeyNotFound()
 	case errors.Is(err, commands.ErrMFARequired):
 		return nil, apperrors.NewConflictCode("mfa_required", "The policy requires MFA for the user. The passkey is the last second factor.")
+	case errors.Is(err, commands.ErrLastLoginMethod):
+		return nil, lastLoginMethod()
 	case err != nil:
 		return nil, err
 	}

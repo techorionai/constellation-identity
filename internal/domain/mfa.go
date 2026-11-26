@@ -17,16 +17,38 @@ const (
 	AMROTP      = "otp"
 	AMRRecovery = "rec"
 	AMRMFA      = "mfa"
+	// AMRFederated is the first factor of a login with an upstream identity
+	// provider. It is the value "fed" of RFC 8176.
+	AMRFederated = "fed"
 )
 
 // MethodsPassword is the amr of a login with a password only.
 func MethodsPassword() []string { return []string{AMRPassword} }
 
-// MethodsTOTP is the amr of a login with a password and a TOTP code.
-func MethodsTOTP() []string { return []string{AMRPassword, AMROTP, AMRMFA} }
+// MethodsFederated is the amr of a login with an upstream identity provider
+// and no second factor.
+func MethodsFederated() []string { return []string{AMRFederated} }
 
-// MethodsRecovery is the amr of a login with a password and a recovery code.
-func MethodsRecovery() []string { return []string{AMRPassword, AMRRecovery, AMRMFA} }
+// WithSecondFactor returns the amr of a login with the first factor and a
+// second factor: the first factor, then the factor values, then mfa. The first
+// factor is ["pwd"] for a password and ["fed"] for an upstream login. A
+// passkey with user verification has the factor values "hwk" and "user".
+func WithSecondFactor(first []string, factor ...string) []string {
+	out := make([]string, 0, len(first)+len(factor)+1)
+	out = append(out, first...)
+	out = append(out, factor...)
+	return append(out, AMRMFA)
+}
+
+// FirstFactor returns the first factor of the methods of a session: ["fed"] if
+// the methods have fed, else ["pwd"]. This is the default for a session with no
+// known first factor.
+func FirstFactor(methods []string) []string {
+	if slices.Contains(methods, AMRFederated) {
+		return []string{AMRFederated}
+	}
+	return []string{AMRPassword}
+}
 
 // HasMFA reports whether the methods show a second factor.
 func HasMFA(methods []string) bool { return slices.Contains(methods, AMRMFA) }

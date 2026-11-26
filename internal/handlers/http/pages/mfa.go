@@ -125,6 +125,7 @@ func (h *Handler) mfaView(w http.ResponseWriter, r *http.Request, v *view) bool 
 		return false
 	}
 	v.HasTOTP, v.HasRecovery, v.UsePasskey = info.HasTOTP, info.HasRecoveryCodes, info.HasPasskey && h.passkeysOn()
+	v.Federated = info.Federated
 	if info.AuthRequest != "" {
 		// The redirect after the form goes to the redirect URI of the client. The
 		// CSP form-action must have its origin. The auth request can end before
@@ -231,11 +232,29 @@ func (h *Handler) securityPage(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, r, err)
 		return
 	}
-	h.render(w, r, http.StatusOK, "account_security", view{
+	v := view{
 		Title: "Account security", UserName: res.User.Name, TOTPOn: st.State.HasTOTP,
 		CodesLeft: st.State.CodesRemaining, MFARequired: st.Required,
-		PasskeyOn: h.passkeysOn(), PasskeyCount: st.State.Passkeys,
-	})
+		PasskeyOn: h.passkeysOn(), PasskeyCount: st.State.Passkeys, HasPassword: res.User.PasswordHash != "",
+	}
+	if h.idpEnabled() && h.d.IdentityLinks != nil {
+		links, err := h.d.IdentityLinks.List(r.Context(), res.User.ID, commands.ListPage{}, false)
+		if err != nil {
+			h.serverError(w, r, err)
+			return
+		}
+		linked := map[string]bool{}
+		for _, l := range links.Items {
+			linked[l.Provider] = true
+			v.Links = append(v.Links, linkRow{Provider: l.Provider, Name: providerNames[l.Provider], Email: l.Email})
+		}
+		for _, p := range h.idpLinks(domain.FlowLink, nil) {
+			if !linked[p.Provider] {
+				v.Linkable = append(v.Linkable, p)
+			}
+		}
+	}
+	h.render(w, r, http.StatusOK, "account_security", v)
 }
 
 func (h *Handler) totpSetupForm(w http.ResponseWriter, r *http.Request) {

@@ -80,6 +80,8 @@ linters:
               desc: An adapter must not import another adapter.
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/argon2
               desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/oidc
+              desc: An adapter must not import another adapter.
         adapter-secrets:
           files:
             - "**/internal/adapters/secrets/**"
@@ -98,6 +100,8 @@ linters:
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/valkey
               desc: An adapter must not import another adapter.
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/argon2
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/oidc
               desc: An adapter must not import another adapter.
         adapter-jose:
           files:
@@ -118,6 +122,8 @@ linters:
               desc: An adapter must not import another adapter.
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/argon2
               desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/oidc
+              desc: An adapter must not import another adapter.
         adapter-valkey:
           files:
             - "**/internal/adapters/valkey/**"
@@ -137,6 +143,8 @@ linters:
               desc: An adapter must not import another adapter.
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/argon2
               desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/oidc
+              desc: An adapter must not import another adapter.
         adapter-argon2:
           files:
             - "**/internal/adapters/argon2/**"
@@ -155,6 +163,8 @@ linters:
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/jose
               desc: An adapter must not import another adapter.
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/valkey
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/oidc
               desc: An adapter must not import another adapter.
         adapter-totp:
           files:
@@ -179,6 +189,8 @@ linters:
               desc: An adapter must not import another adapter.
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/securityevents
               desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/oidc
+              desc: An adapter must not import another adapter.
         adapter-securityevents:
           files:
             - "**/internal/adapters/securityevents/**"
@@ -201,6 +213,8 @@ linters:
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/argon2
               desc: An adapter must not import another adapter.
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/totp
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/oidc
               desc: An adapter must not import another adapter.
         adapter-webauthn:
           files:
@@ -227,6 +241,49 @@ linters:
               desc: An adapter must not import another adapter.
             - pkg: github.com/techorionai/constellation-identity/internal/adapters/securityevents
               desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/oidc
+              desc: An adapter must not import another adapter.
+        adapter-oidc:
+          files:
+            - "**/internal/adapters/oidc/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/techorionai/constellation-identity/internal/app
+              desc: An adapter must not import the application layer.
+            - pkg: github.com/techorionai/constellation-identity/internal/handlers
+              desc: An adapter must not import a handler.
+            - pkg: github.com/techorionai/constellation-identity/internal/services
+              desc: An adapter must not import the composition root.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/postgres
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/secrets
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/jose
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/valkey
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/argon2
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/totp
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/securityevents
+              desc: An adapter must not import another adapter.
+            - pkg: github.com/techorionai/constellation-identity/internal/adapters/webauthn
+              desc: An adapter must not import another adapter.
+        # Only the adapter oidc imports the OIDC client libraries. The domain, the
+        # ports, the application layer, and the handlers must not import them. The
+        # test helpers can use them to check a token.
+        oidc-libraries-in-adapter-only:
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/adapters/oidc/**"
+            - "!**/resources/test/**"
+          deny:
+            - pkg: github.com/coreos/go-oidc
+              desc: Only the adapter oidc can import the OIDC client library.
+            - pkg: golang.org/x/oauth2
+              desc: Only the adapter oidc can import the OAuth 2.0 client library.
         # Only the adapter webauthn imports the WebAuthn library. The test
         # helpers can use it to make a response of a software authenticator.
         webauthn-library-in-adapter-only:

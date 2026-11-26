@@ -79,6 +79,10 @@ type CreateAPIToken struct {
 	Name          string
 	Scope         string
 	ExpiresInDays *int32
+	// AMR is the amr claim of the access token that made the request. The new
+	// token records it, so the removal of a login method can revoke it. The API
+	// does not show it.
+	AMR []string
 }
 
 // CreatedAPIToken is a new token. Value is a secret. It is shown one time.
@@ -140,6 +144,7 @@ func (a *APITokens) Create(ctx context.Context, in CreateAPIToken) (CreatedAPITo
 	now := a.now()
 	tok := domain.APIToken{
 		ID: id, UserID: in.UserID, Name: name, Scope: scope, CreatedAt: now, ExpiresAt: now.AddDate(0, 0, days),
+		AMR: slices.Clone(in.AMR),
 	}
 	err = a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		u, err := a.d.Users.LockByID(ctx, in.UserID)

@@ -71,6 +71,8 @@ type Deps struct {
 	CreateInvite executor.ExecutorWithReturn[commands.CreateInvite, commands.Link]
 	// MFA holds the use cases of the MFA operations.
 	MFA *commands.MFA
+	// IdentityLinks holds the use cases of the upstream links.
+	IdentityLinks *commands.IdentityLinks
 	// Now is the clock of the step-up check. The default is time.Now.
 	Now func() time.Time
 	// CORSOrigins gives the login redirect URIs of the public clients that are
@@ -420,6 +422,10 @@ func (s *Server) requestError(w http.ResponseWriter, r *http.Request, _ error) {
 func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, errReauthRequired) {
 		s.writeReauthRequired(w, r)
+		return
+	}
+	if errors.Is(err, errFreshLoginRequired) {
+		s.writeFreshLoginRequired(w, r)
 		return
 	}
 	if errors.Is(err, errNotImplemented) {

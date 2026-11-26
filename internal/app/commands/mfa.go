@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/techorionai/constellation-platform-go/transaction"
@@ -13,6 +14,8 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/techorionai/constellation-identity/internal/domain"
+	"github.com/techorionai/constellation-identity/internal/ports/apitokens"
+	"github.com/techorionai/constellation-identity/internal/ports/identitylinks"
 	"github.com/techorionai/constellation-identity/internal/ports/loginlimiter"
 	"github.com/techorionai/constellation-identity/internal/ports/mfa"
 	"github.com/techorionai/constellation-identity/internal/ports/mfaflow"
@@ -47,6 +50,10 @@ var (
 	// ErrMFARequired means the change would leave a user with no second factor
 	// where the policy needs one, or an admin would reset the own MFA.
 	ErrMFARequired = errors.New("mfa_required")
+	// ErrLastLoginMethod means the change would leave the user with no login
+	// method (a password, a passkey that the service accepts, or a link of a
+	// provider that is on).
+	ErrLastLoginMethod = errors.New("last_login_method")
 )
 
 // Settings of the pending login and the setup.
@@ -88,6 +95,12 @@ type MFADeps struct {
 	// PasskeysOn is true when the service accepts passkeys. A stored passkey is a
 	// second factor only then.
 	PasskeysOn bool
+	// Links, APITokens, and ProviderOn are for the rule "last login method" and
+	// for the revocation of the API tokens that a passkey made. A nil Links
+	// means that no user has a link. A nil APITokens revokes no token.
+	Links      identitylinks.Repository
+	APITokens  apitokens.Repository
+	ProviderOn domain.ProviderOn
 	Pending    mfaflow.PendingLogins
 	Setups     mfaflow.SetupSecrets
 	Failures   mfaflow.Failures
@@ -189,6 +202,8 @@ type PendingInfo struct {
 	HasTOTP          bool
 	HasRecoveryCodes bool
 	HasPasskey       bool
+	// Federated is true when the first factor was an upstream login.
+	Federated bool
 }
 
 // CheckPending tells whether the pending login exists and has not expired. It
@@ -204,7 +219,7 @@ func (m *MFA) CheckPending(ctx context.Context, token string) (PendingInfo, erro
 	}
 	return PendingInfo{
 		AuthRequest: p.AuthRequest, HasTOTP: st.HasTOTP, HasRecoveryCodes: st.CodesRemaining > 0,
-		HasPasskey: st.AcceptedPasskeys() > 0,
+		HasPasskey: st.AcceptedPasskeys() > 0, Federated: slices.Contains(p.Methods, domain.AMRFederated),
 	}, nil
 }
 
@@ -275,10 +290,10 @@ func (m *MFA) VerifyLogin(ctx context.Context, in VerifyLogin) (VerifiedLogin, e
 	)
 	if in.Recovery {
 		consume, err = m.checkRecovery(ctx, p.UserID, in.Code)
-		methods = domain.MethodsRecovery()
+		methods = domain.WithSecondFactor(p.Methods, domain.AMRRecovery)
 	} else {
 		consume, err = m.checkTOTP(ctx, p.UserID, in.Code)
-		methods = domain.MethodsTOTP()
+		methods = domain.WithSecondFactor(p.Methods, domain.AMROTP)
 	}
 	if err != nil && !errors.Is(err, ErrMFAReplay) {
 		return VerifiedLogin{}, err
@@ -644,7 +659,12 @@ func (m *MFA) FinishSetup(ctx context.Context, in FinishSetup) (SetupResult, err
 		if err != nil {
 			return err
 		}
-		return m.d.Sessions.SetMethods(ctx, in.SessionID, domain.MethodsTOTP())
+		// The session keeps its first factor (pwd or fed).
+		sess, err := m.d.Sessions.GetByID(ctx, in.SessionID)
+		if err != nil {
+			return err
+		}
+		return m.d.Sessions.SetMethods(ctx, in.SessionID, domain.WithSecondFactor(domain.FirstFactor(sess.AuthMethods), domain.AMROTP))
 	}, txName("finish_totp_setup"))
 	if errors.Is(err, mfa.ErrAlreadyEnabled) {
 		return SetupResult{}, ErrTOTPEnabled
@@ -750,12 +770,20 @@ type ResetMFA struct {
 	UserID string
 	// Actor is the ID of the admin, or securityevents.ActorCLI for the subcommand.
 	Actor string
+	// Operator is true for the subcommand. It skips the rule "last login method",
+	// so the operator has a way back into the service. The use case logs the
+	// event identity.mfa.reset_last_login_method if the user has no login method
+	// after the reset.
+	Operator bool
 }
 
 // ResetMFA removes the factors of a user and revokes all sessions and refresh
 // token families of the user. It does not remove the password or the API
 // tokens. The order of the checks: ErrUserNotFound, then ErrMFARequired when
-// the actor is the user (R8). The audit entry and the notice follow the change.
+// the actor is the user (R8), then ErrLastLoginMethod when the reset would
+// leave the user with no login method (the subcommand skips this rule). The
+// reset also revokes the personal API tokens that a session with a passkey
+// made. The audit entry and the notice follow the change.
 func (m *MFA) ResetMFA(ctx context.Context, in ResetMFA) error {
 	if !uuidPattern.MatchString(in.UserID) {
 		return ErrUserNotFound
@@ -768,11 +796,25 @@ func (m *MFA) ResetMFA(ctx context.Context, in ResetMFA) error {
 	if in.Actor == in.UserID {
 		return ErrMFARequired
 	}
+	noMethod := false
 	err := m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		// Lock the user row first. A registration that finishes in parallel waits
 		// and then finds its session revoked (R11).
-		if _, err := m.d.Users.LockByID(ctx, in.UserID); err != nil {
+		u, err := m.d.Users.LockByID(ctx, in.UserID)
+		if err != nil {
 			return err
+		}
+		// The reset removes all passkeys. The rule "last login method" counts the
+		// user with no passkey.
+		ok, err := m.hasLoginMethodWith(ctx, u, 0)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if !in.Operator {
+				return ErrLastLoginMethod
+			}
+			noMethod = true
 		}
 		if _, err := m.d.MFA.RemoveAll(ctx, in.UserID); err != nil {
 			return err
@@ -785,10 +827,16 @@ func (m *MFA) ResetMFA(ctx context.Context, in ResetMFA) error {
 		if _, err := m.d.Sessions.RevokeAllOfUser(ctx, in.UserID, m.now()); err != nil {
 			return err
 		}
-		return nil
+		return m.revokeAPITokens(ctx, in.UserID, domain.AMRHardwareKey)
 	}, txName("reset_mfa"))
+	if errors.Is(err, ErrLastLoginMethod) {
+		return ErrLastLoginMethod
+	}
 	if err != nil {
 		return fmt.Errorf("reset the MFA: %w", err)
+	}
+	if noMethod {
+		m.d.Log.WarnContext(ctx, "identity.mfa.reset_last_login_method", "event", "identity.mfa.reset_last_login_method", "user_id", in.UserID)
 	}
 	m.d.Log.InfoContext(ctx, "identity.mfa.reset", "event", "identity.mfa.reset", "user_id", in.UserID)
 	m.securityEvent(ctx, securityevents.ActionMfaReset, securityevents.NoticeMfaReset, in.Actor, in.UserID)

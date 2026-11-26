@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	clientpg "github.com/techorionai/constellation-platform-go/clients/postgres"
@@ -79,6 +80,11 @@ type userStack struct {
 	sessions  *postgres.Sessions
 
 	oidc          *commands.OIDC
+	idp           *commands.Idp
+	identityLinks *commands.IdentityLinks
+	links         *postgres.IdentityLinks
+	providers     []string
+	passkeysOn    bool
 	mfa           *commands.MFA
 	admin         *commands.Admin
 	apiTokens     *commands.APITokens
@@ -141,6 +147,13 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	if err != nil {
 		return nil, err
 	}
+	linkRepo := postgres.NewIdentityLinks(pool)
+	providers := cfg.IDP.Providers()
+	providerOn := func(p string) bool { return slices.Contains(providers, p) }
+	idpClient, err := a.buildIdpClient(o, providers)
+	if err != nil {
+		return nil, err
+	}
 	loginDeps := commands.LoginDeps{
 		Users: userRepo, Session: sessionRepo, Hasher: hasher, Limiter: limiter, PasskeysOn: passkeysOn,
 		MFA: mfaRepo, UserRoles: roles, Pending: mfaFlow.Pending(), RequireMFAForAdmins: cfg.MFA.RequireForAdmins,
@@ -171,6 +184,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		Users: userRepo, UserRoles: roles, Sessions: sessionRepo, MFA: mfaRepo, TOTP: adaptertotp.New(),
 		Sealer: adaptersecrets.NewSealer(a.ring), Pending: mfaFlow.Pending(), Setups: mfaFlow.Setups(),
 		Passkeys: passkeyRepo, WebAuthn: webauthnService, Ceremonies: mfaFlow.Ceremonies(), PasskeysOn: passkeysOn,
+		Links: linkRepo, APITokens: apiTokenRepo, ProviderOn: providerOn,
 		Failures: mfaFlow.FailureCounter(), Limiter: limiter, Events: adaptersecurityevents.NewLogOnly(log), Tx: tx,
 		Policy: policy, RequireMFAForAdmins: cfg.MFA.RequireForAdmins, Issuer: cfg.MFA.TOTPIssuer,
 		MaxFailures: int64(cfg.MFA.MaxFailuresPerUser), FailureWindow: cfg.MFA.FailureWindow, Log: log, Now: clock,
@@ -183,7 +197,24 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		Users: userRepo, UserRoles: roles, Sessions: sessionRepo, Clients: clientRepo,
 		ClientRoles: postgres.NewClientRoles(pool), Agents: postgres.NewAgents(pool), AgentRoles: postgres.NewAgentRoles(pool), Manifests: postgres.NewManifests(pool), Tokens: tokens,
 		Refresh: refreshRepo, APITokens: apiTokenRepo, Lock: postgres.NewAdminLock(pool), Tx: tx, Log: log, Now: clock,
+		MFA: mfaRepo, Links: linkRepo, PasskeysOn: passkeysOn, ProviderOn: providerOn,
 	})
+	events := adaptersecurityevents.NewLogOnly(log)
+	st.identityLinks = commands.NewIdentityLinks(commands.IdentityLinksDeps{
+		Users: userRepo, Links: linkRepo, Sessions: sessionRepo, APITokens: apiTokenRepo, MFA: mfaRepo, Events: events, Tx: tx,
+		PasskeysOn: passkeysOn, ProviderOn: providerOn, Log: log, Now: clock,
+	})
+	idpCmd, err := commands.NewIdp(commands.IdpDeps{
+		Client: idpClient, Flows: adaptervalkey.NewIdpFlow(store), Links: linkRepo, Users: userRepo, Sessions: sessionRepo,
+		Tokens: tokens, MFA: mfaRepo, UserRoles: roles, Pending: mfaFlow.Pending(), Events: events, Tx: tx, Policy: policy,
+		LookupAuthRequest: oidc.LookupAuthRequest, PasskeysOn: passkeysOn, RequireMFAForAdmins: cfg.MFA.RequireForAdmins,
+		Timeout: cfg.IDP.HTTPTimeout, Log: log, Now: clock,
+	})
+	if err != nil {
+		return nil, err
+	}
+	st.idp, st.links, st.providers, st.passkeysOn = idpCmd, linkRepo, providers, passkeysOn
+	setPassword := commands.NewSetPassword(commands.SetPasswordDeps{Users: userRepo, Hasher: hasher, Tx: tx, Log: log, Now: clock})
 	st.apiTokenRepo, st.userRoles = apiTokenRepo, roles
 	st.apiTokens = commands.NewAPITokens(commands.APITokensDeps{
 		Tokens: apiTokenRepo, Users: userRepo, UserRoles: roles, Tx: tx, Log: log, Now: clock, RateLimits: a.limits,
@@ -221,6 +252,10 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		LookupAuthRequest: observe[string, commands.AuthRequestInfo](executor.FuncWithReturn[string, commands.AuthRequestInfo](oidc.LookupAuthRequest), "LookupAuthRequest", log),
 		EndSession:        observe[commands.EndSession, commands.EndSessionOutcome](executor.FuncWithReturn[commands.EndSession, commands.EndSessionOutcome](oidc.StartEndSession), "EndSession", log),
 		MFA:               mfaCmd,
+		Idp:               idpCmd,
+		IdentityLinks:     st.identityLinks,
+		Providers:         providers,
+		SetPassword:       setPassword,
 		PasskeysOn:        passkeysOn,
 		ConfirmEndSession: decorators.ApplyTracingNoResult(decorators.ApplyLoggingNoResult[string](executor.Func[string](oidc.ConfirmEndSession), "ConfirmEndSession", decorators.WithLogger(log), decorators.WithErrorLevel(userErrorLevel)), "ConfirmEndSession"),
 		Now:               clock,
@@ -388,13 +423,17 @@ func ResetMFA(ctx context.Context, cfg config.Config, email string, log *slog.Lo
 	if err != nil {
 		return fmt.Errorf("find the user: %w", err)
 	}
+	providers := cfg.IDP.Providers()
 	cmd, err := commands.NewMFA(commands.MFADeps{
 		Users: userRepo, Sessions: postgres.NewSessions(db.Pool), MFA: postgres.NewMFA(db.Pool),
-		Passkeys: postgres.NewPasskeys(db.Pool),
-		Events:   adaptersecurityevents.NewLogOnly(log), Tx: transactionpg.NewTransactor(db.Pool), Log: log,
+		Passkeys: postgres.NewPasskeys(db.Pool), Links: postgres.NewIdentityLinks(db.Pool),
+		APITokens:  postgres.NewAPITokens(db.Pool),
+		ProviderOn: func(p string) bool { return slices.Contains(providers, p) },
+		Events:     adaptersecurityevents.NewLogOnly(log), Tx: transactionpg.NewTransactor(db.Pool), Log: log,
 	})
 	if err != nil {
 		return err
 	}
-	return cmd.ResetMFA(ctx, commands.ResetMFA{UserID: u.ID, Actor: securityevents.ActorCLI})
+	// The operator has a path around the rule "last login method".
+	return cmd.ResetMFA(ctx, commands.ResetMFA{UserID: u.ID, Actor: securityevents.ActorCLI, Operator: true})
 }
