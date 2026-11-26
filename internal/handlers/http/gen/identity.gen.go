@@ -836,8 +836,11 @@ type JsonWebKeySet struct {
 
 // MfaStatus The MFA state of a user. A client ignores a field that it does not know.
 type MfaStatus struct {
-	// Enabled The user has one or more second factors.
+	// Enabled The user has one or more second factors that the service accepts: TOTP or a passkey. When the service turns off passkeys, a passkey does not count.
 	Enabled bool `json:"enabled"`
+
+	// Passkeys The number of stored passkeys of the user. Absent from a service version with no passkey support. A client treats an absent field as 0.
+	Passkeys *int32 `json:"passkeys,omitempty"`
 
 	// RecoveryCodesRemaining The number of recovery codes that are not used.
 	RecoveryCodesRemaining int32 `json:"recoveryCodesRemaining"`
@@ -897,6 +900,45 @@ type OAuthTooManyRequests struct {
 
 	// ErrorDescription Text for a developer. It has no internal data and no secret.
 	ErrorDescription *string `json:"error_description,omitempty"`
+}
+
+// Passkey A passkey (WebAuthn credential) of a user. It has no key material.
+// The name rule: see the `name` field.
+// Names are not unique for a user. The service stores the name as sent.
+type Passkey struct {
+	// CreatedAt The time of the registration.
+	CreatedAt time.Time `json:"createdAt"`
+
+	// Id ID in the identity service. It is not the WebAuthn credential ID.
+	Id openapi_types.UUID `json:"id"`
+
+	// LastUsedAt The time of the last accepted assertion. Absent when the passkey was not used.
+	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+
+	// Name A name that the user gives. The name has no leading or trailing white space, no control character, no format character (for example U+200B or U+202E), and no line or paragraph separator.
+	// The pattern uses Unicode property classes. A client must use it in Unicode mode (the `u` flag in ECMAScript). It then gives the same result as Go RE2.
+	// Names are not unique for a user. The service stores the name as sent.
+	Name string `json:"name"`
+
+	// Synced The authenticator says that the credential is backed up (WebAuthn flag BS) at the last registration or assertion.
+	Synced bool `json:"synced"`
+}
+
+// PasskeyPage One page of passkeys.
+type PasskeyPage struct {
+	// Items Items of the page.
+	Items []Passkey `json:"items"`
+
+	// NextPageToken Token for the next page. No value means that this is the last page.
+	NextPageToken *string `json:"nextPageToken,omitempty"`
+}
+
+// PasskeyUpdate Request to rename a passkey.
+type PasskeyUpdate struct {
+	// Name The new name. The name has no leading or trailing white space, no control character, no format character (for example U+200B or U+202E), and no line or paragraph separator.
+	// The pattern uses Unicode property classes. A client must use it in Unicode mode (the `u` flag in ECMAScript). It then gives the same result as Go RE2.
+	// Names are not unique for a user. The service stores the name as sent.
+	Name string `json:"name"`
 }
 
 // PermissionDefinition One permission that a service defines.
@@ -1383,6 +1425,25 @@ type MeApiTokensListParams struct {
 	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
 }
 
+// MePasskeysListParams defines parameters for MePasskeysList.
+type MePasskeysListParams struct {
+	// PageToken Opaque token from `nextPageToken` of the previous page.
+	PageToken *CursorPageParamsPageToken `form:"pageToken,omitempty" json:"pageToken,omitempty"`
+
+	// PageSize Maximum number of items in the page.
+	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// MePasskeysRemove401ApplicationProblemPlusJSONResponseBody defines parameters for MePasskeysRemove.
+type MePasskeysRemove401ApplicationProblemPlusJSONResponseBody struct {
+	union json.RawMessage
+}
+
+// MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody defines parameters for MePasskeysUpdate.
+type MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody struct {
+	union json.RawMessage
+}
+
 // MeTotpRemove401ApplicationProblemPlusJSONResponseBody defines parameters for MeTotpRemove.
 type MeTotpRemove401ApplicationProblemPlusJSONResponseBody struct {
 	union json.RawMessage
@@ -1431,6 +1492,15 @@ type UserMfaReset401ApplicationProblemPlusJSONResponseBody struct {
 	union json.RawMessage
 }
 
+// UserPasskeysListParams defines parameters for UserPasskeysList.
+type UserPasskeysListParams struct {
+	// PageToken Opaque token from `nextPageToken` of the previous page.
+	PageToken *CursorPageParamsPageToken `form:"pageToken,omitempty" json:"pageToken,omitempty"`
+
+	// PageSize Maximum number of items in the page.
+	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
 // UserRolesListParams defines parameters for UserRolesList.
 type UserRolesListParams struct {
 	// PageToken Opaque token from `nextPageToken` of the previous page.
@@ -1475,6 +1545,9 @@ type ClientKeysAddJSONRequestBody = JsonWebKey
 
 // MeApiTokensCreateJSONRequestBody defines body for MeApiTokensCreate for application/json ContentType.
 type MeApiTokensCreateJSONRequestBody = ApiTokenCreate
+
+// MePasskeysUpdateJSONRequestBody defines body for MePasskeysUpdate for application/json ContentType.
+type MePasskeysUpdateJSONRequestBody = PasskeyUpdate
 
 // PermissionManifestsPublishJSONRequestBody defines body for PermissionManifestsPublish for application/json ContentType.
 type PermissionManifestsPublishJSONRequestBody = PermissionManifest
@@ -2284,6 +2357,130 @@ func (t *TokenTypeHint) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsReauthenticationRequired returns the union data inside the MePasskeysRemove401ApplicationProblemPlusJSONResponseBody as a ReauthenticationRequired
+func (t MePasskeysRemove401ApplicationProblemPlusJSONResponseBody) AsReauthenticationRequired() (ReauthenticationRequired, error) {
+	var body ReauthenticationRequired
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromReauthenticationRequired overwrites any union data inside the MePasskeysRemove401ApplicationProblemPlusJSONResponseBody as the provided ReauthenticationRequired
+func (t *MePasskeysRemove401ApplicationProblemPlusJSONResponseBody) FromReauthenticationRequired(v ReauthenticationRequired) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeReauthenticationRequired performs a merge with any union data inside the MePasskeysRemove401ApplicationProblemPlusJSONResponseBody, using the provided ReauthenticationRequired
+func (t *MePasskeysRemove401ApplicationProblemPlusJSONResponseBody) MergeReauthenticationRequired(v ReauthenticationRequired) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsUnauthorized returns the union data inside the MePasskeysRemove401ApplicationProblemPlusJSONResponseBody as a Unauthorized
+func (t MePasskeysRemove401ApplicationProblemPlusJSONResponseBody) AsUnauthorized() (Unauthorized, error) {
+	var body Unauthorized
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromUnauthorized overwrites any union data inside the MePasskeysRemove401ApplicationProblemPlusJSONResponseBody as the provided Unauthorized
+func (t *MePasskeysRemove401ApplicationProblemPlusJSONResponseBody) FromUnauthorized(v Unauthorized) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeUnauthorized performs a merge with any union data inside the MePasskeysRemove401ApplicationProblemPlusJSONResponseBody, using the provided Unauthorized
+func (t *MePasskeysRemove401ApplicationProblemPlusJSONResponseBody) MergeUnauthorized(v Unauthorized) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t MePasskeysRemove401ApplicationProblemPlusJSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *MePasskeysRemove401ApplicationProblemPlusJSONResponseBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsReauthenticationRequired returns the union data inside the MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody as a ReauthenticationRequired
+func (t MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody) AsReauthenticationRequired() (ReauthenticationRequired, error) {
+	var body ReauthenticationRequired
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromReauthenticationRequired overwrites any union data inside the MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody as the provided ReauthenticationRequired
+func (t *MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody) FromReauthenticationRequired(v ReauthenticationRequired) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeReauthenticationRequired performs a merge with any union data inside the MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody, using the provided ReauthenticationRequired
+func (t *MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody) MergeReauthenticationRequired(v ReauthenticationRequired) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsUnauthorized returns the union data inside the MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody as a Unauthorized
+func (t MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody) AsUnauthorized() (Unauthorized, error) {
+	var body Unauthorized
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromUnauthorized overwrites any union data inside the MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody as the provided Unauthorized
+func (t *MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody) FromUnauthorized(v Unauthorized) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeUnauthorized performs a merge with any union data inside the MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody, using the provided Unauthorized
+func (t *MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody) MergeUnauthorized(v Unauthorized) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsReauthenticationRequired returns the union data inside the MeTotpRemove401ApplicationProblemPlusJSONResponseBody as a ReauthenticationRequired
 func (t MeTotpRemove401ApplicationProblemPlusJSONResponseBody) AsReauthenticationRequired() (ReauthenticationRequired, error) {
 	var body ReauthenticationRequired
@@ -2501,6 +2698,15 @@ type ServerInterface interface {
 	// (GET /v1/me/mfa)
 	MeMfaGet(w http.ResponseWriter, r *http.Request)
 
+	// (GET /v1/me/passkeys)
+	MePasskeysList(w http.ResponseWriter, r *http.Request, params MePasskeysListParams)
+
+	// (DELETE /v1/me/passkeys/{passkeyId})
+	MePasskeysRemove(w http.ResponseWriter, r *http.Request, passkeyId string)
+
+	// (PATCH /v1/me/passkeys/{passkeyId})
+	MePasskeysUpdate(w http.ResponseWriter, r *http.Request, passkeyId string)
+
 	// (DELETE /v1/me/totp)
 	MeTotpRemove(w http.ResponseWriter, r *http.Request)
 
@@ -2545,6 +2751,9 @@ type ServerInterface interface {
 
 	// (GET /v1/users/{userId}/mfa)
 	UserMfaGet(w http.ResponseWriter, r *http.Request, userId string)
+
+	// (GET /v1/users/{userId}/passkeys)
+	UserPasskeysList(w http.ResponseWriter, r *http.Request, userId string, params UserPasskeysListParams)
 
 	// (GET /v1/users/{userId}/roles)
 	UserRolesList(w http.ResponseWriter, r *http.Request, userId string, params UserRolesListParams)
@@ -3539,6 +3748,104 @@ func (siw *ServerInterfaceWrapper) MeMfaGet(w http.ResponseWriter, r *http.Reque
 	handler.ServeHTTP(w, r)
 }
 
+// MePasskeysList operation middleware
+func (siw *ServerInterfaceWrapper) MePasskeysList(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params MePasskeysListParams
+
+	// ------------- Optional query parameter "pageToken" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageToken", r.URL.Query(), &params.PageToken, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageToken"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageToken", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageSize", r.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageSize"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageSize", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MePasskeysList(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// MePasskeysRemove operation middleware
+func (siw *ServerInterfaceWrapper) MePasskeysRemove(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "passkeyId" -------------
+	var passkeyId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "passkeyId", r.PathValue("passkeyId"), &passkeyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "passkeyId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MePasskeysRemove(w, r, passkeyId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// MePasskeysUpdate operation middleware
+func (siw *ServerInterfaceWrapper) MePasskeysUpdate(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "passkeyId" -------------
+	var passkeyId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "passkeyId", r.PathValue("passkeyId"), &passkeyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "passkeyId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MePasskeysUpdate(w, r, passkeyId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // MeTotpRemove operation middleware
 func (siw *ServerInterfaceWrapper) MeTotpRemove(w http.ResponseWriter, r *http.Request) {
 
@@ -4007,6 +4314,61 @@ func (siw *ServerInterfaceWrapper) UserMfaGet(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// UserPasskeysList operation middleware
+func (siw *ServerInterfaceWrapper) UserPasskeysList(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "userId" -------------
+	var userId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", r.PathValue("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UserPasskeysListParams
+
+	// ------------- Optional query parameter "pageToken" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageToken", r.URL.Query(), &params.PageToken, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageToken"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageToken", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "pageSize", r.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "pageSize"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pageSize", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UserPasskeysList(w, r, userId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UserRolesList operation middleware
 func (siw *ServerInterfaceWrapper) UserRolesList(w http.ResponseWriter, r *http.Request) {
 
@@ -4363,6 +4725,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/me/api-tokens", wrapper.MeApiTokensCreate)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/me/api-tokens/{tokenId}", wrapper.MeApiTokensRevoke)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/me/mfa", wrapper.MeMfaGet)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/me/passkeys", wrapper.MePasskeysList)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/me/passkeys/{passkeyId}", wrapper.MePasskeysRemove)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/v1/me/passkeys/{passkeyId}", wrapper.MePasskeysUpdate)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/me/totp", wrapper.MeTotpRemove)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/permission-manifests", wrapper.PermissionManifestsList)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/permission-manifests/{app}", wrapper.PermissionManifestsGet)
@@ -4378,6 +4743,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/users/{userId}/invites", wrapper.InvitesCreate)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/users/{userId}/mfa", wrapper.UserMfaReset)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/users/{userId}/mfa", wrapper.UserMfaGet)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/users/{userId}/passkeys", wrapper.UserPasskeysList)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/users/{userId}/roles", wrapper.UserRolesList)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/users/{userId}/roles/{role}", wrapper.UserRolesRemove)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/v1/users/{userId}/roles/{role}", wrapper.UserRolesAssign)
@@ -7264,6 +7630,311 @@ func (response MeMfaGet500ApplicationProblemPlusJSONResponse) VisitMeMfaGetRespo
 	return err
 }
 
+type MePasskeysListRequestObject struct {
+	Params MePasskeysListParams
+}
+
+type MePasskeysListResponseObject interface {
+	VisitMePasskeysListResponse(w http.ResponseWriter) error
+}
+
+type MePasskeysList200JSONResponse PasskeyPage
+
+func (response MePasskeysList200JSONResponse) VisitMePasskeysListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysList400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response MePasskeysList400ApplicationProblemPlusJSONResponse) VisitMePasskeysListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysList401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response MePasskeysList401ApplicationProblemPlusJSONResponse) VisitMePasskeysListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysList403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response MePasskeysList403ApplicationProblemPlusJSONResponse) VisitMePasskeysListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysList500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response MePasskeysList500ApplicationProblemPlusJSONResponse) VisitMePasskeysListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysRemoveRequestObject struct {
+	PasskeyId string `json:"passkeyId"`
+}
+
+type MePasskeysRemoveResponseObject interface {
+	VisitMePasskeysRemoveResponse(w http.ResponseWriter) error
+}
+
+type MePasskeysRemove204Response struct {
+}
+
+func (response MePasskeysRemove204Response) VisitMePasskeysRemoveResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type MePasskeysRemove400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response MePasskeysRemove400ApplicationProblemPlusJSONResponse) VisitMePasskeysRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysRemove401ResponseHeaders struct {
+	WWWAuthenticate *string
+}
+
+type MePasskeysRemove401ApplicationProblemPlusJSONResponse struct {
+	Body    MePasskeysRemove401ApplicationProblemPlusJSONResponseBody
+	Headers MePasskeysRemove401ResponseHeaders
+}
+
+func (response MePasskeysRemove401ApplicationProblemPlusJSONResponse) VisitMePasskeysRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body.union); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.WWWAuthenticate != nil {
+		w.Header().Set("WWW-Authenticate", fmt.Sprint(*response.Headers.WWWAuthenticate))
+	}
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysRemove403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response MePasskeysRemove403ApplicationProblemPlusJSONResponse) VisitMePasskeysRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysRemove404ApplicationProblemPlusJSONResponse NotFound
+
+func (response MePasskeysRemove404ApplicationProblemPlusJSONResponse) VisitMePasskeysRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysRemove409ApplicationProblemPlusJSONResponse Conflict
+
+func (response MePasskeysRemove409ApplicationProblemPlusJSONResponse) VisitMePasskeysRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysRemove500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response MePasskeysRemove500ApplicationProblemPlusJSONResponse) VisitMePasskeysRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysUpdateRequestObject struct {
+	PasskeyId string `json:"passkeyId"`
+	Body      *MePasskeysUpdateJSONRequestBody
+}
+
+type MePasskeysUpdateResponseObject interface {
+	VisitMePasskeysUpdateResponse(w http.ResponseWriter) error
+}
+
+type MePasskeysUpdate200JSONResponse Passkey
+
+func (response MePasskeysUpdate200JSONResponse) VisitMePasskeysUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysUpdate400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response MePasskeysUpdate400ApplicationProblemPlusJSONResponse) VisitMePasskeysUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysUpdate401ResponseHeaders struct {
+	WWWAuthenticate *string
+}
+
+type MePasskeysUpdate401ApplicationProblemPlusJSONResponse struct {
+	Body    MePasskeysUpdate401ApplicationProblemPlusJSONResponseBody
+	Headers MePasskeysUpdate401ResponseHeaders
+}
+
+func (response MePasskeysUpdate401ApplicationProblemPlusJSONResponse) VisitMePasskeysUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body.union); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.WWWAuthenticate != nil {
+		w.Header().Set("WWW-Authenticate", fmt.Sprint(*response.Headers.WWWAuthenticate))
+	}
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysUpdate403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response MePasskeysUpdate403ApplicationProblemPlusJSONResponse) VisitMePasskeysUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysUpdate404ApplicationProblemPlusJSONResponse NotFound
+
+func (response MePasskeysUpdate404ApplicationProblemPlusJSONResponse) VisitMePasskeysUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysUpdate422ApplicationProblemPlusJSONResponse UnprocessableContent
+
+func (response MePasskeysUpdate422ApplicationProblemPlusJSONResponse) VisitMePasskeysUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MePasskeysUpdate500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response MePasskeysUpdate500ApplicationProblemPlusJSONResponse) VisitMePasskeysUpdateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type MeTotpRemoveRequestObject struct {
 }
 
@@ -8732,6 +9403,99 @@ func (response UserMfaGet500ApplicationProblemPlusJSONResponse) VisitUserMfaGetR
 	return err
 }
 
+type UserPasskeysListRequestObject struct {
+	UserId string `json:"userId"`
+	Params UserPasskeysListParams
+}
+
+type UserPasskeysListResponseObject interface {
+	VisitUserPasskeysListResponse(w http.ResponseWriter) error
+}
+
+type UserPasskeysList200JSONResponse PasskeyPage
+
+func (response UserPasskeysList200JSONResponse) VisitUserPasskeysListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserPasskeysList400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response UserPasskeysList400ApplicationProblemPlusJSONResponse) VisitUserPasskeysListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserPasskeysList401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response UserPasskeysList401ApplicationProblemPlusJSONResponse) VisitUserPasskeysListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserPasskeysList403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response UserPasskeysList403ApplicationProblemPlusJSONResponse) VisitUserPasskeysListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserPasskeysList404ApplicationProblemPlusJSONResponse NotFound
+
+func (response UserPasskeysList404ApplicationProblemPlusJSONResponse) VisitUserPasskeysListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserPasskeysList500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response UserPasskeysList500ApplicationProblemPlusJSONResponse) VisitUserPasskeysListResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type UserRolesListRequestObject struct {
 	UserId string `json:"userId"`
 	Params UserRolesListParams
@@ -9305,6 +10069,15 @@ type StrictServerInterface interface {
 	// (GET /v1/me/mfa)
 	MeMfaGet(ctx context.Context, request MeMfaGetRequestObject) (MeMfaGetResponseObject, error)
 
+	// (GET /v1/me/passkeys)
+	MePasskeysList(ctx context.Context, request MePasskeysListRequestObject) (MePasskeysListResponseObject, error)
+
+	// (DELETE /v1/me/passkeys/{passkeyId})
+	MePasskeysRemove(ctx context.Context, request MePasskeysRemoveRequestObject) (MePasskeysRemoveResponseObject, error)
+
+	// (PATCH /v1/me/passkeys/{passkeyId})
+	MePasskeysUpdate(ctx context.Context, request MePasskeysUpdateRequestObject) (MePasskeysUpdateResponseObject, error)
+
 	// (DELETE /v1/me/totp)
 	MeTotpRemove(ctx context.Context, request MeTotpRemoveRequestObject) (MeTotpRemoveResponseObject, error)
 
@@ -9349,6 +10122,9 @@ type StrictServerInterface interface {
 
 	// (GET /v1/users/{userId}/mfa)
 	UserMfaGet(ctx context.Context, request UserMfaGetRequestObject) (UserMfaGetResponseObject, error)
+
+	// (GET /v1/users/{userId}/passkeys)
+	UserPasskeysList(ctx context.Context, request UserPasskeysListRequestObject) (UserPasskeysListResponseObject, error)
 
 	// (GET /v1/users/{userId}/roles)
 	UserRolesList(ctx context.Context, request UserRolesListRequestObject) (UserRolesListResponseObject, error)
@@ -10245,6 +11021,91 @@ func (sh *strictHandler) MeMfaGet(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// MePasskeysList operation middleware
+func (sh *strictHandler) MePasskeysList(w http.ResponseWriter, r *http.Request, params MePasskeysListParams) {
+	var request MePasskeysListRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.MePasskeysList(ctx, request.(MePasskeysListRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "MePasskeysList")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(MePasskeysListResponseObject); ok {
+		if err := validResponse.VisitMePasskeysListResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// MePasskeysRemove operation middleware
+func (sh *strictHandler) MePasskeysRemove(w http.ResponseWriter, r *http.Request, passkeyId string) {
+	var request MePasskeysRemoveRequestObject
+
+	request.PasskeyId = passkeyId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.MePasskeysRemove(ctx, request.(MePasskeysRemoveRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "MePasskeysRemove")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(MePasskeysRemoveResponseObject); ok {
+		if err := validResponse.VisitMePasskeysRemoveResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// MePasskeysUpdate operation middleware
+func (sh *strictHandler) MePasskeysUpdate(w http.ResponseWriter, r *http.Request, passkeyId string) {
+	var request MePasskeysUpdateRequestObject
+
+	request.PasskeyId = passkeyId
+
+	var body MePasskeysUpdateJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.MePasskeysUpdate(ctx, request.(MePasskeysUpdateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "MePasskeysUpdate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(MePasskeysUpdateResponseObject); ok {
+		if err := validResponse.VisitMePasskeysUpdateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // MeTotpRemove operation middleware
 func (sh *strictHandler) MeTotpRemove(w http.ResponseWriter, r *http.Request) {
 	var request MeTotpRemoveRequestObject
@@ -10646,6 +11507,33 @@ func (sh *strictHandler) UserMfaGet(w http.ResponseWriter, r *http.Request, user
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UserMfaGetResponseObject); ok {
 		if err := validResponse.VisitUserMfaGetResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UserPasskeysList operation middleware
+func (sh *strictHandler) UserPasskeysList(w http.ResponseWriter, r *http.Request, userId string, params UserPasskeysListParams) {
+	var request UserPasskeysListRequestObject
+
+	request.UserId = userId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UserPasskeysList(ctx, request.(UserPasskeysListRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UserPasskeysList")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UserPasskeysListResponseObject); ok {
+		if err := validResponse.VisitUserPasskeysListResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

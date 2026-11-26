@@ -59,6 +59,8 @@ type OIDCDeps struct {
 	// MFA reads the second factors of a user. It can be nil. A nil value means
 	// that no user has a second factor.
 	MFA mfa.Repository
+	// PasskeysOn is true when the service accepts passkeys.
+	PasskeysOn bool
 	// RequireMFAForAdmins is the setting IDENTITY_MFA__REQUIRE_FOR_ADMINS.
 	RequireMFAForAdmins bool
 	AuthRequestTTL      time.Duration
@@ -402,6 +404,7 @@ func (o *OIDC) mfaGate(ctx context.Context, req domain.AuthRequest, user domain.
 		if err != nil {
 			return AuthorizeOutcome{}, fmt.Errorf("read the MFA state: %w", err)
 		}
+		state.PasskeysOn = o.d.PasskeysOn
 		if state.Enabled() {
 			req.FreshLoginRequired = true
 			req.CreatedAt = o.now()

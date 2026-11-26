@@ -26,8 +26,12 @@ func NewLogOnly(log *slog.Logger) *LogOnly {
 
 // RecordAudit writes the record identity.audit.
 func (l *LogOnly) RecordAudit(ctx context.Context, e securityevents.AuditEntry) error {
-	l.log.InfoContext(ctx, "identity.audit", "event", "identity.audit", "action", e.Action, "actor", e.Actor,
-		"target_user_id", e.TargetUserID, "result", e.Result, "at", e.At)
+	attrs := []any{"event", "identity.audit", "action", e.Action, "actor", e.Actor,
+		"target_user_id", e.TargetUserID, "result", e.Result, "at", e.At}
+	if len(e.Changes) > 0 {
+		attrs = append(attrs, "changes", e.Changes)
+	}
+	l.log.InfoContext(ctx, "identity.audit", attrs...)
 	return nil
 }
 

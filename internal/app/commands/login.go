@@ -56,6 +56,9 @@ type LoginDeps struct {
 	MFA       mfa.Repository
 	UserRoles userroles.Repository
 	Pending   mfaflow.PendingLogins
+	// PasskeysOn is true when the service accepts passkeys. A stored passkey is a
+	// second factor only then.
+	PasskeysOn bool
 	// RequireMFAForAdmins is the setting IDENTITY_MFA__REQUIRE_FOR_ADMINS.
 	RequireMFAForAdmins bool
 	// Now is the clock. The default is time.Now.
@@ -211,6 +214,7 @@ func (c *LoginCommand) mfaPolicy(ctx context.Context, userID string) (needsMFA, 
 	if err != nil {
 		return false, false, fmt.Errorf("read the MFA state: %w", err)
 	}
+	state.PasskeysOn = c.d.PasskeysOn
 	if c.d.RequireMFAForAdmins && c.d.UserRoles != nil {
 		granted, err := c.d.UserRoles.GrantedPermissions(ctx, userID, domain.ImplicitUserRoles(domain.UserActive)...)
 		if err != nil {

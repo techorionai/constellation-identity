@@ -16,6 +16,22 @@ const contentSecurityPolicy = "default-src 'none'; style-src 'self'; form-action
 // the page show the QR code, which is a PNG in a data URI.
 const contentSecurityPolicyWithImages = "default-src 'none'; style-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 
+// contentSecurityPolicyWithScript is the policy of the pages that use the one
+// script of the service. The script comes from the same origin and calls the
+// same origin only. There is no inline script.
+const contentSecurityPolicyWithScript = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+
+// ContentSecurityPolicyWithScript returns the policy of a page that uses the
+// script of the passkeys. It has script-src 'self' and connect-src 'self'. If
+// the origin is not empty, it is one more origin in form-action, as in
+// ContentSecurityPolicyWithFormAction.
+func ContentSecurityPolicyWithScript(formActionOrigin string) string {
+	if formActionOrigin == "" {
+		return contentSecurityPolicyWithScript
+	}
+	return strings.Replace(contentSecurityPolicyWithScript, "form-action 'self'", "form-action 'self' "+formActionOrigin, 1)
+}
+
 // ContentSecurityPolicyWithFormAction returns the policy of a page with one
 // more origin in form-action. The origin comes from a registered redirect URI
 // that passed the host rules of domain.ValidateRedirectURI, so it cannot add a

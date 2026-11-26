@@ -42,6 +42,7 @@ const (
 	BucketAPITokenCreate   = "api_token_create"
 	BucketManifestPublish  = "manifest_publish"
 	BucketMFAVerify        = "mfa_verify"
+	BucketPasskey          = "passkey"
 )
 
 // Buckets lists the names of all buckets.
@@ -49,6 +50,6 @@ func Buckets() []string {
 	return []string{
 		BucketPublicMeta, BucketOAuthPublic, BucketOAuthBackendIP, BucketTokenIP, BucketIntrospectIP,
 		BucketTokenClient, BucketIntrospectClient, BucketSetupInvite, BucketAPITokenCreate, BucketManifestPublish,
-		BucketMFAVerify,
+		BucketMFAVerify, BucketPasskey,
 	}
 }

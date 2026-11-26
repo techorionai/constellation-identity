@@ -337,7 +337,8 @@ func (e *Env) buildConfig(t testing.TB, opts []Option) (config.Config, *settings
 		// The rule MFA for admins is off by default in a test, so that the tests of
 		// the admin API and the code flow need no TOTP. A test of MFA turns it on with
 		// WithConfigure.
-		MFA: config.MFA{TOTPIssuer: "Constellation", MaxFailuresPerUser: 10, FailureWindow: 15 * time.Minute},
+		MFA:      config.MFA{TOTPIssuer: "Constellation", MaxFailuresPerUser: 10, FailureWindow: 15 * time.Minute},
+		WebAuthn: config.WebAuthn{Enabled: true, RPName: "Constellation"},
 		Retention: config.Retention{
 			Tokens:   retention.Config{Interval: time.Hour, BatchSize: 1000},
 			Sessions: retention.Config{Interval: time.Hour, BatchSize: 1000},

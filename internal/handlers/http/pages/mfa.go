@@ -36,6 +36,19 @@ func setupPath(authRequest, returnTo string) string {
 	return p
 }
 
+// passkeyLink returns the passkey page of the required flow, with the place to
+// go after the registration.
+func passkeyLink(authRequest, returnTo string) string {
+	p := "/account/passkeys?required=1"
+	if authRequest != "" {
+		p += "&authRequest=" + url.QueryEscape(authRequest)
+	}
+	if returnTo != "" {
+		p += "&return_to=" + url.QueryEscape(returnTo)
+	}
+	return p
+}
+
 // setupNext reads the place to go after the setup from the values of a request.
 func setupNext(authRequest, returnTo string) (string, string) {
 	if len(authRequest) > maxAuthRequestLength {
@@ -111,6 +124,7 @@ func (h *Handler) mfaView(w http.ResponseWriter, r *http.Request, v *view) bool 
 		h.serverError(w, r, err)
 		return false
 	}
+	v.HasTOTP, v.HasRecovery, v.UsePasskey = info.HasTOTP, info.HasRecoveryCodes, info.HasPasskey && h.passkeysOn()
 	if info.AuthRequest != "" {
 		// The redirect after the form goes to the redirect URI of the client. The
 		// CSP form-action must have its origin. The auth request can end before
@@ -119,7 +133,7 @@ func (h *Handler) mfaView(w http.ResponseWriter, r *http.Request, v *view) bool 
 		origin, err := h.d.LookupAuthRequest.Execute(r.Context(), info.AuthRequest)
 		switch {
 		case err == nil:
-			w.Header().Set("Content-Security-Policy", ContentSecurityPolicyWithFormAction(origin.FormActionOrigin))
+			w.Header().Set("Content-Security-Policy", h.pageCSP(origin.FormActionOrigin))
 		case errors.Is(err, commands.ErrAuthRequestGone):
 		default:
 			h.serverError(w, r, err)
@@ -220,6 +234,7 @@ func (h *Handler) securityPage(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, http.StatusOK, "account_security", view{
 		Title: "Account security", UserName: res.User.Name, TOTPOn: st.State.HasTOTP,
 		CodesLeft: st.State.CodesRemaining, MFARequired: st.Required,
+		PasskeyOn: h.passkeysOn(), PasskeyCount: st.State.Passkeys,
 	})
 }
 
@@ -231,6 +246,7 @@ func (h *Handler) totpSetupForm(w http.ResponseWriter, r *http.Request) {
 	ar, rt := setupNext(r.URL.Query().Get("authRequest"), r.URL.Query().Get("return_to"))
 	h.renderSetup(w, r, http.StatusOK, res, view{
 		Title: "Set up TOTP", Required: r.URL.Query().Get("required") == "1", AuthRequest: ar, ReturnTo: rt,
+		PasskeyOn: h.passkeysOn(), PasskeyLink: passkeyLink(ar, rt),
 	})
 }
 
@@ -251,6 +267,7 @@ func (h *Handler) renderSetup(w http.ResponseWriter, r *http.Request, status int
 		h.serverError(w, r, err)
 		return
 	}
+	v.PasskeyOn, v.PasskeyLink = h.passkeysOn(), passkeyLink(v.AuthRequest, v.ReturnTo)
 	v.Secret, v.URI = info.Secret, info.URI
 	// The QR code is a PNG in a data URI. The value is not from a user.
 	v.QR = template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(info.QRPNG)) //nolint:gosec // G203: the PNG comes from the service.

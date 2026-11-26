@@ -132,10 +132,15 @@ func (r *MFA) State(ctx context.Context, userID string) (domain.MFAState, error)
 		Scan(&st.CodesRemaining); err != nil {
 		return domain.MFAState{}, fmt.Errorf("count recovery codes: %w", err)
 	}
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM webauthn_credentials WHERE user_id = $1`, userID).
+		Scan(&st.Passkeys); err != nil {
+		return domain.MFAState{}, fmt.Errorf("count passkeys: %w", err)
+	}
 	return st, nil
 }
 
-// RemoveAll deletes the factor and the recovery codes.
+// RemoveAll deletes the TOTP factor and the recovery codes. It does not touch
+// the passkeys.
 func (r *MFA) RemoveAll(ctx context.Context, userID string) (bool, error) {
 	had := false
 	err := inTx(ctx, r.pool, func(ctx context.Context, q clientspg.Querier) error {

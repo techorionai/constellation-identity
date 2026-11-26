@@ -164,13 +164,29 @@ func (r *Sessions) DropSecondFactor(_ context.Context, userID string) error {
 	defer r.mu.Unlock()
 	for id, s := range r.Rows {
 		if s.UserID == userID && s.RevokedAt == nil {
+			hasKey := slices.Contains(s.AuthMethods, domain.AMRHardwareKey)
 			s.AuthMethods = slices.DeleteFunc(slices.Clone(s.AuthMethods), func(m string) bool {
-				return m == domain.AMROTP || m == domain.AMRRecovery || m == domain.AMRMFA
+				return m == domain.AMROTP || m == domain.AMRRecovery || (m == domain.AMRMFA && !hasKey)
 			})
 			r.Rows[id] = s
 		}
 	}
 	return nil
+}
+
+// RevokeWithMethod revokes the sessions of a user that have a method.
+func (r *Sessions) RevokeWithMethod(_ context.Context, userID, method string, now time.Time) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for id, s := range r.Rows {
+		if s.UserID == userID && s.RevokedAt == nil && slices.Contains(s.AuthMethods, method) {
+			s.RevokedAt = &now
+			r.Rows[id] = s
+			n++
+		}
+	}
+	return n, nil
 }
 
 // RevokeByTokenHash revokes a session.

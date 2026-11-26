@@ -56,6 +56,22 @@ func (w *Web) SetCookie(name, value string) {
 // sent as a form if form is not nil.
 func (w *Web) Do(t testing.TB, method, path string, form url.Values) (Response, []byte) {
 	t.Helper()
+	if form != nil {
+		return w.DoBody(t, method, path, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	}
+	return w.DoBody(t, method, path, "", nil)
+}
+
+// PostJSON sends a POST request with a JSON body.
+func (w *Web) PostJSON(t testing.TB, path string, body []byte) (Response, []byte) {
+	t.Helper()
+	return w.DoBody(t, http.MethodPost, path, "application/json", bytes.NewReader(body))
+}
+
+// DoBody sends a request with a body and a content type. An empty content type
+// sets no header.
+func (w *Web) DoBody(t testing.TB, method, path, contentType string, body io.Reader) (Response, []byte) {
+	t.Helper()
 	if i := strings.Index(path, "://"); i >= 0 {
 		u, err := url.Parse(path)
 		if err != nil {
@@ -63,16 +79,12 @@ func (w *Web) Do(t testing.TB, method, path string, form url.Values) (Response, 
 		}
 		path = u.RequestURI()
 	}
-	var body io.Reader
-	if form != nil {
-		body = strings.NewReader(form.Encode())
-	}
 	req, err := http.NewRequestWithContext(context.Background(), method, w.srv.PublicURL+path, body)
 	if err != nil {
 		t.Fatalf("testserver: request: %v", err)
 	}
-	if form != nil {
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	for k, vs := range w.Header {
 		for _, v := range vs {

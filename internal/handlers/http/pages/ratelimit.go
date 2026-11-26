@@ -17,6 +17,13 @@ var pageBuckets = map[string]string{
 	"/setup":                    ratelimit.BucketSetupInvite,
 	"/invite":                   ratelimit.BucketSetupInvite,
 	"/login/mfa":                ratelimit.BucketMFAVerify,
+	// The six JSON routes of the passkeys share one bucket.
+	"/login/passkey/options":     ratelimit.BucketPasskey,
+	"/login/passkey/finish":      ratelimit.BucketPasskey,
+	"/login/mfa/passkey/options": ratelimit.BucketPasskey,
+	"/login/mfa/passkey/finish":  ratelimit.BucketPasskey,
+	"/account/passkeys/options":  ratelimit.BucketPasskey,
+	"/account/passkeys/finish":   ratelimit.BucketPasskey,
 }
 
 // rateLimit counts each request of a limited page in its IP bucket. It runs
@@ -30,7 +37,8 @@ func (h *Handler) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bucket, ok := pageBuckets[r.URL.Path]
 		// The bucket mfa_verify counts the check of a code (POST) only.
-		if !ok || r.Method == http.MethodOptions || (bucket == ratelimit.BucketMFAVerify && r.Method != http.MethodPost) {
+		countsPostOnly := bucket == ratelimit.BucketMFAVerify || bucket == ratelimit.BucketPasskey
+		if !ok || r.Method == http.MethodOptions || (countsPostOnly && r.Method != http.MethodPost) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -51,11 +59,19 @@ func (h *Handler) rateLimit(next http.Handler) http.Handler {
 			return
 		}
 		if re, ok := apperrors.AsRateLimited(err); ok {
+			if jsonRoutes[r.URL.Path] {
+				h.jsonRateLimited(w, re)
+				return
+			}
 			w.Header().Set("Retry-After", strconv.Itoa(max(apperrors.RetryAfterSeconds(re.RetryAfter), 1)))
 			h.message(w, r, http.StatusTooManyRequests, "Too many requests", "Too many requests. Try again later.")
 			return
 		}
 		w.Header().Set("Retry-After", strconv.Itoa(apperrors.RetryAfterSeconds(apperrors.DefaultUnavailableRetryAfter)))
+		if jsonRoutes[r.URL.Path] {
+			h.jsonError(w, http.StatusServiceUnavailable, "unavailable")
+			return
+		}
 		h.message(w, r, http.StatusServiceUnavailable, "Service not available", "The service is not available. Try again later.")
 	})
 }
