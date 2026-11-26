@@ -7901,15 +7901,25 @@ func (response MeApiTokensCreate500ApplicationProblemPlusJSONResponse) VisitMeAp
 	return err
 }
 
-type MeApiTokensCreate503ApplicationProblemPlusJSONResponse ServiceUnavailable
+type MeApiTokensCreate503ResponseHeaders struct {
+	RetryAfter *int32
+}
+
+type MeApiTokensCreate503ApplicationProblemPlusJSONResponse struct {
+	Body    ServiceUnavailable
+	Headers MeApiTokensCreate503ResponseHeaders
+}
 
 func (response MeApiTokensCreate503ApplicationProblemPlusJSONResponse) VisitMeApiTokensCreateResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
 	w.WriteHeader(503)
 	_, err := buf.WriteTo(w)
 	return err
@@ -8965,15 +8975,25 @@ func (response PermissionManifestsPublish500ApplicationProblemPlusJSONResponse) 
 	return err
 }
 
-type PermissionManifestsPublish503ApplicationProblemPlusJSONResponse ServiceUnavailable
+type PermissionManifestsPublish503ResponseHeaders struct {
+	RetryAfter *int32
+}
+
+type PermissionManifestsPublish503ApplicationProblemPlusJSONResponse struct {
+	Body    ServiceUnavailable
+	Headers PermissionManifestsPublish503ResponseHeaders
+}
 
 func (response PermissionManifestsPublish503ApplicationProblemPlusJSONResponse) VisitPermissionManifestsPublishResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
 	w.WriteHeader(503)
 	_, err := buf.WriteTo(w)
 	return err
