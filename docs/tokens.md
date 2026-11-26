@@ -143,11 +143,30 @@ A token with no `amr` (a service, agent, exchange, or API token), and a token wi
 
 A client must not refresh the token to answer this. A refresh keeps the old `auth_time`. The client starts a new authorization request with `max_age` (and `prompt=login`). The login asks for the password and the second factor. The new code, ID token, and access token have the new `amr` and `auth_time`.
 
+## Fresh login with no second factor
+
+`MeIdentityLinks_remove` needs a fresh login, not a fresh MFA login: `auth_time` is 5 minutes old or less and `act` is absent. It does not check `mfa`. The 401 has the same body as the step-up and the header `WWW-Authenticate: Bearer error="insufficient_user_authentication", error_description="A fresh login is necessary", max_age="300"`. A token with no `auth_time` and an API token do not satisfy it.
+
+## The claim `amr`
+
+| Login | `amr` |
+| ----- | ----- |
+| Password | `["pwd"]` |
+| Password and TOTP | `["pwd","otp","mfa"]` |
+| Password and recovery code | `["pwd","rec","mfa"]` |
+| Password and passkey | `["pwd","hwk","mfa"]`, and `["pwd","hwk","user","mfa"]` with user verification |
+| Passkey only | `["hwk","user","mfa"]` |
+| Google or Microsoft | `["fed"]` |
+| Google or Microsoft and TOTP | `["fed","otp","mfa"]` |
+| Google or Microsoft and recovery code | `["fed","rec","mfa"]` |
+| Google or Microsoft and passkey | `["fed","hwk","mfa"]`, and `["fed","hwk","user","mfa"]` with user verification |
+
 ## Personal API tokens
 
 A personal API token is a long-lived credential of one user. A user makes, lists, and revokes own tokens with `MeApiTokens_create`, `MeApiTokens_list`, and `MeApiTokens_revoke`. These operations need the access token of a user with the scope `identity:api_token:manage_own`. A service token, a token with an acting principal (`act`), and a `cpat_` value give 403 `user_token_required`. A `cpat_` value as the bearer token on a `/v1` route gives 401, because the `/v1` routes accept JWTs only.
 
 - Each user with the status `active` has the implicit role `identity:user`. It grants `identity:api_token:manage_own`. See [manifests.md](manifests.md). A user with no role can make a token.
+- The service records the `amr` of the session that made the token (column `api_tokens.amr`). The API does not show it. The removal of a link revokes the tokens with `fed`, and the removal of a passkey revokes the tokens with `hwk`. A token that was made before the migration `0014` has an empty `amr`, so no removal revokes it. A user can revoke such a token by hand.
 - Format: `cpat_` and 43 base64url characters (32 random bytes). The service stores only the SHA-256 hash (hex). The response of create shows the token one time. It has `Cache-Control: no-store`. The service never logs the token or the hash.
 - `name` has 1 to 100 characters after trim. `expiresInDays` is an integer from 1 to `IDENTITY_API_TOKEN__MAX_TTL_DAYS`. The default is `IDENTITY_API_TOKEN__DEFAULT_TTL_DAYS`. A bad name, a bad `expiresInDays`, an empty scope, an OIDC scope, and a value that is not a permission key give 400 `invalid_request`.
 - `scope` has permission keys. Each key must be in the permissions of the user at the time of create. For each key that is not, the response is 422 with one field error (`field` `/scope`, `code` `scope_not_granted`). A key of the app `identity` is never possible, also for an admin. The reason is that a token with a long life must not carry the highest privilege of the identity service.

@@ -5,7 +5,7 @@ The service follows the hexagonal architecture guide of the planner repository. 
 ## Layout
 
 ```txt
-cmd/identity/main.go            Starts the service. Subcommands "healthcheck", "rotate-signing-keys", "setup-link", and "unlock-login".
+cmd/identity/main.go            Starts the service. Subcommands "healthcheck", "rotate-signing-keys", "setup-link", "unlock-login", "reset-mfa", and "set-idp-secret".
 api/openapi/                    Constellation.Identity.openapi.yaml, identity-manifest.json, CONTRACTS_VERSION
 internal/domain/                Pure types and rules (signing keys, clients, manifests, roles, assertions, scopes)
 internal/ports/<port>/          Interfaces
@@ -13,7 +13,8 @@ internal/adapters/postgres/     Repositories and the "jtistore" adapter
 internal/adapters/secrets/      Adapter of the port "privatekeys" on platform-go secrets
 internal/adapters/jose/         Adapters of the ports "tokensigner", "tokenverifier", and "assertion" with go-jose
 internal/adapters/argon2/       Adapter of the port "passwordhasher" (argon2id, NFC, hash slots)
-internal/adapters/valkey/       Adapters of the ports "loginlimiter" (login failure counters), "ratelimit" (request counters), and "authflow" (auth requests, codes, used-code markers)
+internal/adapters/valkey/       Adapters of the ports "loginlimiter" (login failure counters), "ratelimit" (request counters), "authflow" (auth requests, codes, used-code markers), and "idpflow" (upstream flow records)
+internal/adapters/oidc/         Adapter of the port "upstreamidp" (go-oidc and x/oauth2)
 internal/app/{commands,queries} Use cases with platform-go executors and decorators
 internal/app/keys/              Key manager and in-memory key cache
 internal/handlers/http/         Generated server (gen/), handlers
@@ -60,6 +61,10 @@ The `.golangci.yml` file has `depguard` rules for the import table of the guide.
 | Passkeys and WebAuthn user handles (table `webauthn_credentials`, column `users.webauthn_user_handle`) | `internal/ports/passkeys` | `internal/adapters/postgres` |
 | WebAuthn ceremonies | `internal/ports/webauthn` | `internal/adapters/webauthn` (`github.com/go-webauthn/webauthn`) |
 | Audit entries and security notices | `internal/ports/securityevents` | `internal/adapters/securityevents` (log only) |
+| Links to upstream accounts (table `identity_links`) | `internal/ports/identitylinks` | `internal/adapters/postgres` |
+| Upstream providers (Google, Microsoft) | `internal/ports/upstreamidp` | `internal/adapters/oidc` (`go-oidc`, `x/oauth2`, and a key set for the Microsoft tenant `organizations`) |
+| Records of the upstream flows | `internal/ports/idpflow` | `internal/adapters/valkey` (`SET`, `GETDEL`) |
+| Client secrets of the upstream providers | `internal/ports/idpsecrets` | `internal/adapters/secrets` (`platform-go` `secrets.Service`) |
 
 The port `securityevents` has one method for the audit entry and one for the security notice. The service has no audit store and no email channel yet, so the adapter writes one log record for each call. R08, R09, and R12 replace the adapter. The commands do not change.
 
@@ -67,7 +72,7 @@ The ports of the sessions, users, user roles, clients, and client roles have the
 
 ## Routes
 
-`oapi-codegen` makes the `std-http-server` and `strict-server` code for all operations of the contract. One generated router serves OAuth, discovery, and `/v1`. The service uses no OIDC provider library. The `go-jose` library signs JWTs.
+`oapi-codegen` makes the `std-http-server` and `strict-server` code for all operations of the contract. One generated router serves OAuth, discovery, and `/v1`. The service uses `github.com/coreos/go-oidc/v3` and `golang.org/x/oauth2` as a client of the upstream providers Google and Microsoft. It is still not an OIDC provider library: the service signs and verifies its own tokens with `go-jose`.
 
 The middleware chain is `otelhttp`, then `requestid`, then a body limit of 1 MiB, then the router. Each `/v1` route adds `auth.Middleware` and `auth.RequireScopes` with the `x-required-scopes` list of the operation. The route pattern of the router gives the list. See [tokens.md](tokens.md).
 
@@ -89,10 +94,11 @@ The token endpoint is the use case `IssueServiceToken` in `internal/app/commands
 | `GET /login/mfa`, `POST /login/mfa`, `GET /account/security`, `GET /account/totp`, `POST /account/totp`, `POST /account/totp/remove`, `POST /account/recovery-codes` | HTML pages of the second factor and of the MFA settings. They are not in the OpenAPI file. See [security.md](security.md). |
 | `GET /account/passkeys`, `POST /account/passkeys/{id}/rename`, `POST /account/passkeys/{id}/remove` | HTML page and forms of the passkeys. No script is necessary for the rename and the removal. |
 | `POST /account/passkeys/options`, `POST /account/passkeys/finish`, `POST /login/passkey/options`, `POST /login/passkey/finish`, `POST /login/mfa/passkey/options`, `POST /login/mfa/passkey/finish` | JSON routes of the WebAuthn ceremonies. The script calls them. They are not in the OpenAPI file. |
+| `GET /login/oidc/{provider}`, `GET /login/oidc/{provider}/callback`, `POST /account/identity-links/{provider}/remove`, `GET /account/password`, `POST /account/password` | HTML routes of the login with an upstream account, of the links on the account page, and of the first password of a user that has none. They are not in the OpenAPI file. See [security.md](security.md). |
 | `GET /assets/passkey.js` | The one script of the service (embedded). It gives 404 when passkeys are off. |
 | `GET /login`, `POST /login`, `GET /login/done`, `POST /logout`, `GET /setup`, `POST /setup`, `GET /invite`, `POST /invite`, `GET /assets/pages.css` | HTML pages. They are not in the OpenAPI file. See [security.md](security.md). |
 
-The pages are on a router in front of the generated router. The chain is `RedactToken`, then `otelhttp`, then `requestid`, then `RestoreQuery`, then the router of the pages or the generated router. `RedactToken` replaces the values of `token`, `code`, `code_verifier`, `refresh_token`, `id_token_hint`, `authRequest`, `state`, and `nonce` with `REDACTED` in the URL, so no span and no log record holds a secret. It keeps the real query in the request context, and `RestoreQuery` puts it back for the handlers. The pages use `html/template` with embedded templates, one embedded CSS file, and one embedded script (`assets/passkey.js`) for the three pages that run the passkey ceremonies.
+The pages are on a router in front of the generated router. The chain is `RedactToken`, then `otelhttp`, then `requestid`, then `RestoreQuery`, then the router of the pages or the generated router. `RedactToken` replaces the values of `token`, `code`, `code_verifier`, `refresh_token`, `id_token_hint`, `authRequest`, `state`, `nonce`, `id_token`, `error_description`, and `session_state` with `REDACTED` in the URL, so no span and no log record holds a secret. It keeps the real query in the request context, and `RestoreQuery` puts it back for the handlers. The pages use `html/template` with embedded templates, one embedded CSS file, and one embedded script (`assets/passkey.js`) for the three pages that run the passkey ceremonies.
 
 The use cases of the users are in `internal/app/commands/` (`EnsureSetupToken`, `ReplaceSetupToken`, `CompleteSetup`, `CreateUser`, `CreateInvite`, `AcceptInvite`, `Login`, `Logout`, `TouchSession`) and `internal/app/queries/` (`SessionFromCookie`, `CheckOneTimeToken`). The code flow is in `internal/app/commands/oidc.go` (`OIDC`: `StartAuthorization`, `CompleteAuthorization`, `ExchangeCode`, `RefreshTokens`, `RevokeToken`, `StartEndSession`, `ConfirmEndSession`, `GetUserInfo`). The admin API is in `internal/app/commands/admin.go` (`Admin`) and calls `CreateUser` and `CreateInvite`. The CORS origin query is in `internal/app/queries/cors.go`. The `Login` command keeps the session at a re-login of the same user.
 
