@@ -16,6 +16,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/ports/mfaflow"
 	"github.com/techorionai/constellation-identity/internal/ports/passkeys"
 	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/sessions"
 	"github.com/techorionai/constellation-identity/internal/ports/users"
 	"github.com/techorionai/constellation-identity/internal/ports/webauthn"
 )
@@ -241,6 +242,18 @@ func (m *MFA) FinishPasskeyRegistration(ctx context.Context, in FinishPasskey) (
 		Transports: c.Transports, BackupEligible: c.BackupEligible,
 	}
 	err = m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		// Lock the user row, then check the session again. A reset of the MFA
+		// that ran first revoked the session, so the insert does not happen (R11).
+		if _, err := m.d.Users.LockByID(ctx, in.UserID); err != nil {
+			return err
+		}
+		sess, err := m.d.Sessions.GetByID(ctx, in.SessionID)
+		if errors.Is(err, sessions.ErrNotFound) || (err == nil && !sess.Valid(m.now())) {
+			return ErrCeremonyGone
+		}
+		if err != nil {
+			return err
+		}
 		if err := m.d.Passkeys.Insert(ctx, pk, domain.MaxPasskeys); err != nil {
 			return err
 		}
@@ -250,6 +263,9 @@ func (m *MFA) FinishPasskeyRegistration(ctx context.Context, in FinishPasskey) (
 		return nil
 	}, txName("finish_passkey_registration"))
 	switch {
+	case errors.Is(err, ErrCeremonyGone):
+		m.ceremony(ctx, CeremonyTypeRegister, CeremonyOutcomeExpired)
+		return PasskeyAdded{}, ErrCeremonyGone
 	case errors.Is(err, passkeys.ErrLimit):
 		return PasskeyAdded{}, ErrPasskeyLimit
 	case errors.Is(err, passkeys.ErrCredentialExists):
@@ -667,33 +683,42 @@ func (m *MFA) RemovePasskey(ctx context.Context, in RemovePasskey) error {
 	if m.d.Passkeys == nil || !uuidPattern.MatchString(in.PasskeyID) {
 		return ErrPasskeyNotFound
 	}
-	if _, err := m.d.Passkeys.Get(ctx, in.UserID, in.PasskeyID); errors.Is(err, passkeys.ErrNotFound) {
-		return ErrPasskeyNotFound
-	} else if err != nil {
-		return fmt.Errorf("get the passkey: %w", err)
-	}
-	state, err := m.state(ctx, in.UserID)
-	if err != nil {
-		return fmt.Errorf("read the MFA state: %w", err)
-	}
-	required, err := m.needsMFA(ctx, in.UserID)
-	if err != nil {
-		return err
-	}
-	// Before the removal the user has an accepted second factor if TOTP exists or
-	// an accepted passkey exists. The removal must not take the last one.
-	if required && !state.HasTOTP && state.AcceptedPasskeys() == 1 {
-		return ErrMFARequired
-	}
-	err = m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+	// The user row is locked first, so two removals of one user run in sequence.
+	// The check of the rule and the removal are in the same transaction (R1).
+	err := m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if _, err := m.d.Users.LockByID(ctx, in.UserID); err != nil {
+			return err
+		}
+		if _, err := m.d.Passkeys.Get(ctx, in.UserID, in.PasskeyID); err != nil {
+			return err
+		}
+		state, err := m.state(ctx, in.UserID)
+		if err != nil {
+			return fmt.Errorf("read the MFA state: %w", err)
+		}
+		required, err := m.needsMFA(ctx, in.UserID)
+		if err != nil {
+			return err
+		}
+		// Before the removal the user has an accepted second factor if TOTP exists or
+		// an accepted passkey exists. The removal must not take the last one.
+		if required && !state.HasTOTP && state.AcceptedPasskeys() == 1 {
+			return ErrMFARequired
+		}
 		if err := m.d.Passkeys.Remove(ctx, in.UserID, in.PasskeyID); err != nil {
 			return err
 		}
 		// A session does not record which passkey made it. All sessions and
 		// families with a passkey end.
-		_, err := m.d.Sessions.RevokeWithMethod(ctx, in.UserID, domain.AMRHardwareKey, m.now())
+		_, err = m.d.Sessions.RevokeWithMethod(ctx, in.UserID, domain.AMRHardwareKey, m.now())
 		return err
 	}, txName("remove_passkey"))
+	if errors.Is(err, ErrMFARequired) {
+		return ErrMFARequired
+	}
+	if errors.Is(err, users.ErrNotFound) {
+		return ErrPasskeyNotFound
+	}
 	if errors.Is(err, passkeys.ErrNotFound) {
 		return ErrPasskeyNotFound
 	}

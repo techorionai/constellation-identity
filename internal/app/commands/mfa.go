@@ -703,29 +703,40 @@ type RemoveTOTP struct {
 // ErrMFARequired when the policy needs MFA for the user and no passkey that the
 // service accepts stays. It writes the audit entry and sends the notice.
 func (m *MFA) RemoveTOTP(ctx context.Context, in RemoveTOTP) error {
-	state, err := m.state(ctx, in.UserID)
-	if err != nil {
-		return fmt.Errorf("read the MFA state: %w", err)
-	}
-	if !state.HasTOTP {
-		return ErrTOTPNotFound
-	}
-	required, err := m.needsMFA(ctx, in.UserID)
-	if err != nil {
-		return err
-	}
-	// A passkey that the service accepts stays as the second factor.
-	if required && state.AcceptedPasskeys() == 0 {
-		return ErrMFARequired
-	}
-	// The other sessions and the refresh token families of the user lose the
-	// methods of the second factor (R4).
-	err = m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+	// The user row is locked first, so two removals of one user run in sequence.
+	// The check of the rule and the removal are in the same transaction (R1).
+	err := m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if _, err := m.d.Users.LockByID(ctx, in.UserID); err != nil {
+			return err
+		}
+		state, err := m.state(ctx, in.UserID)
+		if err != nil {
+			return fmt.Errorf("read the MFA state: %w", err)
+		}
+		if !state.HasTOTP {
+			return ErrTOTPNotFound
+		}
+		required, err := m.needsMFA(ctx, in.UserID)
+		if err != nil {
+			return err
+		}
+		// A passkey that the service accepts stays as the second factor.
+		if required && state.AcceptedPasskeys() == 0 {
+			return ErrMFARequired
+		}
+		// The other sessions and the refresh token families of the user lose the
+		// methods of the second factor (R4).
 		if _, err := m.d.MFA.RemoveAll(ctx, in.UserID); err != nil {
 			return err
 		}
 		return m.d.Sessions.DropSecondFactor(ctx, in.UserID)
 	}, txName("remove_totp"))
+	if errors.Is(err, ErrTOTPNotFound) || errors.Is(err, ErrMFARequired) {
+		return err
+	}
+	if errors.Is(err, users.ErrNotFound) {
+		return ErrTOTPNotFound
+	}
 	if err != nil {
 		return fmt.Errorf("remove the factors: %w", err)
 	}
@@ -758,6 +769,11 @@ func (m *MFA) ResetMFA(ctx context.Context, in ResetMFA) error {
 		return ErrMFARequired
 	}
 	err := m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		// Lock the user row first. A registration that finishes in parallel waits
+		// and then finds its session revoked (R11).
+		if _, err := m.d.Users.LockByID(ctx, in.UserID); err != nil {
+			return err
+		}
 		if _, err := m.d.MFA.RemoveAll(ctx, in.UserID); err != nil {
 			return err
 		}

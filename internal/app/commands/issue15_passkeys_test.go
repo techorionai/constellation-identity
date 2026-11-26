@@ -117,7 +117,10 @@ func TestIssue15_U12_Registration(t *testing.T) {
 	p := newPasskeyEnv(t)
 	p.buildPasskeys(t, true)
 	const sessionID = "session-reg"
-	p.sessions.Rows[sessionID] = domain.Session{ID: sessionID, UserID: userA, AuthMethods: []string{"pwd"}}
+	p.sessions.Rows[sessionID] = domain.Session{
+		ID: sessionID, UserID: userA, AuthMethods: []string{"pwd"},
+		IdleExpiresAt: p.clock().Add(time.Hour), ExpiresAt: p.clock().Add(time.Hour),
+	}
 	if _, err := p.cmd.BeginPasskeyRegistration(ctx, commands.BeginPasskey{SessionID: sessionID, UserID: userA, Name: "My key"}); err != nil {
 		t.Fatal(err)
 	}
@@ -273,5 +276,34 @@ func TestIssue15_PasskeyLoginCommand(t *testing.T) {
 	// A token that was used is gone.
 	if _, err := p.cmd.FinishPasskeyLogin(ctx, commands.PasskeyLogin{Token: out.Token, Body: handle}); !errors.Is(err, commands.ErrCeremonyGone) {
 		t.Fatalf("used token: %v", err)
+	}
+}
+
+// R11: a registration that finishes after the reset of the MFA finds its session
+// revoked in the insert transaction. The passkey is not stored.
+func TestIssue15_R11_RegistrationAfterReset(t *testing.T) {
+	p := newPasskeyEnv(t)
+	p.buildPasskeys(t, true)
+	const sessionID = "session-r11"
+	p.sessions.Rows[sessionID] = domain.Session{
+		ID: sessionID, UserID: userA, AuthMethods: []string{"pwd"},
+		IdleExpiresAt: p.clock().Add(time.Hour), ExpiresAt: p.clock().Add(time.Hour),
+	}
+	if _, err := p.cmd.BeginPasskeyRegistration(ctx, commands.BeginPasskey{SessionID: sessionID, UserID: userA, Name: "Late"}); err != nil {
+		t.Fatal(err)
+	}
+	p.wa.Registered = webauthn.Credential{ID: []byte("late-credential"), PublicKey: []byte("pk")}
+	revoked := p.clock()
+	row := p.sessions.Rows[sessionID]
+	row.RevokedAt = &revoked
+	p.sessions.Rows[sessionID] = row
+	_, err := p.cmd.FinishPasskeyRegistration(ctx, commands.FinishPasskey{
+		SessionID: sessionID, UserID: userA, SessionMethods: []string{"pwd"}, Body: []byte("{}"),
+	})
+	if !errors.Is(err, commands.ErrCeremonyGone) {
+		t.Fatalf("finish = %v, want ErrCeremonyGone", err)
+	}
+	if n, _ := p.keys.Count(ctx, userA); n != 0 {
+		t.Fatalf("no passkey may be stored, count = %d", n)
 	}
 }

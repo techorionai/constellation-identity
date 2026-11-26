@@ -4,6 +4,7 @@ package services_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -1020,6 +1021,59 @@ func TestIssue15AdminIntegration(t *testing.T) {
 		resp2, m := g.apiRaw(tok, http.MethodDelete, "/v1/me/passkeys/"+id, "")
 		if resp2.StatusCode != http.StatusConflict || m["code"] != "mfa_required" {
 			t.Fatalf("remove with the API: %d %v", resp2.StatusCode, m)
+		}
+	})
+
+	// R1: two parallel removals of the last two second factors of a required admin. One removal
+	// gives 204 and the other gives 409 mfa_required. One factor stays.
+	t.Run("R1_parallel_removals", func(t *testing.T) {
+		race := func(t *testing.T, a, b string, tok string) []int {
+			t.Helper()
+			codes := make([]int, 2)
+			start := make(chan struct{})
+			var wg sync.WaitGroup
+			for i, path := range []string{a, b} {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					resp, _ := g.apiRaw(tok, http.MethodDelete, path, "")
+					codes[i] = resp.StatusCode
+				}()
+			}
+			close(start)
+			wg.Wait()
+			slices.Sort(codes)
+			return codes
+		}
+		want := []int{http.StatusNoContent, http.StatusConflict}
+		for i := range 4 {
+			// Two passkeys.
+			u := g.newPasskeyUserWith(adminTok(), fmt.Sprintf("r1-pp-%d@example.com", i), swa.ES256)
+			if resp, m := g.api(adminTok(), http.MethodPut, "/v1/users/"+u.id+"/roles/identity:admin", nil); resp.StatusCode != http.StatusOK {
+				t.Fatalf("assign: %d %v", resp.StatusCode, m)
+			}
+			if resp, m := g.registerPasskey(u.web, g.newAuthenticator(swa.ES256), "Second"); resp.StatusCode != http.StatusOK {
+				t.Fatalf("second passkey: %v", m)
+			}
+			ids := g.passkeyIDs(u.id)
+			tok := g.passkeyToken(u, passkeyScope)
+			if got := race(t, "/v1/me/passkeys/"+ids[0], "/v1/me/passkeys/"+ids[1], tok); !slices.Equal(got, want) || g.passkeyRows(u.id) != 1 {
+				t.Fatalf("passkey and passkey, try %d: %v, rows %d", i, got, g.passkeyRows(u.id))
+			}
+
+			// TOTP and one passkey.
+			v := g.newPasskeyUserWith(adminTok(), fmt.Sprintf("r1-tp-%d@example.com", i), swa.ES256)
+			if resp, m := g.api(adminTok(), http.MethodPut, "/v1/users/"+v.id+"/roles/identity:admin", nil); resp.StatusCode != http.StatusOK {
+				t.Fatalf("assign: %d %v", resp.StatusCode, m)
+			}
+			g.setupTOTP(v.web)
+			id := g.passkeyIDs(v.id)[0]
+			tok = g.passkeyToken(v, passkeyScope)
+			totp := func() int { return g.countWhere(`SELECT count(*) FROM user_totp WHERE user_id = $1`, v.id) }
+			if got := race(t, "/v1/me/totp", "/v1/me/passkeys/"+id, tok); !slices.Equal(got, want) || totp()+g.passkeyRows(v.id) != 1 {
+				t.Fatalf("TOTP and passkey, try %d: %v, totp %d, passkeys %d", i, got, totp(), g.passkeyRows(v.id))
+			}
 		}
 	})
 }
