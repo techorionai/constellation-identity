@@ -1,6 +1,7 @@
 package commands_test
 
 import (
+	"bytes"
 	"errors"
 	"log/slog"
 	"strings"
@@ -97,9 +98,14 @@ func (m *mfaEnv) enable(t *testing.T, userID, email string) ([]byte, []string) {
 	if info.Secret == "" || !strings.HasPrefix(info.URI, "otpauth://totp/") || len(info.QRPNG) == 0 {
 		t.Fatalf("setup info = %+v", info)
 	}
-	secret, err := m.setups.Get(ctx, domain.HashSecret(sessionID))
+	sealed, err := m.setups.Get(ctx, domain.HashSecret(sessionID))
 	if err != nil {
 		t.Fatal(err)
+	}
+	// R3: the store holds the secret sealed, with an identifier that is not the user ID.
+	secret, err := mock.Sealer{}.Open("setup:"+userID, sealed)
+	if err != nil || bytes.Equal(sealed, secret) {
+		t.Fatalf("the setup secret is not sealed: %v", err)
 	}
 	m.sessions.Rows[sessionID] = domain.Session{ID: sessionID, UserID: userID}
 	res, err := m.cmd.FinishSetup(ctx, commands.FinishSetup{SessionID: sessionID, UserID: userID, Code: m.code(secret, m.now)})
@@ -190,9 +196,9 @@ func TestU4_PasswordThenPending(t *testing.T) {
 	if err != nil || p.UserID != userA || strings.Join(p.Methods, " ") != "pwd" {
 		t.Fatalf("pending = %+v, %v", p, err)
 	}
-	// The email counter stays until the second factor is good.
-	if m.limiter.Emails["a@example.com"] != 1 {
-		t.Fatalf("email counter = %d", m.limiter.Emails["a@example.com"])
+	// R8: the good password resets the password counters. The second factor has its own counters.
+	if n := m.limiter.Emails["a@example.com"]; n != 0 {
+		t.Fatalf("email counter = %d", n)
 	}
 }
 

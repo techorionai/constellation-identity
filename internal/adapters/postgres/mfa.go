@@ -93,6 +93,18 @@ func (r *MFA) UseRecoveryCode(ctx context.Context, userID string, hash []byte, n
 	return tag.RowsAffected() == 1, nil
 }
 
+// HasRecoveryCode tells whether an unused code with the hash exists.
+func (r *MFA) HasRecoveryCode(ctx context.Context, userID string, hash []byte) (bool, error) {
+	var ok bool
+	err := clientspg.Conn(ctx, r.pool).QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM recovery_codes WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL)`,
+		userID, hash).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("find recovery code: %w", err)
+	}
+	return ok, nil
+}
+
 // ReplaceRecoveryCodes deletes all codes of the user and adds the new set.
 func (r *MFA) ReplaceRecoveryCodes(ctx context.Context, userID string, hashes [][]byte, now time.Time) error {
 	return inTx(ctx, r.pool, func(ctx context.Context, q clientspg.Querier) error {

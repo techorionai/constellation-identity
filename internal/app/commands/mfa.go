@@ -55,6 +55,10 @@ const (
 	MaxPendingAttempts = 5
 	// SetupTTL is the life of a TOTP setup secret.
 	SetupTTL = 10 * time.Minute
+	// DailyMaxFailures is the long failure limit of one user.
+	DailyMaxFailures = 30
+	// DailyFailureWindow is the window of DailyMaxFailures.
+	DailyFailureWindow = 24 * time.Hour
 )
 
 // Values of the attribute outcome of the metric identity.mfa.verifications.
@@ -205,12 +209,12 @@ func (m *MFA) VerifyLogin(ctx context.Context, in VerifyLogin) (VerifiedLogin, e
 		return VerifiedLogin{}, ErrMFAPendingGone
 	}
 	// Reserve the attempt before the check, so parallel requests cannot all pass
-	// the limit.
-	failures, err := m.d.Failures.Reserve(ctx, p.UserID, m.d.FailureWindow)
+	// the limit. Two counters apply: a short window and a long window.
+	limited, err := m.reserveFailure(ctx, p.UserID)
 	if err != nil {
-		return VerifiedLogin{}, m.unavailable(ctx, "reserve the failure counter", err)
+		return VerifiedLogin{}, err
 	}
-	if failures > m.d.MaxFailures {
+	if limited {
 		m.count(ctx, method, MFAOutcomeLimited)
 		m.d.Log.InfoContext(ctx, "identity.mfa.limited", "event", "identity.mfa.limited", "user_id", p.UserID)
 		return VerifiedLogin{}, ErrTooManyAttempts
@@ -224,34 +228,24 @@ func (m *MFA) VerifyLogin(ctx context.Context, in VerifyLogin) (VerifiedLogin, e
 		return VerifiedLogin{}, fmt.Errorf("get the user: %w", err)
 	}
 
+	// The check does not change the factor. The factor is used only in the
+	// transaction that starts the session (R2).
 	var (
-		good    bool
+		consume func(context.Context) (bool, error)
 		methods []string
 	)
 	if in.Recovery {
-		good, err = m.checkRecovery(ctx, p.UserID, in.Code)
+		consume, err = m.checkRecovery(ctx, p.UserID, in.Code)
 		methods = domain.MethodsRecovery()
 	} else {
-		good, err = m.checkTOTP(ctx, p.UserID, in.Code)
+		consume, err = m.checkTOTP(ctx, p.UserID, in.Code)
 		methods = domain.MethodsTOTP()
 	}
 	if err != nil && !errors.Is(err, ErrMFAReplay) {
 		return VerifiedLogin{}, err
 	}
-	if !good {
-		outcome := MFAOutcomeBadCode
-		if errors.Is(err, ErrMFAReplay) {
-			outcome = MFAOutcomeReplay
-		}
-		m.count(ctx, method, outcome)
-		m.d.Log.InfoContext(ctx, "identity.mfa.failed", "event", "identity.mfa.failed", "user_id", p.UserID, "method", method, "outcome", outcome)
-		if n >= MaxPendingAttempts {
-			_ = m.d.Pending.Delete(ctx, hash)
-		}
-		if outcome == MFAOutcomeReplay {
-			return VerifiedLogin{}, ErrMFAReplay
-		}
-		return VerifiedLogin{}, ErrMFABadCode
+	if consume == nil {
+		return VerifiedLogin{}, m.badCode(ctx, p.UserID, method, hash, n, err)
 	}
 
 	if _, err := m.d.Pending.Take(ctx, hash); errors.Is(err, mfaflow.ErrNotFound) {
@@ -259,17 +253,35 @@ func (m *MFA) VerifyLogin(ctx context.Context, in VerifyLogin) (VerifiedLogin, e
 	} else if err != nil {
 		return VerifiedLogin{}, m.unavailable(ctx, "take the pending login", err)
 	}
-	if err := m.d.Failures.Release(ctx, p.UserID); err != nil {
-		m.d.Log.WarnContext(ctx, "identity.mfa.release_failed", "event", "identity.mfa.release_failed", "error", err)
+	// The session and the use of the code change in one transaction. If the
+	// session cannot start, or a parallel request used the code, the transaction
+	// ends with no change. The code stays valid in the first case.
+	var issued IssuedSession
+	errNotUsed := errors.New("the factor was not used")
+	err = m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		var err error
+		issued, err = sessionStarter{sessionIssuer{repo: m.d.Sessions, policy: m.d.Policy, now: m.d.Now}}.
+			start(ctx, p.UserID, in.PreviousToken, in.UserAgent, in.IP, methods)
+		if err != nil {
+			return err
+		}
+		used, err := consume(ctx)
+		if err != nil {
+			return err
+		}
+		if !used {
+			return errNotUsed
+		}
+		return nil
+	}, txName("verify_second_factor"))
+	if errors.Is(err, errNotUsed) {
+		// A parallel request used the same code.
+		return VerifiedLogin{}, m.badCode(ctx, p.UserID, method, hash, n, ErrMFAReplay)
 	}
-	issued, err := sessionStarter{sessionIssuer{repo: m.d.Sessions, policy: m.d.Policy, now: m.d.Now}}.
-		start(ctx, p.UserID, in.PreviousToken, in.UserAgent, in.IP, methods)
 	if err != nil {
 		return VerifiedLogin{}, err
 	}
-	if err := m.d.Limiter.RecordSuccess(ctx, p.LimiterEmail, p.LimiterIP); err != nil {
-		m.d.Log.WarnContext(ctx, "identity.login.reset_failed", "event", "identity.login.reset_failed", "error", err)
-	}
+	m.releaseFailure(ctx, p.UserID)
 	m.count(ctx, method, MFAOutcomeOK)
 	m.d.Log.InfoContext(ctx, "identity.login.ok", "event", "identity.login.ok", "user_id", p.UserID, "method", method)
 	if in.Recovery {
@@ -278,48 +290,125 @@ func (m *MFA) VerifyLogin(ctx context.Context, in VerifyLogin) (VerifiedLogin, e
 	return VerifiedLogin{Session: issued, AuthRequest: p.AuthRequest, ReturnTo: p.ReturnTo}, nil
 }
 
-// checkTOTP checks a TOTP code against the secret of the user and uses its time
-// step. It returns (false, nil) for a wrong code, and (false, ErrMFAReplay) for
-// a good code with a step that was used.
-func (m *MFA) checkTOTP(ctx context.Context, userID, code string) (bool, error) {
+// badCode counts and logs a wrong or used code and returns the error for the user.
+func (m *MFA) badCode(ctx context.Context, userID, method, hash string, attempts int64, cause error) error {
+	outcome := MFAOutcomeBadCode
+	if errors.Is(cause, ErrMFAReplay) {
+		outcome = MFAOutcomeReplay
+	}
+	m.count(ctx, method, outcome)
+	m.d.Log.InfoContext(ctx, "identity.mfa.failed", "event", "identity.mfa.failed", "user_id", userID, "method", method, "outcome", outcome)
+	if attempts >= MaxPendingAttempts {
+		_ = m.d.Pending.Delete(ctx, hash)
+	}
+	if outcome == MFAOutcomeReplay {
+		return ErrMFAReplay
+	}
+	return ErrMFABadCode
+}
+
+// failureKeys are the keys of the two failure counters of a user. The second
+// counter has a long window, so a slow guess loop is also limited (R13).
+func failureKeys(userID string) [2]string { return [2]string{userID, "day:" + userID} }
+
+// reserveFailure adds one attempt to both counters. It returns true if one
+// counter is over its limit. At the first attempt over a limit it sends a
+// notice to the user.
+func (m *MFA) reserveFailure(ctx context.Context, userID string) (bool, error) {
+	keys := failureKeys(userID)
+	limits := [2]struct {
+		window time.Duration
+		max    int64
+	}{{m.d.FailureWindow, m.d.MaxFailures}, {DailyFailureWindow, DailyMaxFailures}}
+	limited := false
+	for i, key := range keys {
+		n, err := m.d.Failures.Reserve(ctx, key, limits[i].window)
+		if err != nil {
+			return false, m.unavailable(ctx, "reserve the failure counter", err)
+		}
+		if n > limits[i].max {
+			limited = true
+		}
+		if n == limits[i].max+1 {
+			m.notifyLimit(ctx, userID)
+		}
+	}
+	return limited, nil
+}
+
+func (m *MFA) releaseFailure(ctx context.Context, userID string) {
+	for _, key := range failureKeys(userID) {
+		if err := m.d.Failures.Release(ctx, key); err != nil {
+			m.d.Log.WarnContext(ctx, "identity.mfa.release_failed", "event", "identity.mfa.release_failed", "error", err)
+		}
+	}
+}
+
+// notifyLimit tells the user that the second factor attempts reached a limit.
+// This can mean that someone knows the password.
+func (m *MFA) notifyLimit(ctx context.Context, userID string) {
+	m.d.Log.WarnContext(ctx, "identity.mfa.limit_reached", "event", "identity.mfa.limit_reached", "user_id", userID)
+	if err := m.d.Events.NotifyUser(ctx, securityevents.Notice{Kind: securityevents.NoticeMfaLimited, TargetUserID: userID, At: m.now()}); err != nil {
+		m.d.Log.ErrorContext(ctx, "identity.security_notice.failed", "event", "identity.security_notice.failed", "kind", securityevents.NoticeMfaLimited, "error", err)
+	}
+}
+
+// checkTOTP checks a TOTP code against the secret of the user. It does not
+// use the time step. It returns a function that uses the step, or nil for a
+// wrong code. It returns ErrMFAReplay with a nil function for a good code with
+// a step that was used.
+func (m *MFA) checkTOTP(ctx context.Context, userID, code string) (func(context.Context) (bool, error), error) {
 	rec, err := m.d.MFA.GetTOTP(ctx, userID)
 	if errors.Is(err, mfa.ErrNotFound) {
-		return false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("get the totp factor: %w", err)
+		return nil, fmt.Errorf("get the totp factor: %w", err)
 	}
 	secret, err := m.d.Sealer.Open(userID, rec.Secret)
 	if err != nil {
-		return false, fmt.Errorf("open the totp secret: %w", err)
+		return nil, fmt.Errorf("open the totp secret: %w", err)
 	}
 	defer clear(secret)
 	now := m.now()
 	step, ok := m.d.TOTP.Check(secret, code, now)
 	if !ok {
-		return false, nil
+		return nil, nil
 	}
-	advanced, err := m.d.MFA.AdvanceStep(ctx, userID, step, now)
-	if err != nil {
-		return false, fmt.Errorf("use the time step: %w", err)
+	if step <= rec.LastUsedStep {
+		return nil, ErrMFAReplay
 	}
-	if !advanced {
-		return false, ErrMFAReplay
-	}
-	return true, nil
+	return func(ctx context.Context) (bool, error) {
+		advanced, err := m.d.MFA.AdvanceStep(ctx, userID, step, now)
+		if err != nil {
+			return false, fmt.Errorf("use the time step: %w", err)
+		}
+		return advanced, nil
+	}, nil
 }
 
-// checkRecovery checks and uses a recovery code.
-func (m *MFA) checkRecovery(ctx context.Context, userID, code string) (bool, error) {
+// checkRecovery checks a recovery code. It does not use the code. It returns a
+// function that uses the code, or nil for a code that is not valid.
+func (m *MFA) checkRecovery(ctx context.Context, userID, code string) (func(context.Context) (bool, error), error) {
 	norm, err := domain.NormalizeRecoveryCode(code)
 	if err != nil {
-		return false, nil
+		return nil, nil
 	}
-	used, err := m.d.MFA.UseRecoveryCode(ctx, userID, domain.HashRecoveryCode(norm), m.now())
+	hash := domain.HashRecoveryCode(norm)
+	has, err := m.d.MFA.HasRecoveryCode(ctx, userID, hash)
 	if err != nil {
-		return false, fmt.Errorf("use the recovery code: %w", err)
+		return nil, fmt.Errorf("find the recovery code: %w", err)
 	}
-	return used, nil
+	if !has {
+		return nil, nil
+	}
+	return func(ctx context.Context) (bool, error) {
+		used, err := m.d.MFA.UseRecoveryCode(ctx, userID, hash, m.now())
+		if err != nil {
+			return false, fmt.Errorf("use the recovery code: %w", err)
+		}
+		return used, nil
+	}, nil
 }
 
 // --- state ---
@@ -387,6 +476,45 @@ type SetupInfo struct {
 
 func setupKey(sessionID string) string { return domain.HashSecret(sessionID) }
 
+// setupSealID is the identifier that binds a sealed setup secret. It is not the
+// ID of the user, so a sealed setup secret does not open as the stored factor.
+func setupSealID(userID string) string { return "setup:" + userID }
+
+// readSetup reads and opens the setup secret. The store holds it sealed (R3).
+func (m *MFA) readSetup(ctx context.Context, userID, key string) ([]byte, error) {
+	sealed, err := m.d.Setups.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	secret, err := m.d.Sealer.Open(setupSealID(userID), sealed)
+	if err != nil {
+		return nil, fmt.Errorf("open the setup secret: %w", err)
+	}
+	return secret, nil
+}
+
+// createSetup makes a secret and stores it sealed if the key has no value. If a
+// parallel request stored a secret first, it returns that secret (R10).
+func (m *MFA) createSetup(ctx context.Context, userID, key string) ([]byte, error) {
+	secret, err := m.d.TOTP.NewSecret()
+	if err != nil {
+		return nil, fmt.Errorf("make the secret: %w", err)
+	}
+	sealed, _, err := m.d.Sealer.Seal(setupSealID(userID), secret)
+	if err != nil {
+		return nil, fmt.Errorf("seal the setup secret: %w", err)
+	}
+	created, err := m.d.Setups.PutIfAbsent(ctx, key, sealed, SetupTTL)
+	if err != nil {
+		return nil, err
+	}
+	if created {
+		return secret, nil
+	}
+	clear(secret)
+	return m.readSetup(ctx, userID, key)
+}
+
 // BeginSetup makes the secret of the setup, or reads the secret that the same
 // session made before. It returns ErrTOTPEnabled if the user has a factor.
 func (m *MFA) BeginSetup(ctx context.Context, in BeginSetup) (SetupInfo, error) {
@@ -398,16 +526,14 @@ func (m *MFA) BeginSetup(ctx context.Context, in BeginSetup) (SetupInfo, error) 
 		return SetupInfo{}, ErrTOTPEnabled
 	}
 	key := setupKey(in.SessionID)
-	secret, err := m.d.Setups.Get(ctx, key)
+	secret, err := m.readSetup(ctx, in.UserID, key)
 	if errors.Is(err, mfaflow.ErrNotFound) {
-		if secret, err = m.d.TOTP.NewSecret(); err != nil {
-			return SetupInfo{}, fmt.Errorf("make the secret: %w", err)
-		}
-		err = m.d.Setups.Put(ctx, key, secret, SetupTTL)
+		secret, err = m.createSetup(ctx, in.UserID, key)
 	}
 	if err != nil {
 		return SetupInfo{}, m.unavailable(ctx, "store the setup secret", err)
 	}
+	defer clear(secret)
 	uri := m.d.TOTP.URI(m.d.Issuer, in.Account, secret)
 	qr, err := m.d.TOTP.QRCode(uri)
 	if err != nil {
@@ -442,13 +568,14 @@ func (m *MFA) FinishSetup(ctx context.Context, in FinishSetup) (SetupResult, err
 		return SetupResult{}, ErrTooManyAttempts
 	}
 	key := setupKey(in.SessionID)
-	secret, err := m.d.Setups.Get(ctx, key)
+	secret, err := m.readSetup(ctx, in.UserID, key)
 	if errors.Is(err, mfaflow.ErrNotFound) {
 		return SetupResult{}, ErrSetupExpired
 	}
 	if err != nil {
 		return SetupResult{}, m.unavailable(ctx, "read the setup secret", err)
 	}
+	defer clear(secret)
 	now := m.now()
 	step, ok := m.d.TOTP.Check(secret, in.Code, now)
 	if !ok {
@@ -469,17 +596,22 @@ func (m *MFA) FinishSetup(ctx context.Context, in FinishSetup) (SetupResult, err
 		hashes[i], shown[i] = domain.HashRecoveryCode(c), domain.FormatRecoveryCode(c)
 	}
 	// The time step of the first code counts as used, so the same code cannot log in.
-	err = m.d.MFA.EnableTOTP(ctx, domain.TOTPRecord{
-		UserID: in.UserID, Secret: sealed, KeyID: keyID, LastUsedStep: step, CreatedAt: now,
-	}, hashes, now)
+	// The factor and the session methods change in one transaction. A failure
+	// leaves no factor, so the user can try again and sees the recovery codes (R5).
+	err = m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		err := m.d.MFA.EnableTOTP(ctx, domain.TOTPRecord{
+			UserID: in.UserID, Secret: sealed, KeyID: keyID, LastUsedStep: step, CreatedAt: now,
+		}, hashes, now)
+		if err != nil {
+			return err
+		}
+		return m.d.Sessions.SetMethods(ctx, in.SessionID, domain.MethodsTOTP())
+	}, txName("finish_totp_setup"))
 	if errors.Is(err, mfa.ErrAlreadyEnabled) {
 		return SetupResult{}, ErrTOTPEnabled
 	}
 	if err != nil {
 		return SetupResult{}, fmt.Errorf("store the totp factor: %w", err)
-	}
-	if err := m.d.Sessions.SetMethods(ctx, in.SessionID, domain.MethodsTOTP()); err != nil {
-		return SetupResult{}, fmt.Errorf("set the session methods: %w", err)
 	}
 	if err := m.d.Setups.Delete(ctx, key); err != nil {
 		m.d.Log.WarnContext(ctx, "identity.mfa.setup_cleanup_failed", "event", "identity.mfa.setup_cleanup_failed", "error", err)
@@ -545,7 +677,15 @@ func (m *MFA) RemoveTOTP(ctx context.Context, in RemoveTOTP) error {
 	if required {
 		return ErrMFARequired
 	}
-	if _, err := m.d.MFA.RemoveAll(ctx, in.UserID); err != nil {
+	// The other sessions and the refresh token families of the user lose the
+	// methods of the second factor (R4).
+	err = m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if _, err := m.d.MFA.RemoveAll(ctx, in.UserID); err != nil {
+			return err
+		}
+		return m.d.Sessions.DropSecondFactor(ctx, in.UserID)
+	}, txName("remove_totp"))
+	if err != nil {
 		return fmt.Errorf("remove the factors: %w", err)
 	}
 	m.d.Log.InfoContext(ctx, "identity.mfa.removed", "event", "identity.mfa.removed", "user_id", in.UserID)

@@ -48,6 +48,10 @@ type Repository interface {
 	Reauthenticate(ctx context.Context, r Reauth) (sessionID string, ok bool, err error)
 	// SetMethods replaces the methods (amr) of a session that is not revoked.
 	SetMethods(ctx context.Context, id string, methods []string) error
+	// DropSecondFactor removes the methods otp, rec, and mfa from the sessions
+	// that are not revoked and from the refresh token families that are not
+	// revoked, for the user.
+	DropSecondFactor(ctx context.Context, userID string) error
 	// RevokeByTokenHash revokes a session. It does nothing for a session that
 	// does not exist or is revoked already.
 	RevokeByTokenHash(ctx context.Context, hash string, now time.Time) error

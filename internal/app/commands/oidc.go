@@ -305,7 +305,7 @@ func (o *OIDC) StartAuthorization(ctx context.Context, in Authorize) (AuthorizeO
 		State: in.State, Nonce: in.Nonce, CodeChallenge: in.CodeChallenge, CreatedAt: now, FreshLoginRequired: fresh,
 	}
 	if hasSession && !fresh {
-		return o.complete(ctx, req, sess, user)
+		return o.complete(ctx, req, sess, user, promptNone)
 	}
 	id, _, err := domain.NewSecret()
 	if err != nil {
@@ -347,11 +347,13 @@ func (o *OIDC) CompleteAuthorization(ctx context.Context, in Continue) (Authoriz
 	if req.FreshLoginRequired && sess.AuthTime.Before(req.CreatedAt) {
 		return redirectError(req.RedirectURI, req.State, "login_required", "A new login is required."), nil
 	}
-	return o.complete(ctx, req, sess, user)
+	return o.complete(ctx, req, sess, user, false)
 }
 
 // complete does steps 4 to 6 of the flow: scope selection, code, and redirect.
-func (o *OIDC) complete(ctx context.Context, req domain.AuthRequest, sess domain.Session, user domain.User) (AuthorizeOutcome, error) {
+// With silent true (prompt=none) the user cannot do a step, so a session that
+// needs MFA gets the error login_required.
+func (o *OIDC) complete(ctx context.Context, req domain.AuthRequest, sess domain.Session, user domain.User, silent bool) (AuthorizeOutcome, error) {
 	client, ok, err := o.publicClient(ctx, req.ClientID)
 	if err != nil {
 		return AuthorizeOutcome{}, fmt.Errorf("get the client: %w", err)
@@ -370,6 +372,9 @@ func (o *OIDC) complete(ctx context.Context, req domain.AuthRequest, sess domain
 	// The rule "MFA for admins": a user that needs MFA and has a session with no
 	// mfa gets no code.
 	if domain.NeedsMFA(o.d.RequireMFAForAdmins, granted) && !domain.HasMFA(sess.AuthMethods) {
+		if silent {
+			return redirectError(req.RedirectURI, req.State, "login_required", "A login with a second factor is required."), nil
+		}
 		return o.mfaGate(ctx, req, user)
 	}
 	code, hash, err := domain.NewSecret()
@@ -410,7 +415,15 @@ func (o *OIDC) mfaGate(ctx context.Context, req domain.AuthRequest, user domain.
 			return AuthorizeOutcome{Kind: AuthorizeLogin, AuthRequestID: id}, nil
 		}
 	}
-	return AuthorizeOutcome{Kind: AuthorizeSetupMFA}, nil
+	// The user comes back to the auth request after the setup (R6).
+	id, _, err := domain.NewSecret()
+	if err != nil {
+		return AuthorizeOutcome{}, err
+	}
+	if err := o.d.AuthRequests.Put(ctx, id, req, o.d.AuthRequestTTL); err != nil {
+		return AuthorizeOutcome{}, fmt.Errorf("store the auth request: %w", err)
+	}
+	return AuthorizeOutcome{Kind: AuthorizeSetupMFA, AuthRequestID: id}, nil
 }
 
 // AuthRequestInfo is what the login page needs from an auth request.

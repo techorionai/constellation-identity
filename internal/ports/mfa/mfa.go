@@ -32,6 +32,9 @@ type Repository interface {
 	// UseRecoveryCode sets used_at of the unused code with the hash. It returns
 	// false if no row changed.
 	UseRecoveryCode(ctx context.Context, userID string, hash []byte, now time.Time) (bool, error)
+	// HasRecoveryCode returns true if the user has an unused code with the hash.
+	// It does not change the code.
+	HasRecoveryCode(ctx context.Context, userID string, hash []byte) (bool, error)
 	// ReplaceRecoveryCodes deletes all codes of the user and adds the new
 	// hashes in one transaction.
 	ReplaceRecoveryCodes(ctx context.Context, userID string, hashes [][]byte, now time.Time) error

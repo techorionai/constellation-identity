@@ -80,6 +80,14 @@ func (r *MFA) UseRecoveryCode(_ context.Context, userID string, hash []byte, now
 	return true, nil
 }
 
+// HasRecoveryCode tells whether an unused code exists.
+func (r *MFA) HasRecoveryCode(_ context.Context, userID string, hash []byte) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	used, ok := r.Codes[userID][string(hash)]
+	return ok && used == nil, nil
+}
+
 // ReplaceRecoveryCodes replaces the codes.
 func (r *MFA) ReplaceRecoveryCodes(_ context.Context, userID string, hashes [][]byte, _ time.Time) error {
 	r.mu.Lock()
@@ -204,12 +212,15 @@ var _ mfaflow.SetupSecrets = (*Setups)(nil)
 // NewSetups makes an empty store.
 func NewSetups() *Setups { return &Setups{Rows: map[string][]byte{}} }
 
-// Put stores a secret.
-func (s *Setups) Put(_ context.Context, key string, secret []byte, _ time.Duration) error {
+// PutIfAbsent stores a secret if the key has no value.
+func (s *Setups) PutIfAbsent(_ context.Context, key string, secret []byte, _ time.Duration) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.Rows[key]; ok {
+		return false, nil
+	}
 	s.Rows[key] = append([]byte(nil), secret...)
-	return nil
+	return true, nil
 }
 
 // Get reads a secret.

@@ -19,6 +19,9 @@ const (
 const (
 	NoticeTotpRemoved = "mfa_totp_removed"
 	NoticeMfaReset    = "mfa_reset"
+	// NoticeMfaLimited means a limit of second factor failures is reached.
+	// Someone can know the password of the user.
+	NoticeMfaLimited = "mfa_attempts_limited"
 )
 
 // ResultSuccess is the result of an action that worked.

@@ -3,9 +3,12 @@ package valkey
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
+
+	valkeygo "github.com/valkey-io/valkey-go"
 
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/authflow"
@@ -114,15 +117,30 @@ func incrWithExpiry(ctx context.Context, s *Store, key string, ttl time.Duration
 	return n, nil
 }
 
-// SetupStore is the adapter of the setup secrets. The value is the secret in
-// base64 form.
+// SetupStore is the adapter of the setup secrets. The value is the bytes that
+// the caller gives, in base64 form. The use case gives a sealed value.
 type SetupStore struct{ m *MFAFlow }
 
 var _ mfaflow.SetupSecrets = SetupStore{}
 
-// Put stores the secret.
-func (st SetupStore) Put(ctx context.Context, sessionHash string, secret []byte, ttl time.Duration) error {
-	return st.m.s.put(ctx, st.m.setupKey(sessionHash), base64.StdEncoding.EncodeToString(secret), ttl)
+// PutIfAbsent stores the secret with SET NX. It returns false if the key has a value.
+func (st SetupStore) PutIfAbsent(ctx context.Context, sessionHash string, secret []byte, ttl time.Duration) (bool, error) {
+	b, err := json.Marshal(base64.StdEncoding.EncodeToString(secret))
+	if err != nil {
+		return false, fmt.Errorf("encode setup secret: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	c := st.m.s.client
+	secs := max(int64(ttl/time.Second), 1)
+	err = c.Do(ctx, c.B().Set().Key(st.m.setupKey(sessionHash)).Value(string(b)).Nx().ExSeconds(secs).Build()).Error()
+	if valkeygo.IsValkeyNil(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store setup secret: %w", err)
+	}
+	return true, nil
 }
 
 // Get reads the secret.

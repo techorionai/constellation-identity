@@ -31,7 +31,9 @@ type PendingLogins interface {
 // SetupSecrets stores the secret of a TOTP setup that is not done. The key is
 // the hash of the session ID.
 type SetupSecrets interface {
-	Put(ctx context.Context, sessionHash string, secret []byte, ttl time.Duration) error
+	// PutIfAbsent stores the secret if the key has no value. It returns false
+	// if the key has a value. One step does the check and the write.
+	PutIfAbsent(ctx context.Context, sessionHash string, secret []byte, ttl time.Duration) (bool, error)
 	// Get reads the secret. It wraps ErrNotFound.
 	Get(ctx context.Context, sessionHash string) ([]byte, error)
 	Delete(ctx context.Context, sessionHash string) error

@@ -636,7 +636,7 @@ func TestIssue14Integration(t *testing.T) {
 		web := g.a.NewWeb()
 		g.passwordLogin(web, "admin2@example.com", userPassword, "/account/totp?required=1")
 		resp := web.Authorize(t, testserver.AuthorizeQuery("admin-ui", adminRedirect, mfaScope, testserver.NewPKCE(t), nil))
-		if loc := resp.Header.Get("Location"); resp.StatusCode != http.StatusFound || loc != "/account/totp?required=1" {
+		if loc := resp.Header.Get("Location"); resp.StatusCode != http.StatusFound || !strings.HasPrefix(loc, "/account/totp?required=1&authRequest=") {
 			t.Fatalf("authorize with no factor: %d %s", resp.StatusCode, loc)
 		}
 		// After the setup, the code flow works with mfa, and the status has required true.
@@ -701,6 +701,122 @@ func TestIssue14Integration(t *testing.T) {
 		resp := web.Authorize(t, testserver.AuthorizeQuery("admin-ui", adminRedirect, mfaScope+" identity:admin", testserver.NewPKCE(t), nil))
 		if loc := testserver.Location(t, resp); loc.Query().Get("code") == "" {
 			t.Fatalf("rule off: no code in %s", loc)
+		}
+	})
+
+	// R11: the order of the checks of I21, I22, I23, I25, I26, I34, I36, and I38 with the real stores.
+	t.Run("R11_reauth_and_scope", func(t *testing.T) {
+		wantReauth := func(what string, resp testserver.Response, body []byte) {
+			t.Helper()
+			if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(body), `"code":"reauthentication_required"`) ||
+				resp.Header.Get("WWW-Authenticate") != `Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"` {
+				t.Fatalf("%s: %d %v %s", what, resp.StatusCode, resp.Header, body)
+			}
+		}
+		adminTok := g.adminMFAToken(gAdmin, adminMFAScopes)
+		targetID := g.newUser(adminTok, "r11@example.com", userPassword, demoRole)
+		targetWeb := g.a.NewWeb()
+		g.passwordLogin(targetWeb, "r11@example.com", userPassword, "/login/done")
+		g.setupTOTP(targetWeb)
+		target := &mfaUser{id: targetID}
+		plain := g.newUser(adminTok, "r11b@example.com", userPassword, demoRole)
+		plainWeb := g.a.NewWeb()
+		g.passwordLogin(plainWeb, "r11b@example.com", userPassword, "/login/done")
+		plainUser := &mfaUser{id: plain, email: "r11b@example.com", web: plainWeb, password: userPassword}
+		g.advance(31 * time.Second)
+		noScopeTok := g.adminMFAToken(gAdmin, "openid identity:user:read")
+		plainTok := g.sessionToken(plainUser, "admin-ui", adminRedirect, mfaScope)
+		g.advance(6 * time.Minute)
+		del := func(tok, path string) (testserver.Response, []byte) {
+			return g.a.Do(t, http.MethodDelete, path, tok, "")
+		}
+		// The admin token is stale after the clock moved. An API token has no auth_time.
+		staleAdmin := adminTok
+		// I21: a stale admin token. The factor of the user stays. An API token cannot
+		// hold the scopes of the reset, so the handler tests cover the API token.
+		resp, b := del(staleAdmin, "/v1/users/"+target.id+"/mfa")
+		wantReauth("reset", resp, b)
+		// I25: the same for an unknown user, 401 before 404.
+		resp, b = del(staleAdmin, "/v1/users/00000000-0000-4000-8000-0000000000ee/mfa")
+		wantReauth("reset of an unknown user", resp, b)
+		// I36: a stale token for the own ID gives 401 before 409.
+		resp, b = del(staleAdmin, "/v1/users/"+gAdmin.id+"/mfa")
+		wantReauth("self reset", resp, b)
+		// I23: a stale token and a user with no TOTP give 401 before 404.
+		resp, b = del(plainTok.AccessToken, "/v1/me/totp")
+		wantReauth("remove with no TOTP", resp, b)
+		// I22: a token without the scope gives 403 before 401.
+		if resp, _ = del(noScopeTok, "/v1/me/totp"); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("remove without the scope: %d", resp.StatusCode)
+		}
+		// I38: identity:user:read is not enough. A token with identity:mfa:read works.
+		reader := g.adminMFAToken(gAdmin, "openid identity:user:read")
+		if resp, _ = g.api(reader, http.MethodGet, "/v1/users/"+target.id+"/mfa", nil); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("UserMfa_get without identity:mfa:read: %d", resp.StatusCode)
+		}
+		full := g.adminMFAToken(gAdmin, adminMFAScopes)
+		if resp, m := g.api(full, http.MethodGet, "/v1/users/"+target.id+"/mfa", nil); resp.StatusCode != http.StatusOK || m["enabled"] != true {
+			t.Fatalf("UserMfa_get: %d %v", resp.StatusCode, m)
+		}
+		if g.countWhere(`SELECT count(*) FROM user_totp WHERE user_id = $1`, target.id) != 1 {
+			t.Fatal("the factor must stay")
+		}
+	})
+
+	// R1, R6: prompt=none gives login_required for a session with no mfa, and the
+	// setup page keeps the auth request.
+	t.Run("R1_R6_setup_keeps_auth_request", func(t *testing.T) {
+		adminTok := g.adminMFAToken(gAdmin, adminMFAScopes)
+		g.newUser(adminTok, "r6@example.com", userPassword, "identity:admin")
+		web := g.a.NewWeb()
+		g.passwordLogin(web, "r6@example.com", userPassword, "/account/totp?required=1")
+		resp := web.Authorize(t, testserver.AuthorizeQuery("admin-ui", adminRedirect, mfaScope, testserver.NewPKCE(t), map[string]string{"prompt": "none"}))
+		if loc := testserver.Location(t, resp); loc.Query().Get("error") != "login_required" || loc.Query().Get("code") != "" {
+			t.Fatalf("prompt=none: %s", loc)
+		}
+		p := testserver.NewPKCE(t)
+		resp = web.Authorize(t, testserver.AuthorizeQuery("admin-ui", adminRedirect, mfaScope, p, nil))
+		loc := testserver.Location(t, resp)
+		ar := loc.Query().Get("authRequest")
+		if loc.Path != "/account/totp" || loc.Query().Get("required") != "1" || ar == "" {
+			t.Fatalf("authorize with no factor: %s", loc)
+		}
+		resp, body := web.Get(t, loc.RequestURI())
+		status(t, resp, http.StatusOK, "GET the setup page")
+		if !strings.Contains(string(body), `name="authRequest" value="`+ar+`"`) {
+			t.Fatalf("the setup page lost the auth request: %s", body)
+		}
+		secret := testserver.SetupSecretOf(t, body)
+		resp, body = web.PostForm(t, "/account/totp", url.Values{"code": {testserver.TOTPCode(t, secret, g.clock.Now())}, "authRequest": {ar}})
+		status(t, resp, http.StatusOK, "POST the setup")
+		next := "/oauth/authorize/continue?authRequest=" + url.QueryEscape(ar)
+		if !strings.Contains(string(body), `href="`+next+`"`) {
+			t.Fatalf("the codes page has no continue link: %s", body)
+		}
+		resp, _ = web.Get(t, next)
+		if loc := testserver.Location(t, resp); loc.Query().Get("code") == "" {
+			t.Fatalf("no code after the setup: %s", loc)
+		}
+	})
+
+	// R4: the removal of TOTP removes the methods of the second factor from the
+	// other sessions and the refresh token families.
+	t.Run("R4_remove_drops_other_sessions", func(t *testing.T) {
+		u := f.newTOTPUser("r4@example.com", demoRole)
+		first := f.mfaToken(u, "admin-ui", adminRedirect, mfaOfflineFlow, nil)
+		other := &mfaUser{id: u.id, email: u.email, web: f.a.NewWeb(), secret: u.secret, password: u.password}
+		f.mfaToken(other, "admin-ui", adminRedirect, mfaScope, nil)
+		if f.countWhere(`SELECT count(*) FROM sessions WHERE user_id = $1 AND 'mfa' = ANY(amr)`, u.id) < 2 {
+			t.Fatal("the user needs 2 sessions with mfa")
+		}
+		if resp, m := f.api(first.AccessToken, http.MethodDelete, "/v1/me/totp", nil); resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("remove: %d %v", resp.StatusCode, m)
+		}
+		if n := f.countWhere(`SELECT count(*) FROM sessions WHERE user_id = $1 AND revoked_at IS NULL AND amr && ARRAY['mfa','otp','rec']`, u.id); n != 0 {
+			t.Fatalf("%d sessions keep the methods", n)
+		}
+		if n := f.countWhere(`SELECT count(*) FROM refresh_token_families WHERE user_id = $1 AND revoked_at IS NULL AND amr && ARRAY['mfa','otp','rec']`, u.id); n != 0 {
+			t.Fatalf("%d families keep the methods", n)
 		}
 	})
 
@@ -939,18 +1055,7 @@ func TestIssue14Integration(t *testing.T) {
 		for _, l := range h.ledger.logs {
 			texts = append(texts, l.Text())
 		}
-		spans := ""
-		for _, s := range spanExporter.GetSpans() {
-			spans += s.Name + "\n"
-			for _, a := range s.Attributes {
-				spans += string(a.Key) + "=" + a.Value.String() + "\n"
-			}
-			for _, e := range s.Events {
-				for _, a := range e.Attributes {
-					spans += string(a.Key) + "=" + a.Value.String() + "\n"
-				}
-			}
-		}
+		spans := spansText()
 		for _, v := range h.ledger.flow {
 			for _, text := range texts {
 				if strings.Contains(text, v) {

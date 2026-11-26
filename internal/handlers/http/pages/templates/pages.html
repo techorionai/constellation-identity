@@ -104,6 +104,8 @@
 <img src="{{.QR}}" width="256" height="256" alt="QR code of the TOTP secret">
 <p>If you cannot scan the code, enter this secret in the app: <code>{{.Secret}}</code></p>
 <form method="post" action="/account/totp">
+{{if .AuthRequest}}<input type="hidden" name="authRequest" value="{{.AuthRequest}}">{{end}}
+{{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
 <label for="code">Code from the app</label>
 <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required maxlength="6">
 <button type="submit">Turn on TOTP</button>
@@ -115,5 +117,6 @@
 <ul>
 {{range .Codes}}<li><code>{{.}}</code></li>
 {{end}}</ul>
+{{if .Next}}<p><a href="{{.Next}}">Continue</a></p>{{end}}
 <p><a href="/account/security">Account security</a></p>
 {{template "footer" .}}{{end}}

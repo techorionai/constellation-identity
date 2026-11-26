@@ -618,19 +618,7 @@ func TestIssue9Integration(t *testing.T) {
 		for _, l := range h.ledger.logs {
 			texts = append(texts, l.Text())
 		}
-		spans := ""
-		for _, s := range spanExporter.GetSpans() {
-			spans += s.Name + "\n"
-			for _, a := range s.Attributes {
-				spans += string(a.Key) + "=" + a.Value.String() + "\n"
-			}
-			for _, e := range s.Events {
-				spans += e.Name + "\n"
-				for _, a := range e.Attributes {
-					spans += string(a.Key) + "=" + a.Value.String() + "\n"
-				}
-			}
-		}
+		spans := spansText()
 		for _, v := range h.ledger.apiTokens {
 			secret := strings.TrimPrefix(v, "cpat_")
 			for _, s := range []string{v, secret, domain.HashSecret(v)} {

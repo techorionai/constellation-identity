@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"image/png"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/pquerna/otp"
@@ -53,6 +54,8 @@ func (Service) Base32(secret []byte) string { return b32.EncodeToString(secret) 
 // Check checks a code for the step of at, the step before, and the step after.
 // The comparison takes the same time for each code.
 func (s Service) Check(secret []byte, code string, at time.Time) (int64, bool) {
+	// An authenticator app can show the code in two groups. Spaces do not count.
+	code = strings.ReplaceAll(code, " ", "")
 	if len(code) != 6 {
 		return 0, false
 	}

@@ -180,8 +180,11 @@ func (c *LoginCommand) Execute(ctx context.Context, in Login) (IssuedSession, er
 		return IssuedSession{}, err
 	}
 	if hasFactor {
-		// The password is the first factor only. The email counter stays until the
-		// second factor is good.
+		// The password is good, so the password failure counters reset. The second
+		// factor has its own counters (R8).
+		if err := c.d.Limiter.RecordSuccess(ctx, email, in.counterKey()); err != nil {
+			c.d.Log.WarnContext(ctx, "identity.login.reset_failed", "event", "identity.login.reset_failed", "error", err)
+		}
 		return c.startPending(ctx, user.ID, email, in)
 	}
 	if err := c.d.Limiter.RecordSuccess(ctx, email, in.counterKey()); err != nil {

@@ -16,9 +16,34 @@ import (
 // rules as the session cookie.
 const MFACookieName = "__Host-constellation_mfa"
 
-// setupPath is the TOTP setup page. A user that needs MFA and has no second
+// setupBase is the TOTP setup page. A user that needs MFA and has no second
 // factor goes there.
-const setupPath = "/account/totp?required=1"
+const setupBase = "/account/totp?required=1"
+
+// maxAuthRequestLength is the longest auth request ID that a page accepts.
+const maxAuthRequestLength = 128
+
+// setupPath returns the setup page with the place to go after the setup. The
+// values are optional (R6).
+func setupPath(authRequest, returnTo string) string {
+	p := setupBase
+	if authRequest != "" {
+		p += "&authRequest=" + url.QueryEscape(authRequest)
+	}
+	if returnTo != "" {
+		p += "&return_to=" + url.QueryEscape(returnTo)
+	}
+	return p
+}
+
+// setupNext reads the place to go after the setup from the values of a request.
+func setupNext(authRequest, returnTo string) (string, string) {
+	if len(authRequest) > maxAuthRequestLength {
+		authRequest = ""
+	}
+	rt, _ := domain.SafeReturnTo(returnTo)
+	return authRequest, rt
+}
 
 func (h *Handler) setMFACookie(w http.ResponseWriter, s commands.IssuedSession) {
 	maxAge := int(s.PendingExpiresAt.Sub(h.now()).Seconds())
@@ -88,8 +113,16 @@ func (h *Handler) mfaView(w http.ResponseWriter, r *http.Request, v *view) bool 
 	}
 	if info.AuthRequest != "" {
 		// The redirect after the form goes to the redirect URI of the client. The
-		// CSP form-action must have its origin.
-		if !h.authRequestView(w, r, info.AuthRequest, &view{}) {
+		// CSP form-action must have its origin. The auth request can end before
+		// the pending login. Then the page shows with no extra origin, and the
+		// continue step gives the error page after the login (R7).
+		origin, err := h.d.LookupAuthRequest.Execute(r.Context(), info.AuthRequest)
+		switch {
+		case err == nil:
+			w.Header().Set("Content-Security-Policy", ContentSecurityPolicyWithFormAction(origin.FormActionOrigin))
+		case errors.Is(err, commands.ErrAuthRequestGone):
+		default:
+			h.serverError(w, r, err)
 			return false
 		}
 	}
@@ -195,7 +228,10 @@ func (h *Handler) totpSetupForm(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	h.renderSetup(w, r, http.StatusOK, res, view{Title: "Set up TOTP", Required: r.URL.Query().Get("required") == "1"})
+	ar, rt := setupNext(r.URL.Query().Get("authRequest"), r.URL.Query().Get("return_to"))
+	h.renderSetup(w, r, http.StatusOK, res, view{
+		Title: "Set up TOTP", Required: r.URL.Query().Get("required") == "1", AuthRequest: ar, ReturnTo: rt,
+	})
 }
 
 // renderSetup shows the setup page with the secret and the QR code.
@@ -233,15 +269,20 @@ func (h *Handler) totpSetup(w http.ResponseWriter, r *http.Request) {
 	out, err := h.d.MFA.FinishSetup(r.Context(), commands.FinishSetup{
 		SessionID: res.Session.ID, UserID: res.User.ID, Code: r.PostForm.Get("code"),
 	})
-	v := view{Title: "Set up TOTP"}
+	ar, rt := setupNext(r.PostForm.Get("authRequest"), r.PostForm.Get("return_to"))
+	v := view{Title: "Set up TOTP", AuthRequest: ar, ReturnTo: rt}
 	switch {
 	case err == nil:
-		h.render(w, r, http.StatusOK, "account_codes", view{Title: "Recovery codes", Codes: out.RecoveryCodes, Done: true})
+		next := ""
+		if ar != "" || rt != "" {
+			next = afterLogin(ar, rt)
+		}
+		h.render(w, r, http.StatusOK, "account_codes", view{Title: "Recovery codes", Codes: out.RecoveryCodes, Done: true, Next: next})
 	case errors.Is(err, commands.ErrMFABadCode):
 		v.Error = "The code is not correct."
 		h.renderSetup(w, r, http.StatusBadRequest, res, v)
 	case errors.Is(err, commands.ErrSetupExpired):
-		http.Redirect(w, r, "/account/totp", http.StatusSeeOther)
+		http.Redirect(w, r, setupPath(ar, rt), http.StatusSeeOther) //nolint:gosec // G710: a fixed path with escaped query values.
 	case errors.Is(err, commands.ErrTOTPEnabled):
 		http.Redirect(w, r, "/account/security", http.StatusSeeOther)
 	case errors.Is(err, commands.ErrTooManyAttempts):
@@ -300,7 +341,7 @@ func (h *Handler) setupTarget(r *http.Request, userID, fallback string) string {
 		return fallback
 	}
 	if st.Required && !st.State.Enabled() {
-		return setupPath
+		return setupBase
 	}
 	return fallback
 }

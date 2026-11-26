@@ -146,6 +146,21 @@ func (r *Sessions) SetMethods(ctx context.Context, id string, methods []string) 
 	return nil
 }
 
+// DropSecondFactor removes the methods of the second factor from the sessions
+// and the refresh token families of a user.
+func (r *Sessions) DropSecondFactor(ctx context.Context, userID string) error {
+	drop := []string{domain.AMROTP, domain.AMRRecovery, domain.AMRMFA}
+	return inTx(ctx, r.pool, func(ctx context.Context, q clientspg.Querier) error {
+		for _, table := range []string{"sessions", "refresh_token_families"} {
+			if _, err := q.Exec(ctx, `UPDATE `+table+` SET amr = ARRAY(SELECT m FROM unnest(amr) AS m WHERE m <> ALL($2::text[]))
+				WHERE user_id = $1 AND revoked_at IS NULL`, userID, drop); err != nil {
+				return fmt.Errorf("drop second factor from %s: %w", table, err)
+			}
+		}
+		return nil
+	})
+}
+
 // RevokeByTokenHash revokes a session.
 func (r *Sessions) RevokeByTokenHash(ctx context.Context, hash string, now time.Time) error {
 	if _, err := clientspg.Conn(ctx, r.pool).Exec(ctx, `

@@ -150,6 +150,8 @@ type view struct {
 	URI         string
 	QR          template.URL
 	Codes       []string
+	// Next is the place to go after the setup, or empty.
+	Next string
 }
 
 func (h *Handler) render(w http.ResponseWriter, r *http.Request, status int, name string, v view) {
@@ -302,7 +304,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		h.setCookie(w, issued)
 		target := afterLogin(authRequest, rt)
 		if issued.SetupRequired {
-			target = setupPath
+			target = setupPath(authRequest, rt)
 		}
 		// target is a fixed path, or a path that domain.SafeReturnTo accepted.
 		http.Redirect(w, r, target, http.StatusSeeOther) //nolint:gosec // G710: see the line above.
@@ -366,7 +368,7 @@ func (h *Handler) authorizeOutcome(w http.ResponseWriter, r *http.Request, out c
 	case commands.AuthorizeLogin:
 		http.Redirect(w, r, "/login?authRequest="+url.QueryEscape(out.AuthRequestID), http.StatusFound)
 	case commands.AuthorizeSetupMFA:
-		http.Redirect(w, r, setupPath, http.StatusFound)
+		http.Redirect(w, r, setupPath(out.AuthRequestID, ""), http.StatusFound)
 	default:
 		h.message(w, r, http.StatusBadRequest, "Cannot continue", out.Message)
 	}
