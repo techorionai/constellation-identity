@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -109,7 +110,10 @@ func TestIssue9Integration(t *testing.T) {
 		// U16 and U16a on the real repository.
 		repo := postgres.NewUserRoles(f.a.Pool(t))
 		got, err := repo.GrantedPermissions(ctx, id, domain.ImplicitUserRoles(domain.UserActive)...)
-		if err != nil || len(got) != 1 || got[0] != manageOwn {
+		// The implicit role user holds the key of the API tokens and, since the
+		// contract v0.5.0, the key of the MFA of the user.
+		slices.Sort(got)
+		if err != nil || !slices.Equal(got, []string{manageOwn, "identity:mfa:manage_own"}) {
 			t.Fatalf("active: %v, %v", got, err)
 		}
 		if got, err := repo.GrantedPermissions(ctx, id, domain.ImplicitUserRoles(domain.UserInvited)...); err != nil || len(got) != 0 {
@@ -614,19 +618,7 @@ func TestIssue9Integration(t *testing.T) {
 		for _, l := range h.ledger.logs {
 			texts = append(texts, l.Text())
 		}
-		spans := ""
-		for _, s := range spanExporter.GetSpans() {
-			spans += s.Name + "\n"
-			for _, a := range s.Attributes {
-				spans += string(a.Key) + "=" + a.Value.String() + "\n"
-			}
-			for _, e := range s.Events {
-				spans += e.Name + "\n"
-				for _, a := range e.Attributes {
-					spans += string(a.Key) + "=" + a.Value.String() + "\n"
-				}
-			}
-		}
+		spans := spansText()
 		for _, v := range h.ledger.apiTokens {
 			secret := strings.TrimPrefix(v, "cpat_")
 			for _, s := range []string{v, secret, domain.HashSecret(v)} {

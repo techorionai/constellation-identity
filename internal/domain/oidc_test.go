@@ -152,7 +152,7 @@ func TestIssue4_U4_RefreshScope(t *testing.T) {
 // Issue4_U12a: a new session has the same time for created_at and auth_time.
 func TestIssue4_U12a_NewSession(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	s := domain.SessionPolicy{IdleTimeout: time.Hour, AbsoluteTimeout: 24 * time.Hour}.NewSession("u", now)
+	s := domain.SessionPolicy{IdleTimeout: time.Hour, AbsoluteTimeout: 24 * time.Hour}.NewSession("u", now, nil)
 	if !s.AuthTime.Equal(now) || !s.CreatedAt.Equal(now) {
 		t.Fatalf("session = %+v", s)
 	}

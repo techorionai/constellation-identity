@@ -101,10 +101,12 @@ A client must make the `code_verifier` as RFC 7636 section 4.1 says: a random va
 | Token | Value |
 | ----- | ----- |
 | Access token | `aud` is the `app` of the client. `principal_type` is `user`. `sub` is the user ID. `scope` has the granted permission keys. `typ` is `at+jwt`. Life: `IDENTITY_OIDC__USER_TOKEN_TTL` (15 minutes). |
-| ID token | Only with the scope `openid`. `typ` is `JWT`. Claims: `iss`, `sub`, `aud` (the client ID), `exp`, `iat`, `auth_time`, `nonce`, and `sid` (the session ID). `email` and `email_verified` with the scope `email`. `name` with the scope `profile`. |
+| ID token | Only with the scope `openid`. `typ` is `JWT`. Claims: `iss`, `sub`, `aud` (the client ID), `exp`, `iat`, `auth_time`, `amr`, `nonce`, and `sid` (the session ID). `email` and `email_verified` with the scope `email`. `name` with the scope `profile`. |
 | Refresh token | Only with the scope `offline_access`. 32 random bytes. The service stores the SHA-256 hash. |
 
 `auth_time` is the time of the last login of the session (`sessions.auth_time`). A login of the same user changes it. It is never `created_at`.
+
+`amr` (RFC 8176) has the methods of the last login of the session: `["pwd"]` for a password only, `["pwd","otp","mfa"]` for a password and a TOTP code, and `["pwd","rec","mfa"]` for a password and a recovery code. A service that needs MFA checks that `amr` has `mfa`. A session with no recorded method (a session from before the upgrade) gives no `amr` claim. The access token of a user from the code flow also has `amr` and `auth_time`, the values of the code. Service tokens, agent tokens, exchange tokens, and API tokens have neither claim. A token with `act` does not satisfy MFA.
 
 The token request for a code runs these checks in order: the client, the read of the code (a read does not delete it), the client of the code, the `redirect_uri`, the `code_verifier`, the session and the user, the claim of the code (`GETDEL`), the marker of the used code, and the tokens. A Valkey fault gives `temporarily_unavailable` (503) and no token. It changes no session.
 
@@ -118,6 +120,8 @@ Reuse of a code: the service keeps a marker for 10 minutes. A request for a used
 - The new access token has the stored scope intersected with the current permissions of the user. A role that an admin takes away has an effect at the next refresh. If no scope remains, `invalid_grant`.
 - The optional `scope` can only narrow the stored scope. A token that is not in the stored scope gives `invalid_scope`. The OIDC scopes of the original grant (`openid`, `offline_access`, `email`, and `profile`) are accepted and do not change the access token. The narrower scope applies to that access token only.
 - A refresh moves the idle expiry of the session. The new token expires at the absolute expiry of the session.
+- A refresh keeps the `amr` and the `auth_time` of the original login (OIDC Core 1.0 section 12.2, RFC 9470 section 6.1). The refresh token family stores both values when the code flow makes it. A later login in the same session (for example a step-up in a second client) does not change an existing family. A family from before the upgrade has no values, so its access token has no `amr` and no `auth_time`.
+- A user that needs MFA (the rule "MFA for admins") and whose family has no `mfa` gets `invalid_grant`.
 - A re-login of the same user does not stop a stolen refresh token. A user who suspects a theft must log out, or an admin must revoke the sessions.
 
 ### Userinfo, revoke, and end session
@@ -126,6 +130,18 @@ Reuse of a code: the service keeps a marker for 10 minutes. A request for a used
 - `POST /oauth/revoke` (RFC 7009). A public client sends `client_id`. A service client uses `private_key_jwt`. A refresh token of the client: its family is revoked. A refresh token of another client: 400 `unauthorized_client` and no change. An unknown token or an access token gives 200. A `token_type_hint` that is not `refresh_token`, `access_token`, or empty gives 400 `unsupported_token_type`.
 - `GET /oauth/end_session` with an optional `id_token_hint`. The hint needs a valid signature, the issuer, `typ` `JWT`, and the `aud` of a registered public client. An expired hint is valid. The service revokes the session of the cookie at once only if the hint is valid and its `sid` is the session of the cookie. It then also revokes all refresh token families. Otherwise it shows a confirmation form, and the `POST` of the form (no field) revokes the session of the cookie only. `post_logout_redirect_uri` is used only with the logout at once and only if it is a registered post-logout URI of the client in the hint.
 - `POST /logout` revokes the session only. A refresh token of that session fails at the session check.
+
+## Step-up (fresh MFA login)
+
+An operation that changes the MFA of a user (`MeTotp_remove` and `UserMfa_reset`) needs a fresh MFA login: `amr` has `mfa` and `auth_time` is 5 minutes old or less. If the token does not show this, the response is 401 (RFC 9470):
+
+- Content type `application/problem+json`.
+- Header `WWW-Authenticate: Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`.
+- Body: `type` `about:blank`, `title` `Reauthentication required`, `status` 401, `code` `reauthentication_required`, `detail`, `requestId`, and `traceId`.
+
+A token with no `amr` (a service, agent, exchange, or API token), and a token with `act`, get the same response.
+
+A client must not refresh the token to answer this. A refresh keeps the old `auth_time`. The client starts a new authorization request with `max_age` (and `prompt=login`). The login asks for the password and the second factor. The new code, ID token, and access token have the new `amr` and `auth_time`.
 
 ## Personal API tokens
 

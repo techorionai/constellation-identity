@@ -12,6 +12,10 @@ import (
 // JavaScript and no inline style.
 const contentSecurityPolicy = "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 
+// contentSecurityPolicyWithImages is the policy of the TOTP setup page. It lets
+// the page show the QR code, which is a PNG in a data URI.
+const contentSecurityPolicyWithImages = "default-src 'none'; style-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+
 // ContentSecurityPolicyWithFormAction returns the policy of a page with one
 // more origin in form-action. The origin comes from a registered redirect URI
 // that passed the host rules of domain.ValidateRedirectURI, so it cannot add a

@@ -19,11 +19,25 @@ Each change writes one `info` log record (`identity.admin.change`) with `actor_i
 | `UserApiTokens_list` | `identity:api_token:read` |
 | `ApiTokens_revoke` | `identity:api_token:revoke` |
 | `MeApiTokens_create`, `MeApiTokens_list`, `MeApiTokens_revoke` | `identity:api_token:manage_own` (user token only) |
+| `MeMfa_get`, `MeTotp_remove` | `identity:mfa:manage_own` (user token only) |
+| `UserMfa_get` | `identity:mfa:read` |
+| `UserMfa_reset` | `identity:mfa:reset` and `identity:admin` |
 | `Sessions_list` | `identity:session:read` |
 | `Sessions_revoke`, `Sessions_revokeAll` | `identity:session:revoke` |
 | `Me_get` | No scope. A user token is necessary. |
 
 Only the role `admin` holds `identity:admin`. A holder of `identity:client:write` alone could add a key to a service client and get its tokens, so the client writes also need `identity:admin`. A holder of `identity:role:assign` can assign each role, also `identity:admin`. In slice 1 this permission is equal to full admin access.
+
+## MFA
+
+- `MeMfa_get` returns `MfaStatus` of the user of the token. It needs a user token with no `act` (403 `user_token_required`).
+- `MeTotp_remove` removes the TOTP factor and the recovery codes of the user of the token. The order of the checks: the token (401), the scopes (403), `user_token_required` (403), `reauthentication_required` (401), `totp_not_found` (404), `mfa_required` (409). The 409 means that the policy needs MFA for the user.
+- `UserMfa_get` returns `MfaStatus` of any user. The permission is `identity:mfa:read`, not `identity:user:read`. An unknown user gives 404 `user_not_found`.
+- `UserMfa_reset` removes the factors of any user and revokes all sessions and refresh token families of the user. It keeps the password and the API tokens. A user with no factor also gives 204, and the sessions are also revoked. The order of the checks: the token (401), the scopes (403), `reauthentication_required` (401), `user_not_found` (404), `mfa_required` (409). The 409 means that the `userId` is the `sub` of the token. An admin cannot reset the own MFA with this operation. The admin uses `identity reset-mfa <email>`.
+- `MeTotp_remove` and `UserMfa_reset` need a fresh MFA login: `amr` has `mfa` and `auth_time` is 5 minutes old or less. A token with `act`, an agent or exchange token, and an API token do not satisfy this. The refusal is 401 with the code `reauthentication_required` and the header `WWW-Authenticate: Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`. See the step-up section of [tokens.md](tokens.md).
+- Fields of `MfaStatus`: `enabled` (a TOTP row or an unused recovery code exists), `required` (the policy needs MFA for the user), `totp` (absent when TOTP is off, else `createdAt` and `lastUsedAt`, and `lastUsedAt` is absent until a code is used), and `recoveryCodesRemaining` (0 to 10).
+- `MeTotp_remove` and `UserMfa_reset` write an audit entry (`identity:mfa:totp_remove` and `identity:mfa:reset`) and send a security notice to the user through the port `securityevents`. For now, the log has both. See [security.md](security.md).
+- The service gives the keys `identity:mfa:manage_own` to the roles `admin` and `user`, and `identity:mfa:reset` and `identity:mfa:read` to the role `admin`. The publish of the own manifest at start replaces the role permissions, so an existing role gets the new keys with no other step. A client must request `identity:mfa:manage_own` in the `scope` of the authorization request.
 
 ## Lists
 

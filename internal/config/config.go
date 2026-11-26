@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	clientpg "github.com/techorionai/constellation-platform-go/clients/postgres"
 	clientvk "github.com/techorionai/constellation-platform-go/clients/valkey"
@@ -106,6 +107,25 @@ type Login struct {
 	FailureWindow       time.Duration `env:"FAILURE_WINDOW" envDefault:"15m"`
 }
 
+// Limits of the MFA settings.
+const (
+	MinTOTPIssuerLength = 1
+	MaxTOTPIssuerLength = 64
+	MaxMFAFailures      = 100
+)
+
+// MFA is the config of the second factor.
+type MFA struct {
+	// RequireForAdmins turns on the rule "MFA for admins".
+	RequireForAdmins bool `env:"REQUIRE_FOR_ADMINS" envDefault:"true"`
+	// TOTPIssuer is the issuer name in the authenticator app.
+	TOTPIssuer string `env:"TOTP_ISSUER" envDefault:"Constellation"`
+	// MaxFailuresPerUser is the number of failed second factor tries of one
+	// user in FailureWindow.
+	MaxFailuresPerUser int           `env:"MAX_FAILURES_PER_USER" envDefault:"10"`
+	FailureWindow      time.Duration `env:"FAILURE_WINDOW" envDefault:"15m"`
+}
+
 // Retention is the config of the retention jobs. A job deletes the rows 7 days
 // after the end of the token or session, unless Period says otherwise.
 type Retention struct {
@@ -173,6 +193,7 @@ type Config struct {
 	Session     Session         `envPrefix:"SESSION__"`
 	Password    Password        `envPrefix:"PASSWORD__"`
 	Login       Login           `envPrefix:"LOGIN__"`
+	MFA         MFA             `envPrefix:"MFA__"`
 	Retention   Retention       `envPrefix:"RETENTION__"`
 	OIDC        OIDC            `envPrefix:"OIDC__"`
 	APIToken    APIToken        `envPrefix:"API_TOKEN__"`
@@ -235,6 +256,15 @@ func (c Config) validateUsers() []error {
 	}
 	if c.Login.FailureWindow < MinFailureWindow || c.Login.FailureWindow > MaxFailureWindow {
 		bad("LOGIN__FAILURE_WINDOW", fmt.Sprintf("must be from %s to %s", MinFailureWindow, MaxFailureWindow))
+	}
+	if n := utf8.RuneCountInString(c.MFA.TOTPIssuer); n < MinTOTPIssuerLength || n > MaxTOTPIssuerLength {
+		bad("MFA__TOTP_ISSUER", fmt.Sprintf("must have %d to %d characters", MinTOTPIssuerLength, MaxTOTPIssuerLength))
+	}
+	if c.MFA.MaxFailuresPerUser < 1 || c.MFA.MaxFailuresPerUser > MaxMFAFailures {
+		bad("MFA__MAX_FAILURES_PER_USER", fmt.Sprintf("must be from 1 to %d", MaxMFAFailures))
+	}
+	if c.MFA.FailureWindow < MinFailureWindow || c.MFA.FailureWindow > MaxFailureWindow {
+		bad("MFA__FAILURE_WINDOW", fmt.Sprintf("must be from %s to %s", MinFailureWindow, MaxFailureWindow))
 	}
 	if _, err := c.HTTP.TrustedProxyPrefixes(); err != nil {
 		bad("HTTP__TRUSTED_PROXIES", "has a value that is not a CIDR range: "+err.Error())

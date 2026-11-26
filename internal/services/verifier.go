@@ -52,9 +52,9 @@ func isLoopbackHTTP(issuer string) bool {
 // key set of this process. It makes no network request. If the config is not
 // valid, for example an http issuer with a host that is not a loopback host,
 // the error names the issuer, and the service does not start.
-func NewVerifier(issuer string, keys KeySet) (*jwt.Verifier, error) {
+func NewVerifier(issuer string, keys KeySet, opts ...jwt.Option) (*jwt.Verifier, error) {
 	client := &http.Client{Transport: jwksTransport{keys: keys}}
-	v, err := jwt.New(VerifierConfig(issuer), jwt.WithHTTPClient(client))
+	v, err := jwt.New(VerifierConfig(issuer), append([]jwt.Option{jwt.WithHTTPClient(client)}, opts...)...)
 	if err != nil {
 		return nil, fmt.Errorf("the issuer %q cannot be used to verify tokens: %w", issuer, err)
 	}

@@ -91,6 +91,7 @@ type settings struct {
 	corsCacheTTL    *time.Duration
 	rateRules       map[string]ratelimit.Rule
 	rateLimiter     ratelimit.Limiter
+	clockedVerifier bool
 }
 
 // Option changes a test server.
@@ -138,6 +139,11 @@ func WithRetentionAfter(after func(time.Duration) <-chan time.Time) Option {
 // WithClock gives the server a clock that the test moves. The clock is for the
 // users, the sessions, the code flow, and the admin API.
 func WithClock(c *Clock) Option { return func(s *settings) { s.clock = c } }
+
+// WithClockedVerifier makes the token verifier of the /v1 routes use the clock
+// of WithClock. A test that moves the clock far uses it, so that its tokens have
+// the right time claims.
+func WithClockedVerifier() Option { return func(s *settings) { s.clockedVerifier = true } }
 
 // WithCORSCacheTTL sets the time of the CORS origin cache. 0 reads the database
 // for each request.
@@ -204,6 +210,9 @@ func (e *Env) TryStart(t testing.TB, opts ...Option) (*Server, error) {
 	}
 	if s.clock != nil {
 		svcOpts = append(svcOpts, services.WithClock(s.clock.Now))
+	}
+	if s.clockedVerifier && s.clock != nil {
+		svcOpts = append(svcOpts, services.WithVerifierClock(s.clock.Now))
 	}
 	if s.corsCacheTTL != nil {
 		svcOpts = append(svcOpts, services.WithCORSCacheTTL(*s.corsCacheTTL))
@@ -325,6 +334,10 @@ func (e *Env) buildConfig(t testing.TB, opts []Option) (config.Config, *settings
 		Session:  config.Session{IdleTimeout: 12 * time.Hour, AbsoluteTimeout: 168 * time.Hour},
 		Password: config.Password{MaxConcurrent: 4, QueueTimeout: 5 * time.Second},
 		Login:    config.Login{MaxFailuresPerEmail: 5, MaxFailuresPerIP: 50, FailureWindow: 15 * time.Minute},
+		// The rule MFA for admins is off by default in a test, so that the tests of
+		// the admin API and the code flow need no TOTP. A test of MFA turns it on with
+		// WithConfigure.
+		MFA: config.MFA{TOTPIssuer: "Constellation", MaxFailuresPerUser: 10, FailureWindow: 15 * time.Minute},
 		Retention: config.Retention{
 			Tokens:   retention.Config{Interval: time.Hour, BatchSize: 1000},
 			Sessions: retention.Config{Interval: time.Hour, BatchSize: 1000},

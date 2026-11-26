@@ -148,6 +148,31 @@ func (r *Sessions) Touch(_ context.Context, id string, lastSeen, idle time.Time)
 	return nil
 }
 
+// SetMethods sets the methods of a session.
+func (r *Sessions) SetMethods(_ context.Context, id string, methods []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := r.Rows[id]
+	s.AuthMethods = methods
+	r.Rows[id] = s
+	return nil
+}
+
+// DropSecondFactor removes the methods of the second factor from the sessions of a user.
+func (r *Sessions) DropSecondFactor(_ context.Context, userID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, s := range r.Rows {
+		if s.UserID == userID && s.RevokedAt == nil {
+			s.AuthMethods = slices.DeleteFunc(slices.Clone(s.AuthMethods), func(m string) bool {
+				return m == domain.AMROTP || m == domain.AMRRecovery || m == domain.AMRMFA
+			})
+			r.Rows[id] = s
+		}
+	}
+	return nil
+}
+
 // RevokeByTokenHash revokes a session.
 func (r *Sessions) RevokeByTokenHash(_ context.Context, hash string, now time.Time) error {
 	r.mu.Lock()

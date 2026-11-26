@@ -37,6 +37,7 @@ type RateLimit struct {
 	SetupInvite      RateBucket `envPrefix:"SETUP_INVITE__"`
 	APITokenCreate   RateBucket `envPrefix:"API_TOKEN_CREATE__"`
 	ManifestPublish  RateBucket `envPrefix:"MANIFEST_PUBLISH__"`
+	MFAVerify        RateBucket `envPrefix:"MFA_VERIFY__"`
 }
 
 // DefaultRateRules returns the default rules of all buckets.
@@ -52,6 +53,7 @@ func DefaultRateRules() map[string]ratelimit.Rule {
 		ratelimit.BucketSetupInvite:      {Name: ratelimit.BucketSetupInvite, Limit: 10, Window: 15 * time.Minute},
 		ratelimit.BucketAPITokenCreate:   {Name: ratelimit.BucketAPITokenCreate, Limit: 20, Window: time.Hour},
 		ratelimit.BucketManifestPublish:  {Name: ratelimit.BucketManifestPublish, Limit: 60, Window: time.Hour},
+		ratelimit.BucketMFAVerify:        {Name: ratelimit.BucketMFAVerify, Limit: 30, Window: time.Minute},
 	}
 }
 
@@ -67,6 +69,7 @@ func (r RateLimit) buckets() map[string]RateBucket {
 		ratelimit.BucketSetupInvite:      r.SetupInvite,
 		ratelimit.BucketAPITokenCreate:   r.APITokenCreate,
 		ratelimit.BucketManifestPublish:  r.ManifestPublish,
+		ratelimit.BucketMFAVerify:        r.MFAVerify,
 	}
 }
 

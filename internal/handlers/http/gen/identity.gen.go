@@ -834,6 +834,21 @@ type JsonWebKeySet struct {
 	Keys []JsonWebKey `json:"keys"`
 }
 
+// MfaStatus The MFA state of a user. A client ignores a field that it does not know.
+type MfaStatus struct {
+	// Enabled The user has one or more second factors.
+	Enabled bool `json:"enabled"`
+
+	// RecoveryCodesRemaining The number of recovery codes that are not used.
+	RecoveryCodesRemaining int32 `json:"recoveryCodesRemaining"`
+
+	// Required The policy requires MFA for this user, for example an admin.
+	Required bool `json:"required"`
+
+	// Totp Present when TOTP is set up. Absent when TOTP is not set up.
+	Totp *TotpStatus `json:"totp,omitempty"`
+}
+
 // NotFound The resource does not exist.
 type NotFound = Problem
 
@@ -962,6 +977,12 @@ type PublishedManifestPage struct {
 	// NextPageToken Token for the next page. No value means that this is the last page.
 	NextPageToken *string `json:"nextPageToken,omitempty"`
 }
+
+// ReauthenticationRequired The token does not show a fresh MFA login (RFC 9470). The code is `reauthentication_required`.
+// The client must start a new authorization request with `max_age`. A token refresh does not help.
+// The header `WWW-Authenticate` is optional in this model, because the 401 response of an operation also covers `Unauthorized`.
+// An operation that uses this model always sends the header with the code `reauthentication_required`.
+type ReauthenticationRequired = Problem
 
 // RequestScopeString Space-separated scope values in a token request or an authorize request.
 // Each value is a permission key or one of `openid`, `profile`, `email`, and `offline_access`.
@@ -1153,7 +1174,7 @@ type TokenResponse struct {
 	// ExpiresIn Lifetime of the access token in seconds.
 	ExpiresIn int32 `json:"expires_in"`
 
-	// IdToken ID token. Present if the request had the scope `openid`.
+	// IdToken ID token. Present if the request had the scope `openid`. Its claims are the model `IdTokenClaims`.
 	IdToken *string `json:"id_token,omitempty"`
 
 	// IssuedTokenType Type of the issued token. The identity service sets it for token exchange.
@@ -1196,6 +1217,15 @@ type TokenTypeHint1 = string
 
 // TooManyRequests The client sent too many requests.
 type TooManyRequests = Problem
+
+// TotpStatus The TOTP factor of a user.
+type TotpStatus struct {
+	// CreatedAt The time of the TOTP setup.
+	CreatedAt time.Time `json:"createdAt"`
+
+	// LastUsedAt The time of the last accepted TOTP code. Absent when no code was used.
+	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+}
 
 // Unauthorized The request has no valid credentials.
 type Unauthorized = Problem
@@ -1353,6 +1383,11 @@ type MeApiTokensListParams struct {
 	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
 }
 
+// MeTotpRemove401ApplicationProblemPlusJSONResponseBody defines parameters for MeTotpRemove.
+type MeTotpRemove401ApplicationProblemPlusJSONResponseBody struct {
+	union json.RawMessage
+}
+
 // PermissionManifestsListParams defines parameters for PermissionManifestsList.
 type PermissionManifestsListParams struct {
 	// PageToken Opaque token from `nextPageToken` of the previous page.
@@ -1389,6 +1424,11 @@ type UserApiTokensListParams struct {
 
 	// PageSize Maximum number of items in the page.
 	PageSize *CursorPageParamsPageSize `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// UserMfaReset401ApplicationProblemPlusJSONResponseBody defines parameters for UserMfaReset.
+type UserMfaReset401ApplicationProblemPlusJSONResponseBody struct {
+	union json.RawMessage
 }
 
 // UserRolesListParams defines parameters for UserRolesList.
@@ -2244,6 +2284,130 @@ func (t *TokenTypeHint) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsReauthenticationRequired returns the union data inside the MeTotpRemove401ApplicationProblemPlusJSONResponseBody as a ReauthenticationRequired
+func (t MeTotpRemove401ApplicationProblemPlusJSONResponseBody) AsReauthenticationRequired() (ReauthenticationRequired, error) {
+	var body ReauthenticationRequired
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromReauthenticationRequired overwrites any union data inside the MeTotpRemove401ApplicationProblemPlusJSONResponseBody as the provided ReauthenticationRequired
+func (t *MeTotpRemove401ApplicationProblemPlusJSONResponseBody) FromReauthenticationRequired(v ReauthenticationRequired) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeReauthenticationRequired performs a merge with any union data inside the MeTotpRemove401ApplicationProblemPlusJSONResponseBody, using the provided ReauthenticationRequired
+func (t *MeTotpRemove401ApplicationProblemPlusJSONResponseBody) MergeReauthenticationRequired(v ReauthenticationRequired) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsUnauthorized returns the union data inside the MeTotpRemove401ApplicationProblemPlusJSONResponseBody as a Unauthorized
+func (t MeTotpRemove401ApplicationProblemPlusJSONResponseBody) AsUnauthorized() (Unauthorized, error) {
+	var body Unauthorized
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromUnauthorized overwrites any union data inside the MeTotpRemove401ApplicationProblemPlusJSONResponseBody as the provided Unauthorized
+func (t *MeTotpRemove401ApplicationProblemPlusJSONResponseBody) FromUnauthorized(v Unauthorized) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeUnauthorized performs a merge with any union data inside the MeTotpRemove401ApplicationProblemPlusJSONResponseBody, using the provided Unauthorized
+func (t *MeTotpRemove401ApplicationProblemPlusJSONResponseBody) MergeUnauthorized(v Unauthorized) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t MeTotpRemove401ApplicationProblemPlusJSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *MeTotpRemove401ApplicationProblemPlusJSONResponseBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsReauthenticationRequired returns the union data inside the UserMfaReset401ApplicationProblemPlusJSONResponseBody as a ReauthenticationRequired
+func (t UserMfaReset401ApplicationProblemPlusJSONResponseBody) AsReauthenticationRequired() (ReauthenticationRequired, error) {
+	var body ReauthenticationRequired
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromReauthenticationRequired overwrites any union data inside the UserMfaReset401ApplicationProblemPlusJSONResponseBody as the provided ReauthenticationRequired
+func (t *UserMfaReset401ApplicationProblemPlusJSONResponseBody) FromReauthenticationRequired(v ReauthenticationRequired) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeReauthenticationRequired performs a merge with any union data inside the UserMfaReset401ApplicationProblemPlusJSONResponseBody, using the provided ReauthenticationRequired
+func (t *UserMfaReset401ApplicationProblemPlusJSONResponseBody) MergeReauthenticationRequired(v ReauthenticationRequired) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsUnauthorized returns the union data inside the UserMfaReset401ApplicationProblemPlusJSONResponseBody as a Unauthorized
+func (t UserMfaReset401ApplicationProblemPlusJSONResponseBody) AsUnauthorized() (Unauthorized, error) {
+	var body Unauthorized
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromUnauthorized overwrites any union data inside the UserMfaReset401ApplicationProblemPlusJSONResponseBody as the provided Unauthorized
+func (t *UserMfaReset401ApplicationProblemPlusJSONResponseBody) FromUnauthorized(v Unauthorized) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeUnauthorized performs a merge with any union data inside the UserMfaReset401ApplicationProblemPlusJSONResponseBody, using the provided Unauthorized
+func (t *UserMfaReset401ApplicationProblemPlusJSONResponseBody) MergeUnauthorized(v Unauthorized) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t UserMfaReset401ApplicationProblemPlusJSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *UserMfaReset401ApplicationProblemPlusJSONResponseBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 
@@ -2334,6 +2498,12 @@ type ServerInterface interface {
 	// (DELETE /v1/me/api-tokens/{tokenId})
 	MeApiTokensRevoke(w http.ResponseWriter, r *http.Request, tokenId string)
 
+	// (GET /v1/me/mfa)
+	MeMfaGet(w http.ResponseWriter, r *http.Request)
+
+	// (DELETE /v1/me/totp)
+	MeTotpRemove(w http.ResponseWriter, r *http.Request)
+
 	// (GET /v1/permission-manifests)
 	PermissionManifestsList(w http.ResponseWriter, r *http.Request, params PermissionManifestsListParams)
 
@@ -2369,6 +2539,12 @@ type ServerInterface interface {
 
 	// (POST /v1/users/{userId}/invites)
 	InvitesCreate(w http.ResponseWriter, r *http.Request, userId string)
+
+	// (DELETE /v1/users/{userId}/mfa)
+	UserMfaReset(w http.ResponseWriter, r *http.Request, userId string)
+
+	// (GET /v1/users/{userId}/mfa)
+	UserMfaGet(w http.ResponseWriter, r *http.Request, userId string)
 
 	// (GET /v1/users/{userId}/roles)
 	UserRolesList(w http.ResponseWriter, r *http.Request, userId string, params UserRolesListParams)
@@ -3349,6 +3525,34 @@ func (siw *ServerInterfaceWrapper) MeApiTokensRevoke(w http.ResponseWriter, r *h
 	handler.ServeHTTP(w, r)
 }
 
+// MeMfaGet operation middleware
+func (siw *ServerInterfaceWrapper) MeMfaGet(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MeMfaGet(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// MeTotpRemove operation middleware
+func (siw *ServerInterfaceWrapper) MeTotpRemove(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MeTotpRemove(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // PermissionManifestsList operation middleware
 func (siw *ServerInterfaceWrapper) PermissionManifestsList(w http.ResponseWriter, r *http.Request) {
 
@@ -3751,6 +3955,58 @@ func (siw *ServerInterfaceWrapper) InvitesCreate(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
+// UserMfaReset operation middleware
+func (siw *ServerInterfaceWrapper) UserMfaReset(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "userId" -------------
+	var userId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", r.PathValue("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UserMfaReset(w, r, userId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UserMfaGet operation middleware
+func (siw *ServerInterfaceWrapper) UserMfaGet(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "userId" -------------
+	var userId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", r.PathValue("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "userId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UserMfaGet(w, r, userId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UserRolesList operation middleware
 func (siw *ServerInterfaceWrapper) UserRolesList(w http.ResponseWriter, r *http.Request) {
 
@@ -4106,6 +4362,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/me/api-tokens", wrapper.MeApiTokensList)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/me/api-tokens", wrapper.MeApiTokensCreate)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/me/api-tokens/{tokenId}", wrapper.MeApiTokensRevoke)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/me/mfa", wrapper.MeMfaGet)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/me/totp", wrapper.MeTotpRemove)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/permission-manifests", wrapper.PermissionManifestsList)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/permission-manifests/{app}", wrapper.PermissionManifestsGet)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/v1/permission-manifests/{app}", wrapper.PermissionManifestsPublish)
@@ -4118,6 +4376,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/v1/users/{userId}", wrapper.UsersUpdate)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/users/{userId}/api-tokens", wrapper.UserApiTokensList)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/users/{userId}/invites", wrapper.InvitesCreate)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/users/{userId}/mfa", wrapper.UserMfaReset)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/users/{userId}/mfa", wrapper.UserMfaGet)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/users/{userId}/roles", wrapper.UserRolesList)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/v1/users/{userId}/roles/{role}", wrapper.UserRolesRemove)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/v1/users/{userId}/roles/{role}", wrapper.UserRolesAssign)
@@ -6927,6 +7187,192 @@ func (response MeApiTokensRevoke500ApplicationProblemPlusJSONResponse) VisitMeAp
 	return err
 }
 
+type MeMfaGetRequestObject struct {
+}
+
+type MeMfaGetResponseObject interface {
+	VisitMeMfaGetResponse(w http.ResponseWriter) error
+}
+
+type MeMfaGet200JSONResponse MfaStatus
+
+func (response MeMfaGet200JSONResponse) VisitMeMfaGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeMfaGet400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response MeMfaGet400ApplicationProblemPlusJSONResponse) VisitMeMfaGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeMfaGet401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response MeMfaGet401ApplicationProblemPlusJSONResponse) VisitMeMfaGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeMfaGet403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response MeMfaGet403ApplicationProblemPlusJSONResponse) VisitMeMfaGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeMfaGet500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response MeMfaGet500ApplicationProblemPlusJSONResponse) VisitMeMfaGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeTotpRemoveRequestObject struct {
+}
+
+type MeTotpRemoveResponseObject interface {
+	VisitMeTotpRemoveResponse(w http.ResponseWriter) error
+}
+
+type MeTotpRemove204Response struct {
+}
+
+func (response MeTotpRemove204Response) VisitMeTotpRemoveResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type MeTotpRemove400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response MeTotpRemove400ApplicationProblemPlusJSONResponse) VisitMeTotpRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeTotpRemove401ResponseHeaders struct {
+	WWWAuthenticate *string
+}
+
+type MeTotpRemove401ApplicationProblemPlusJSONResponse struct {
+	Body    MeTotpRemove401ApplicationProblemPlusJSONResponseBody
+	Headers MeTotpRemove401ResponseHeaders
+}
+
+func (response MeTotpRemove401ApplicationProblemPlusJSONResponse) VisitMeTotpRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body.union); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.WWWAuthenticate != nil {
+		w.Header().Set("WWW-Authenticate", fmt.Sprint(*response.Headers.WWWAuthenticate))
+	}
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeTotpRemove403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response MeTotpRemove403ApplicationProblemPlusJSONResponse) VisitMeTotpRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeTotpRemove404ApplicationProblemPlusJSONResponse NotFound
+
+func (response MeTotpRemove404ApplicationProblemPlusJSONResponse) VisitMeTotpRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeTotpRemove409ApplicationProblemPlusJSONResponse Conflict
+
+func (response MeTotpRemove409ApplicationProblemPlusJSONResponse) VisitMeTotpRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type MeTotpRemove500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response MeTotpRemove500ApplicationProblemPlusJSONResponse) VisitMeTotpRemoveResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type PermissionManifestsListRequestObject struct {
 	Params PermissionManifestsListParams
 }
@@ -8084,6 +8530,208 @@ func (response InvitesCreate500ApplicationProblemPlusJSONResponse) VisitInvitesC
 	return err
 }
 
+type UserMfaResetRequestObject struct {
+	UserId string `json:"userId"`
+}
+
+type UserMfaResetResponseObject interface {
+	VisitUserMfaResetResponse(w http.ResponseWriter) error
+}
+
+type UserMfaReset204Response struct {
+}
+
+func (response UserMfaReset204Response) VisitUserMfaResetResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type UserMfaReset400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response UserMfaReset400ApplicationProblemPlusJSONResponse) VisitUserMfaResetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserMfaReset401ResponseHeaders struct {
+	WWWAuthenticate *string
+}
+
+type UserMfaReset401ApplicationProblemPlusJSONResponse struct {
+	Body    UserMfaReset401ApplicationProblemPlusJSONResponseBody
+	Headers UserMfaReset401ResponseHeaders
+}
+
+func (response UserMfaReset401ApplicationProblemPlusJSONResponse) VisitUserMfaResetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body.union); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.WWWAuthenticate != nil {
+		w.Header().Set("WWW-Authenticate", fmt.Sprint(*response.Headers.WWWAuthenticate))
+	}
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserMfaReset403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response UserMfaReset403ApplicationProblemPlusJSONResponse) VisitUserMfaResetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserMfaReset404ApplicationProblemPlusJSONResponse NotFound
+
+func (response UserMfaReset404ApplicationProblemPlusJSONResponse) VisitUserMfaResetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserMfaReset409ApplicationProblemPlusJSONResponse Conflict
+
+func (response UserMfaReset409ApplicationProblemPlusJSONResponse) VisitUserMfaResetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserMfaReset500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response UserMfaReset500ApplicationProblemPlusJSONResponse) VisitUserMfaResetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserMfaGetRequestObject struct {
+	UserId string `json:"userId"`
+}
+
+type UserMfaGetResponseObject interface {
+	VisitUserMfaGetResponse(w http.ResponseWriter) error
+}
+
+type UserMfaGet200JSONResponse MfaStatus
+
+func (response UserMfaGet200JSONResponse) VisitUserMfaGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserMfaGet400ApplicationProblemPlusJSONResponse BadRequest
+
+func (response UserMfaGet400ApplicationProblemPlusJSONResponse) VisitUserMfaGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserMfaGet401ApplicationProblemPlusJSONResponse Unauthorized
+
+func (response UserMfaGet401ApplicationProblemPlusJSONResponse) VisitUserMfaGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserMfaGet403ApplicationProblemPlusJSONResponse Forbidden
+
+func (response UserMfaGet403ApplicationProblemPlusJSONResponse) VisitUserMfaGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserMfaGet404ApplicationProblemPlusJSONResponse NotFound
+
+func (response UserMfaGet404ApplicationProblemPlusJSONResponse) VisitUserMfaGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UserMfaGet500ApplicationProblemPlusJSONResponse InternalServerError
+
+func (response UserMfaGet500ApplicationProblemPlusJSONResponse) VisitUserMfaGetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type UserRolesListRequestObject struct {
 	UserId string `json:"userId"`
 	Params UserRolesListParams
@@ -8654,6 +9302,12 @@ type StrictServerInterface interface {
 	// (DELETE /v1/me/api-tokens/{tokenId})
 	MeApiTokensRevoke(ctx context.Context, request MeApiTokensRevokeRequestObject) (MeApiTokensRevokeResponseObject, error)
 
+	// (GET /v1/me/mfa)
+	MeMfaGet(ctx context.Context, request MeMfaGetRequestObject) (MeMfaGetResponseObject, error)
+
+	// (DELETE /v1/me/totp)
+	MeTotpRemove(ctx context.Context, request MeTotpRemoveRequestObject) (MeTotpRemoveResponseObject, error)
+
 	// (GET /v1/permission-manifests)
 	PermissionManifestsList(ctx context.Context, request PermissionManifestsListRequestObject) (PermissionManifestsListResponseObject, error)
 
@@ -8689,6 +9343,12 @@ type StrictServerInterface interface {
 
 	// (POST /v1/users/{userId}/invites)
 	InvitesCreate(ctx context.Context, request InvitesCreateRequestObject) (InvitesCreateResponseObject, error)
+
+	// (DELETE /v1/users/{userId}/mfa)
+	UserMfaReset(ctx context.Context, request UserMfaResetRequestObject) (UserMfaResetResponseObject, error)
+
+	// (GET /v1/users/{userId}/mfa)
+	UserMfaGet(ctx context.Context, request UserMfaGetRequestObject) (UserMfaGetResponseObject, error)
 
 	// (GET /v1/users/{userId}/roles)
 	UserRolesList(ctx context.Context, request UserRolesListRequestObject) (UserRolesListResponseObject, error)
@@ -9561,6 +10221,54 @@ func (sh *strictHandler) MeApiTokensRevoke(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// MeMfaGet operation middleware
+func (sh *strictHandler) MeMfaGet(w http.ResponseWriter, r *http.Request) {
+	var request MeMfaGetRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.MeMfaGet(ctx, request.(MeMfaGetRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "MeMfaGet")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(MeMfaGetResponseObject); ok {
+		if err := validResponse.VisitMeMfaGetResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// MeTotpRemove operation middleware
+func (sh *strictHandler) MeTotpRemove(w http.ResponseWriter, r *http.Request) {
+	var request MeTotpRemoveRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.MeTotpRemove(ctx, request.(MeTotpRemoveRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "MeTotpRemove")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(MeTotpRemoveResponseObject); ok {
+		if err := validResponse.VisitMeTotpRemoveResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // PermissionManifestsList operation middleware
 func (sh *strictHandler) PermissionManifestsList(w http.ResponseWriter, r *http.Request, params PermissionManifestsListParams) {
 	var request PermissionManifestsListRequestObject
@@ -9886,6 +10594,58 @@ func (sh *strictHandler) InvitesCreate(w http.ResponseWriter, r *http.Request, u
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(InvitesCreateResponseObject); ok {
 		if err := validResponse.VisitInvitesCreateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UserMfaReset operation middleware
+func (sh *strictHandler) UserMfaReset(w http.ResponseWriter, r *http.Request, userId string) {
+	var request UserMfaResetRequestObject
+
+	request.UserId = userId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UserMfaReset(ctx, request.(UserMfaResetRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UserMfaReset")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UserMfaResetResponseObject); ok {
+		if err := validResponse.VisitUserMfaResetResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UserMfaGet operation middleware
+func (sh *strictHandler) UserMfaGet(w http.ResponseWriter, r *http.Request, userId string) {
+	var request UserMfaGetRequestObject
+
+	request.UserId = userId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UserMfaGet(ctx, request.(UserMfaGetRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UserMfaGet")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UserMfaGetResponseObject); ok {
+		if err := validResponse.VisitUserMfaGetResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -24,6 +24,8 @@ Each run of `setup-link` deletes the unused setup tokens and makes a new one. Th
 2. Enter the email, the name, and the password two times. The password has 12 to 128 characters.
 3. Submit the form. The service makes the account with the role `identity:admin` and logs you in.
 
+The service sends the first admin to the TOTP setup page (`/account/totp?required=1`), because the rule "MFA for admins" is on by default (`IDENTITY_MFA__REQUIRE_FOR_ADMINS`). Scan the QR code with an authenticator app, enter the first code, and save the 10 recovery codes. An admin with no TOTP gets no authorization code and no refresh token. If you lose the device and the recovery codes, run `identity reset-mfa <email>`.
+
 Do this at once. The link ends after `IDENTITY_SETUP__TTL` (24 hours by default). The link works one time. A link that was used or that has ended gives an error page.
 
 Anyone who has the link can make the first admin account. Do not put the output of `setup-link` in a log, a ticket, or a chat. Complete the setup at once.

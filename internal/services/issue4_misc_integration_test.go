@@ -202,18 +202,7 @@ func TestIssue4TelemetryIntegration(t *testing.T) {
 	for _, l := range h.ledger.logs {
 		texts = append(texts, l.Text())
 	}
-	spans := ""
-	for _, s := range spanExporter.GetSpans() {
-		spans += s.Name + "\n"
-		for _, a := range s.Attributes {
-			spans += string(a.Key) + "=" + a.Value.String() + "\n"
-		}
-		for _, e := range s.Events {
-			for _, a := range e.Attributes {
-				spans += string(a.Key) + "=" + a.Value.String() + "\n"
-			}
-		}
-	}
+	spans := spansText()
 	if len(h.ledger.flow) < 6 {
 		t.Fatal("the ledger has too few values")
 	}

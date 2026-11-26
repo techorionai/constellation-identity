@@ -12,6 +12,11 @@ type RefreshFamily struct {
 	OIDCScopes []string
 	CreatedAt  time.Time
 	RevokedAt  *time.Time
+	// AuthTime and AuthMethods are the values of the code flow that made the
+	// family. A refresh keeps them. A family from before the upgrade has a zero
+	// AuthTime and no methods.
+	AuthTime    time.Time
+	AuthMethods []string
 }
 
 // RefreshToken is one refresh token. The service stores the hash only.
@@ -48,6 +53,7 @@ type AuthCode struct {
 	Scope         []string  `json:"scope"`
 	OIDCScopes    []string  `json:"oidc_scopes"`
 	AuthTime      time.Time `json:"auth_time"`
+	AuthMethods   []string  `json:"auth_methods,omitempty"`
 }
 
 // UsedCode is the marker of a code that a client used. It has the data that

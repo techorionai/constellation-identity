@@ -113,11 +113,15 @@ type UserAccessToken struct {
 	Now      time.Time
 	TTL      time.Duration
 	JTI      string
+	// AuthMethods and AuthTime are the values of the login. A zero AuthTime or
+	// an empty list gives no claim.
+	AuthMethods []string
+	AuthTime    time.Time
 }
 
 // Claims returns the claims of AccessTokenClaims in the contract.
 func (t UserAccessToken) Claims() map[string]any {
-	return map[string]any{
+	c := map[string]any{
 		"iss":            t.Issuer,
 		"sub":            t.UserID,
 		"aud":            t.Audience,
@@ -129,6 +133,13 @@ func (t UserAccessToken) Claims() map[string]any {
 		"scope":          strings.Join(t.Scopes, " "),
 		"principal_type": PrincipalUser,
 	}
+	if len(t.AuthMethods) > 0 {
+		c["amr"] = t.AuthMethods
+	}
+	if !t.AuthTime.IsZero() {
+		c["auth_time"] = t.AuthTime.Unix()
+	}
+	return c
 }
 
 // IDToken is the data of an ID token.
@@ -141,6 +152,8 @@ type IDToken struct {
 	SessionID string
 	Now       time.Time
 	TTL       time.Duration
+	// AuthMethods are the methods of the login. An empty list gives no amr claim.
+	AuthMethods []string
 	// Email and Name are set only for the scopes email and profile.
 	Email *string
 	Name  *string
@@ -157,6 +170,9 @@ func (t IDToken) Claims() map[string]any {
 		"auth_time": t.AuthTime.Unix(),
 		"nonce":     t.Nonce,
 		"sid":       t.SessionID,
+	}
+	if len(t.AuthMethods) > 0 {
+		c["amr"] = t.AuthMethods
 	}
 	if t.Email != nil {
 		c["email"] = *t.Email

@@ -91,3 +91,16 @@ func TestU11_UnlockLoginArguments(t *testing.T) {
 		}
 	}
 }
+
+// U17: reset-mfa needs exactly one argument.
+func TestU17_ResetMFAArguments(t *testing.T) {
+	for _, args := range [][]string{{"reset-mfa"}, {"reset-mfa", "a@example.com", "b@example.com"}} {
+		var out, errOut bytes.Buffer
+		if got := run(args, &out, &errOut); got != 2 {
+			t.Fatalf("%v: exit = %d, want 2", args, got)
+		}
+		if !strings.Contains(errOut.String(), "usage: identity reset-mfa <email>") {
+			t.Fatalf("%v: stderr = %q", args, errOut.String())
+		}
+	}
+}

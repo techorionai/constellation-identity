@@ -988,19 +988,7 @@ func TestUsersIntegration(t *testing.T) {
 		for _, l := range h.ledger.logs {
 			texts = append(texts, l.Text())
 		}
-		spans := ""
-		for _, s := range spanExporter.GetSpans() {
-			spans += s.Name + "\n"
-			for _, a := range s.Attributes {
-				spans += string(a.Key) + "=" + a.Value.String() + "\n"
-			}
-			for _, e := range s.Events {
-				spans += e.Name + "\n"
-				for _, a := range e.Attributes {
-					spans += string(a.Key) + "=" + a.Value.String() + "\n"
-				}
-			}
-		}
+		spans := spansText()
 		if len(h.ledger.setups) == 0 || len(h.ledger.invites) == 0 || len(h.ledger.sessions) == 0 {
 			t.Fatal("the ledger has no secrets, so the test checks nothing")
 		}

@@ -212,7 +212,7 @@ func (c *AcceptInviteCommand) Execute(ctx context.Context, in AcceptInvite) (Iss
 		if err := c.d.Users.Activate(ctx, user.ID, hash, now); err != nil {
 			return err
 		}
-		issued, err = sessionIssuer{repo: c.d.Session, policy: c.d.Policy, now: c.d.Now}.issue(ctx, user.ID, in.UserAgent, in.IP)
+		issued, err = sessionIssuer{repo: c.d.Session, policy: c.d.Policy, now: c.d.Now}.issue(ctx, user.ID, in.UserAgent, in.IP, domain.MethodsPassword())
 		return err
 	}, txName("accept_invite"))
 	if err != nil {

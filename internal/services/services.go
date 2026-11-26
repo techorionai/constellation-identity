@@ -74,6 +74,8 @@ type options struct {
 	rateRules map[string]ratelimit.Rule
 	// rateLimiter replaces the Valkey rate limiter. A test uses it for a mock.
 	rateLimiter ratelimit.Limiter
+	// verifierClock is the clock of the token verifier of the /v1 routes. Nil means time.Now.
+	verifierClock func() time.Time
 }
 
 // Option changes the composition. The options are for tests. Production code
@@ -122,6 +124,13 @@ func WithRateRules(rules map[string]ratelimit.Rule) Option {
 // WithRateLimiter replaces the Valkey rate limiter.
 func WithRateLimiter(l ratelimit.Limiter) Option { return func(o *options) { o.rateLimiter = l } }
 
+// WithVerifierClock sets the clock of the verifier of the /v1 routes. A test
+// that moves the clock of the use cases uses it, so that the time claims of its
+// tokens are right for the verifier.
+func WithVerifierClock(now func() time.Time) Option {
+	return func(o *options) { o.verifierClock = now }
+}
+
 func newOptions(opts []Option) options {
 	o := options{managerInterval: defaultKeyManagerInterval, cacheInterval: defaultCacheInterval, log: slog.Default()}
 	for _, opt := range opts {
@@ -147,6 +156,8 @@ type App struct {
 	cache  *keys.Cache
 	verify *jwt.Verifier
 	reg    metric.Registration
+	// ring is the key ring of the secrets. The TOTP sealer uses it.
+	ring *platformsecrets.KeyRing
 
 	sessionReg    metric.Registration
 	stopRetention context.CancelFunc
@@ -221,6 +232,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	if err != nil {
 		return nil, fmt.Errorf("master key: %w", err)
 	}
+	a.ring = ring
 	store := adaptersecrets.New(platformsecrets.NewService(ring, secretRepo))
 	a.cache = keys.NewCache(postgres.NewSigningKeys(a.db.Pool), store, log)
 	a.state = health.NewState(
@@ -327,7 +339,11 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		queries.NewGetJWKS(a.cache), "GetJWKS"), "GetJWKS")
 	discovery := decorators.ApplyTracing(decorators.ApplyLogging(
 		queries.NewGetDiscovery(cfg.Issuer), "GetDiscovery"), "GetDiscovery")
-	if a.verify, err = NewVerifier(cfg.Issuer, a.cache); err != nil {
+	var verifyOpts []jwt.Option
+	if o.verifierClock != nil {
+		verifyOpts = append(verifyOpts, jwt.WithClock(o.verifierClock))
+	}
+	if a.verify, err = NewVerifier(cfg.Issuer, a.cache, verifyOpts...); err != nil {
 		return nil, err
 	}
 	a.verify.Start(context.WithoutCancel(ctx))
@@ -383,7 +399,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		JWKS:          jwks, Discovery: discovery, IssueToken: issue, PublishManifest: publishAPI,
 		ListManifests: listManifests, GetManifest: getManifest, ListRoles: listRoles, GetRole: getRole,
 		ExchangeCode: users.exchangeCode, RefreshTokens: users.refreshTokens, RevokeToken: users.revokeToken, UserInfo: users.userInfo,
-		Admin: users.admin, APITokens: users.apiTokens, Introspect: introspect, CreateUser: users.createUser, CreateInvite: users.createInvite, CORSOrigins: users.cors,
+		Admin: users.admin, APITokens: users.apiTokens, Introspect: introspect, CreateUser: users.createUser, CreateInvite: users.createInvite, CORSOrigins: users.cors, MFA: users.mfa, Now: o.clock,
 		Verifier: a.verify, Scopes: scopes, Log: log, RateLimits: limits, TrustedProxies: trustedProxies,
 	})
 	// RedactToken is outside the tracing handler, so no span has a secret value

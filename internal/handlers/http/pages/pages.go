@@ -38,8 +38,9 @@ const maxFormBytes = 64 << 10
 
 // Paths are the URL patterns that the handler of the pages serves. Register
 // them on the router of the public server.
-var Paths = []string{"/login", "/login/done", "/logout", "/setup", "/invite", "/assets/pages.css",
-	"/oauth/authorize", "/oauth/authorize/continue", "/oauth/end_session"}
+var Paths = []string{"/login", "/login/done", "/login/mfa", "/logout", "/setup", "/invite", "/assets/pages.css",
+	"/oauth/authorize", "/oauth/authorize/continue", "/oauth/end_session",
+	"/account/security", "/account/totp", "/account/totp/remove", "/account/recovery-codes"}
 
 // Deps are the use cases and the settings of the pages.
 type Deps struct {
@@ -56,6 +57,8 @@ type Deps struct {
 	LookupAuthRequest executor.ExecutorWithReturn[string, commands.AuthRequestInfo]
 	EndSession        executor.ExecutorWithReturn[commands.EndSession, commands.EndSessionOutcome]
 	ConfirmEndSession executor.Executor[string]
+	// MFA holds the use cases of the second factor and of the account pages.
+	MFA *commands.MFA
 	// Issuer is the issuer URL of the service. An https issuer turns on the
 	// Strict-Transport-Security header.
 	Issuer string
@@ -104,6 +107,13 @@ func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", h.loginForm)
 	mux.HandleFunc("POST /login", h.login)
+	mux.HandleFunc("GET /login/mfa", h.mfaForm)
+	mux.HandleFunc("POST /login/mfa", h.mfaVerify)
+	mux.HandleFunc("GET /account/security", h.securityPage)
+	mux.HandleFunc("GET /account/totp", h.totpSetupForm)
+	mux.HandleFunc("POST /account/totp", h.totpSetup)
+	mux.HandleFunc("POST /account/totp/remove", h.totpRemove)
+	mux.HandleFunc("POST /account/recovery-codes", h.recoveryCodes)
 	mux.HandleFunc("GET /login/done", h.loginDone)
 	mux.HandleFunc("POST /logout", h.logout)
 	mux.HandleFunc("GET /setup", h.setupForm)
@@ -129,6 +139,19 @@ type view struct {
 	UserName string
 	// AuthRequest is the ID of the auth request of a login in a code flow.
 	AuthRequest string
+	// The fields of the second factor pages. Secret, URI, QR, and Codes are secrets.
+	Recovery    bool
+	Required    bool
+	Done        bool
+	TOTPOn      bool
+	MFARequired bool
+	CodesLeft   int
+	Secret      string
+	URI         string
+	QR          template.URL
+	Codes       []string
+	// Next is the place to go after the setup, or empty.
+	Next string
 }
 
 func (h *Handler) render(w http.ResponseWriter, r *http.Request, status int, name string, v view) {
@@ -268,16 +291,20 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		Email: email, Password: r.PostForm.Get("password"),
 		IP: h.clientIP(r), IPKey: clientip.Key(h.clientIP(r)),
 		IPCoarseKey: clientip.CoarseKey(h.clientIP(r)), UserAgent: r.UserAgent(), PreviousToken: cookieValue(r),
+		AuthRequest: authRequest, ReturnTo: rt,
 	})
 	v := view{Title: "Log in", Email: email, ReturnTo: rt}
 	if err == nil {
+		if issued.PendingToken != "" {
+			// The password is the first factor. The session comes after the second.
+			h.setMFACookie(w, issued)
+			http.Redirect(w, r, "/login/mfa", http.StatusSeeOther)
+			return
+		}
 		h.setCookie(w, issued)
-		target := "/login/done"
-		switch {
-		case authRequest != "":
-			target = "/oauth/authorize/continue?authRequest=" + url.QueryEscape(authRequest)
-		case rt != "":
-			target = rt
+		target := afterLogin(authRequest, rt)
+		if issued.SetupRequired {
+			target = setupPath(authRequest, rt)
 		}
 		// target is a fixed path, or a path that domain.SafeReturnTo accepted.
 		http.Redirect(w, r, target, http.StatusSeeOther) //nolint:gosec // G710: see the line above.
@@ -300,7 +327,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, commands.ErrBusy):
 		v.Error = "The service is busy. Try again."
 		h.render(w, r, http.StatusServiceUnavailable, "login", v)
-	case errors.Is(err, commands.ErrLimiterUnavailable):
+	case errors.Is(err, commands.ErrLimiterUnavailable), errors.Is(err, commands.ErrMFAUnavailable):
 		v.Error = "The service is not available. Try again later."
 		h.render(w, r, http.StatusServiceUnavailable, "login", v)
 	default:
@@ -340,6 +367,8 @@ func (h *Handler) authorizeOutcome(w http.ResponseWriter, r *http.Request, out c
 		http.Redirect(w, r, out.Location, http.StatusFound) //nolint:gosec // G710: see the line above.
 	case commands.AuthorizeLogin:
 		http.Redirect(w, r, "/login?authRequest="+url.QueryEscape(out.AuthRequestID), http.StatusFound)
+	case commands.AuthorizeSetupMFA:
+		http.Redirect(w, r, setupPath(out.AuthRequestID, ""), http.StatusFound)
 	default:
 		h.message(w, r, http.StatusBadRequest, "Cannot continue", out.Message)
 	}
@@ -474,7 +503,7 @@ func (h *Handler) invite(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) finishToken(w http.ResponseWriter, r *http.Request, page string, v view, issued commands.IssuedSession, err error) {
 	if err == nil {
 		h.setCookie(w, issued)
-		http.Redirect(w, r, "/login/done", http.StatusSeeOther)
+		http.Redirect(w, r, h.setupTarget(r, issued.UserID, "/login/done"), http.StatusSeeOther)
 		return
 	}
 	if errors.Is(err, commands.ErrTokenInvalid) {
