@@ -782,7 +782,8 @@ func (m *MFA) RemoveTOTP(ctx context.Context, in RemoveTOTP) error {
 // ResetMFA is the input of the reset of the MFA of a user.
 type ResetMFA struct {
 	UserID string
-	// Actor is the ID of the admin. It is empty for the subcommand. The audit\n	// actor is the principal of the context, not this field.
+	// Actor is the ID of the admin. It is empty for the subcommand. The audit
+	// actor is the principal of the context, not this field.
 	Actor string
 	// Operator is true for the subcommand. It skips the rule "last login method",
 	// so the operator has a way back into the service. The use case logs the
