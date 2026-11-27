@@ -50,6 +50,19 @@ const (
 	// BucketAdminDeniedDaily is the longer limit of the same entries. The key is
 	// the principal ID.
 	BucketAdminDeniedDaily = "admin_denied_daily"
+	// BucketTokenDenied limits the denied audit entries of the token requests.
+	// The key is the client IP.
+	BucketTokenDenied = "token_denied"
+	// BucketTokenDeniedDaily is the longer limit of the same entries. The key is
+	// the client IP.
+	BucketTokenDeniedDaily = "token_denied_daily"
+	// BucketTokenDeniedGlobal is the limit of the same entries for all clients.
+	// It has one key.
+	BucketTokenDeniedGlobal = "token_denied_global" //nolint:gosec // G101: This is the name of a bucket, not a credential.
+	// BucketTokenDeniedClient limits the same entries of a registered client. The
+	// key is the client ID. Only a registered client has such a key, so the number
+	// of keys has a bound.
+	BucketTokenDeniedClient = "token_denied_client" //nolint:gosec // G101: This is the name of a bucket, not a credential.
 )
 
 // Buckets lists the names of all buckets.
@@ -58,5 +71,6 @@ func Buckets() []string {
 		BucketPublicMeta, BucketOAuthPublic, BucketOAuthBackendIP, BucketTokenIP, BucketIntrospectIP,
 		BucketTokenClient, BucketIntrospectClient, BucketSetupInvite, BucketAPITokenCreate, BucketManifestPublish,
 		BucketMFAVerify, BucketPasskey, BucketIdp, BucketAdminDenied, BucketAdminDeniedDaily,
+		BucketTokenDenied, BucketTokenDeniedDaily, BucketTokenDeniedGlobal, BucketTokenDeniedClient,
 	}
 }

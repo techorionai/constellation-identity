@@ -26,62 +26,74 @@ type RateBucket struct {
 // RateLimit is the config of the rate limits of the public endpoints. The
 // login limiter does not use these settings.
 type RateLimit struct {
-	Enabled          bool       `env:"ENABLED" envDefault:"true"`
-	PublicMeta       RateBucket `envPrefix:"PUBLIC_META__"`
-	OAuthPublic      RateBucket `envPrefix:"OAUTH_PUBLIC__"`
-	OAuthBackendIP   RateBucket `envPrefix:"OAUTH_BACKEND_IP__"`
-	TokenIP          RateBucket `envPrefix:"TOKEN_IP__"`
-	IntrospectIP     RateBucket `envPrefix:"INTROSPECT_IP__"`
-	TokenClient      RateBucket `envPrefix:"TOKEN_CLIENT__"`
-	IntrospectClient RateBucket `envPrefix:"INTROSPECT_CLIENT__"`
-	SetupInvite      RateBucket `envPrefix:"SETUP_INVITE__"`
-	APITokenCreate   RateBucket `envPrefix:"API_TOKEN_CREATE__"`
-	ManifestPublish  RateBucket `envPrefix:"MANIFEST_PUBLISH__"`
-	MFAVerify        RateBucket `envPrefix:"MFA_VERIFY__"`
-	Passkey          RateBucket `envPrefix:"PASSKEY__"`
-	Idp              RateBucket `envPrefix:"IDP__"`
-	AdminDenied      RateBucket `envPrefix:"ADMIN_DENIED__"`
-	AdminDeniedDaily RateBucket `envPrefix:"ADMIN_DENIED_DAILY__"`
+	Enabled           bool       `env:"ENABLED" envDefault:"true"`
+	PublicMeta        RateBucket `envPrefix:"PUBLIC_META__"`
+	OAuthPublic       RateBucket `envPrefix:"OAUTH_PUBLIC__"`
+	OAuthBackendIP    RateBucket `envPrefix:"OAUTH_BACKEND_IP__"`
+	TokenIP           RateBucket `envPrefix:"TOKEN_IP__"`
+	IntrospectIP      RateBucket `envPrefix:"INTROSPECT_IP__"`
+	TokenClient       RateBucket `envPrefix:"TOKEN_CLIENT__"`
+	IntrospectClient  RateBucket `envPrefix:"INTROSPECT_CLIENT__"`
+	SetupInvite       RateBucket `envPrefix:"SETUP_INVITE__"`
+	APITokenCreate    RateBucket `envPrefix:"API_TOKEN_CREATE__"`
+	ManifestPublish   RateBucket `envPrefix:"MANIFEST_PUBLISH__"`
+	MFAVerify         RateBucket `envPrefix:"MFA_VERIFY__"`
+	Passkey           RateBucket `envPrefix:"PASSKEY__"`
+	Idp               RateBucket `envPrefix:"IDP__"`
+	AdminDenied       RateBucket `envPrefix:"ADMIN_DENIED__"`
+	AdminDeniedDaily  RateBucket `envPrefix:"ADMIN_DENIED_DAILY__"`
+	TokenDenied       RateBucket `envPrefix:"TOKEN_DENIED__"`
+	TokenDeniedDaily  RateBucket `envPrefix:"TOKEN_DENIED_DAILY__"`
+	TokenDeniedGlobal RateBucket `envPrefix:"TOKEN_DENIED_GLOBAL__"`
+	TokenDeniedClient RateBucket `envPrefix:"TOKEN_DENIED_CLIENT__"`
 }
 
 // DefaultRateRules returns the default rules of all buckets.
 func DefaultRateRules() map[string]ratelimit.Rule {
 	return map[string]ratelimit.Rule{
-		ratelimit.BucketPublicMeta:       {Name: ratelimit.BucketPublicMeta, Limit: 300, Window: time.Minute},
-		ratelimit.BucketOAuthPublic:      {Name: ratelimit.BucketOAuthPublic, Limit: 60, Window: time.Minute},
-		ratelimit.BucketOAuthBackendIP:   {Name: ratelimit.BucketOAuthBackendIP, Limit: 600, Window: time.Minute},
-		ratelimit.BucketTokenIP:          {Name: ratelimit.BucketTokenIP, Limit: 600, Window: time.Minute},
-		ratelimit.BucketIntrospectIP:     {Name: ratelimit.BucketIntrospectIP, Limit: 6000, Window: time.Minute},
-		ratelimit.BucketTokenClient:      {Name: ratelimit.BucketTokenClient, Limit: 300, Window: time.Minute},
-		ratelimit.BucketIntrospectClient: {Name: ratelimit.BucketIntrospectClient, Limit: 6000, Window: time.Minute},
-		ratelimit.BucketSetupInvite:      {Name: ratelimit.BucketSetupInvite, Limit: 10, Window: 15 * time.Minute},
-		ratelimit.BucketAPITokenCreate:   {Name: ratelimit.BucketAPITokenCreate, Limit: 20, Window: time.Hour},
-		ratelimit.BucketManifestPublish:  {Name: ratelimit.BucketManifestPublish, Limit: 60, Window: time.Hour},
-		ratelimit.BucketMFAVerify:        {Name: ratelimit.BucketMFAVerify, Limit: 30, Window: time.Minute},
-		ratelimit.BucketPasskey:          {Name: ratelimit.BucketPasskey, Limit: 30, Window: time.Minute},
-		ratelimit.BucketIdp:              {Name: ratelimit.BucketIdp, Limit: 30, Window: time.Minute},
-		ratelimit.BucketAdminDenied:      {Name: ratelimit.BucketAdminDenied, Limit: 30, Window: time.Minute},
-		ratelimit.BucketAdminDeniedDaily: {Name: ratelimit.BucketAdminDeniedDaily, Limit: 1000, Window: 24 * time.Hour},
+		ratelimit.BucketPublicMeta:        {Name: ratelimit.BucketPublicMeta, Limit: 300, Window: time.Minute},
+		ratelimit.BucketOAuthPublic:       {Name: ratelimit.BucketOAuthPublic, Limit: 60, Window: time.Minute},
+		ratelimit.BucketOAuthBackendIP:    {Name: ratelimit.BucketOAuthBackendIP, Limit: 600, Window: time.Minute},
+		ratelimit.BucketTokenIP:           {Name: ratelimit.BucketTokenIP, Limit: 600, Window: time.Minute},
+		ratelimit.BucketIntrospectIP:      {Name: ratelimit.BucketIntrospectIP, Limit: 6000, Window: time.Minute},
+		ratelimit.BucketTokenClient:       {Name: ratelimit.BucketTokenClient, Limit: 300, Window: time.Minute},
+		ratelimit.BucketIntrospectClient:  {Name: ratelimit.BucketIntrospectClient, Limit: 6000, Window: time.Minute},
+		ratelimit.BucketSetupInvite:       {Name: ratelimit.BucketSetupInvite, Limit: 10, Window: 15 * time.Minute},
+		ratelimit.BucketAPITokenCreate:    {Name: ratelimit.BucketAPITokenCreate, Limit: 20, Window: time.Hour},
+		ratelimit.BucketManifestPublish:   {Name: ratelimit.BucketManifestPublish, Limit: 60, Window: time.Hour},
+		ratelimit.BucketMFAVerify:         {Name: ratelimit.BucketMFAVerify, Limit: 30, Window: time.Minute},
+		ratelimit.BucketPasskey:           {Name: ratelimit.BucketPasskey, Limit: 30, Window: time.Minute},
+		ratelimit.BucketIdp:               {Name: ratelimit.BucketIdp, Limit: 30, Window: time.Minute},
+		ratelimit.BucketAdminDenied:       {Name: ratelimit.BucketAdminDenied, Limit: 30, Window: time.Minute},
+		ratelimit.BucketAdminDeniedDaily:  {Name: ratelimit.BucketAdminDeniedDaily, Limit: 1000, Window: 24 * time.Hour},
+		ratelimit.BucketTokenDenied:       {Name: ratelimit.BucketTokenDenied, Limit: 30, Window: time.Minute},
+		ratelimit.BucketTokenDeniedDaily:  {Name: ratelimit.BucketTokenDeniedDaily, Limit: 1000, Window: 24 * time.Hour},
+		ratelimit.BucketTokenDeniedGlobal: {Name: ratelimit.BucketTokenDeniedGlobal, Limit: 100000, Window: 24 * time.Hour},
+		ratelimit.BucketTokenDeniedClient: {Name: ratelimit.BucketTokenDeniedClient, Limit: 600, Window: time.Hour},
 	}
 }
 
 func (r RateLimit) buckets() map[string]RateBucket {
 	return map[string]RateBucket{
-		ratelimit.BucketPublicMeta:       r.PublicMeta,
-		ratelimit.BucketOAuthPublic:      r.OAuthPublic,
-		ratelimit.BucketOAuthBackendIP:   r.OAuthBackendIP,
-		ratelimit.BucketTokenIP:          r.TokenIP,
-		ratelimit.BucketIntrospectIP:     r.IntrospectIP,
-		ratelimit.BucketTokenClient:      r.TokenClient,
-		ratelimit.BucketIntrospectClient: r.IntrospectClient,
-		ratelimit.BucketSetupInvite:      r.SetupInvite,
-		ratelimit.BucketAPITokenCreate:   r.APITokenCreate,
-		ratelimit.BucketManifestPublish:  r.ManifestPublish,
-		ratelimit.BucketMFAVerify:        r.MFAVerify,
-		ratelimit.BucketPasskey:          r.Passkey,
-		ratelimit.BucketIdp:              r.Idp,
-		ratelimit.BucketAdminDenied:      r.AdminDenied,
-		ratelimit.BucketAdminDeniedDaily: r.AdminDeniedDaily,
+		ratelimit.BucketPublicMeta:        r.PublicMeta,
+		ratelimit.BucketOAuthPublic:       r.OAuthPublic,
+		ratelimit.BucketOAuthBackendIP:    r.OAuthBackendIP,
+		ratelimit.BucketTokenIP:           r.TokenIP,
+		ratelimit.BucketIntrospectIP:      r.IntrospectIP,
+		ratelimit.BucketTokenClient:       r.TokenClient,
+		ratelimit.BucketIntrospectClient:  r.IntrospectClient,
+		ratelimit.BucketSetupInvite:       r.SetupInvite,
+		ratelimit.BucketAPITokenCreate:    r.APITokenCreate,
+		ratelimit.BucketManifestPublish:   r.ManifestPublish,
+		ratelimit.BucketMFAVerify:         r.MFAVerify,
+		ratelimit.BucketPasskey:           r.Passkey,
+		ratelimit.BucketIdp:               r.Idp,
+		ratelimit.BucketAdminDenied:       r.AdminDenied,
+		ratelimit.BucketAdminDeniedDaily:  r.AdminDeniedDaily,
+		ratelimit.BucketTokenDenied:       r.TokenDenied,
+		ratelimit.BucketTokenDeniedDaily:  r.TokenDeniedDaily,
+		ratelimit.BucketTokenDeniedGlobal: r.TokenDeniedGlobal,
+		ratelimit.BucketTokenDeniedClient: r.TokenDeniedClient,
 	}
 }
 

@@ -51,6 +51,10 @@ type ServiceAuthenticatorState interface {
 
 // OIDCDeps are the ports and the settings of the code flow use cases.
 type OIDCDeps struct {
+	// DeniedGate limits the denied token entries. If it is nil, the command makes its own gate.
+	DeniedGate *TokenDeniedGate
+	// RateLimits is the shared limit of the gate that NewOIDC makes when DeniedGate is nil.
+	RateLimits   *RateLimits
 	Issuer       string
 	Clients      clients.Repository
 	Users        users.Repository
@@ -101,6 +105,13 @@ type OIDC struct {
 func NewOIDC(d OIDCDeps) (*OIDC, error) {
 	if d.Log == nil {
 		d.Log = slog.Default()
+	}
+	if d.DeniedGate == nil {
+		g, err := NewTokenDeniedGate(d.RateLimits, d.Log)
+		if err != nil {
+			return nil, err
+		}
+		d.DeniedGate = g
 	}
 	if d.Now == nil {
 		d.Now = time.Now
@@ -554,7 +565,7 @@ func (o *OIDC) auditDenied(ctx context.Context, grant string, err error, st *gra
 	if st.clientID != "" {
 		details["clientId"] = st.clientID
 	}
-	entryAuditor{tx: o.d.Tx, w: o.d.Audit, log: o.d.Log}.denied(ctx, "audit_token_denied", o.now(), ActionTokenIssue, targetClient, st.clientID, reason, details)
+	entryAuditor{tx: o.d.Tx, w: o.d.Audit, log: o.d.Log, gate: o.d.DeniedGate}.denied(ctx, tokenDeniedTx, o.now(), ActionTokenIssue, targetClient, st.clientID, reason, details)
 }
 
 // auditReuse writes the denied entry of a refresh token reuse. It must run in

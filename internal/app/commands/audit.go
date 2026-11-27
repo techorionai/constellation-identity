@@ -181,6 +181,12 @@ type entryAuditor struct {
 	tx  transaction.Transactor
 	w   audit.Writer
 	log *slog.Logger
+	// gate limits the denied token entries. A nil gate does not limit.
+	gate *TokenDeniedGate
+	// authClient is the ID of a client that authenticated for the request. The
+	// gate gives the per-client budget only to such a client. It is empty for a
+	// bad signature, an unknown client, and a public client.
+	authClient string
 }
 
 // ready reports whether the auditor can write.
@@ -199,8 +205,18 @@ func (a entryAuditor) success(ctx context.Context, name string, at time.Time, ac
 
 // denied writes an entry with the result denied. A writer error is logged and
 // does not change the response, because the request changed nothing. The log
-// record has the action and the reason only.
+// record has the action and the reason only. For a token entry, targetID is the
+// ID of a registered client, or an empty string. The gate uses it.
 func (a entryAuditor) denied(ctx context.Context, name string, at time.Time, action, targetType, targetID, reason string, details map[string]any) {
+	if name == tokenDeniedTx {
+		ok, sum := a.gate.Check(ctx, action, a.authClient)
+		if sum != nil {
+			a.writeDropSummary(ctx, name, at, sum)
+		}
+		if !ok {
+			return
+		}
+	}
 	d := make(map[string]any, len(details)+1)
 	for k, v := range details {
 		d[k] = v
@@ -218,6 +234,33 @@ func (a entryAuditor) denied(ctx context.Context, name string, at time.Time, act
 	}
 	if err != nil {
 		a.log.ErrorContext(ctx, "identity.audit.failed", "event", "identity.audit.failed", "action", action, "reason", reason)
+	}
+}
+
+// ReasonDeniedDropped is the reason of the summary entry that says that the gate
+// dropped denied token entries.
+const ReasonDeniedDropped = "denied_entries_dropped"
+
+// writeDropSummary writes the summary entry of the gate: one entry for each
+// window, action, and reason. It has the number of dropped entries and the
+// reason of the drop. It has no IP and no client ID, so an attacker cannot
+// choose its content. The gate does not limit it, because the gate already
+// limits its rate. A writer error is logged only.
+func (a entryAuditor) writeDropSummary(ctx context.Context, name string, at time.Time, sum *DropSummary) {
+	e := audit.Entry{Action: sum.Action, Result: audit.Denied, Time: at, Details: map[string]any{
+		"reason":        ReasonDeniedDropped,
+		"droppedReason": sum.Reason,
+		"dropped":       sum.Dropped,
+		"windowSeconds": int(sum.Window / time.Second),
+	}}
+	var err error
+	if !a.ready() {
+		err = ErrNoAuditWriter
+	} else {
+		err = a.tx.WithinTx(ctx, func(ctx context.Context) error { return a.w.Write(ctx, e) }, txName(name))
+	}
+	if err != nil {
+		a.log.ErrorContext(ctx, "identity.audit.failed", "event", "identity.audit.failed", "action", sum.Action, "reason", ReasonDeniedDropped)
 	}
 }
 
@@ -307,3 +350,7 @@ func mfaMethodName(amr string) string {
 	}
 	return mfaTOTP
 }
+
+// tokenDeniedTx is the transaction name of the denied entry of a token
+// request. The token gate applies to this name only.
+const tokenDeniedTx = "audit_token_denied" //nolint:gosec // G101: This is a transaction name, not a credential.

@@ -63,6 +63,8 @@ type KeySource interface {
 
 // IssueServiceTokenDeps are the ports of the command.
 type IssueServiceTokenDeps struct {
+	// DeniedGate limits the denied token entries. If it is nil, the command makes its own gate.
+	DeniedGate *TokenDeniedGate
 	// RateLimits limits the requests of one verified client. It can be nil.
 	RateLimits  *RateLimits
 	Issuer      string
@@ -98,6 +100,13 @@ var _ executor.ExecutorWithReturn[IssueServiceToken, IssueServiceTokenResult] = 
 func NewIssueServiceToken(d IssueServiceTokenDeps) (*IssueServiceTokenCommand, error) {
 	if d.Log == nil {
 		d.Log = slog.Default()
+	}
+	if d.DeniedGate == nil {
+		g, err := NewTokenDeniedGate(d.RateLimits, d.Log)
+		if err != nil {
+			return nil, err
+		}
+		d.DeniedGate = g
 	}
 	if d.Now == nil {
 		d.Now = time.Now
@@ -173,7 +182,7 @@ func (c *IssueServiceTokenCommand) auditDenied(ctx context.Context, err error, s
 	if st.authenticated {
 		ctx = asClient(ctx, st.clientID, auth.PrincipalService)
 	}
-	entryAuditor{tx: c.d.Tx, w: c.d.Audit, log: c.d.Log}.denied(ctx, "audit_token_denied", c.d.Now(), ActionTokenIssue, targetClient, targetIfKnown(st), reason, details)
+	entryAuditor{tx: c.d.Tx, w: c.d.Audit, log: c.d.Log, gate: c.d.DeniedGate, authClient: authClientOf(st)}.denied(ctx, tokenDeniedTx, c.d.Now(), ActionTokenIssue, targetClient, targetIfKnown(st), reason, details)
 }
 
 // targetIfKnown returns the client ID of a known client, or an empty string.
@@ -388,4 +397,14 @@ func newUUID() string {
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// authClientOf returns the client ID only after the client authentication
+// worked. The denied gate gives the per-client budget only to such a client. A
+// bad signature, an unknown client, and a public client are unauthenticated.
+func authClientOf(st *requestState) string {
+	if st.authenticated {
+		return st.clientID
+	}
+	return ""
 }

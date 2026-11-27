@@ -71,11 +71,11 @@ Each error has the body `{"error": "<code>", "error_description": "<text>"}` and
 
 Each token issue writes the entry `identity:token:issue` before the token leaves the service. The entry has the grant, the client, the audience, the scopes, the `jti`, and the expiry time. It never has the token text. The actor is the authenticated client. For a token exchange with an agent, the actor is the agent. If the entry cannot be written, the response is 503 `temporarily_unavailable` and has no token.
 
-A request that fails with `invalid_client`, `invalid_grant` (also a refresh token reuse, with the reason `refresh_token_reuse`), `unauthorized_client`, or `invalid_scope` writes an entry with the result `denied` and `details.reason`. A request with `invalid_request` or `unsupported_grant_type` writes no entry. A request that a rate limit stops writes no entry. See [security.md](security.md#signing-keys-tokens-logins-and-operator-commands).
+A request that fails with `invalid_client`, `invalid_grant` (also a refresh token reuse, with the reason `refresh_token_reuse`), `unauthorized_client`, or `invalid_scope` writes an entry with the result `denied` and `details.reason`. A request with `invalid_request` or `unsupported_grant_type` writes no entry. A request that a rate limit stops writes no entry. A gate limits the number of denied entries for each client IP and in total. A refused entry does not change the OAuth error. See [security.md](security.md#denied-token-requests) and [security.md](security.md#signing-keys-tokens-logins-and-operator-commands).
 
 ## Logs
 
-The assertion, the token, and the form body never go to a log, a span, or an error text. A failed request writes one `warn` record with `error_code` and the client ID. The field is `client.id` after the signature check passed, and `client.id_unverified` before. Metrics: `identity.tokens.issued` (attributes `grant_type`, `principal_type`) and `identity.token.errors` (attribute `error`).
+The assertion, the token, and the form body never go to a log, a span, or an error text. A failed request writes one `warn` record with `error_code` and the client ID. The field is `client.id` after the signature check passed, and `client.id_unverified` before. Metrics: `identity.tokens.issued` (attributes `grant_type`, `principal_type`) and `identity.token.errors` (attribute `error`). A denied entry that the gate does not write adds 1 to `identity.audit.denied_dropped` (attributes `action` and `reason`, no ID). The gate writes the log record `identity.audit.denied_dropped` a maximum of one time each minute for each action and reason.
 
 ## The `/v1` API
 

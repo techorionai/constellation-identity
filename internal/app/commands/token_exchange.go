@@ -68,6 +68,8 @@ type TokenExchangeResult struct {
 
 // TokenExchangeDeps are the ports of the command.
 type TokenExchangeDeps struct {
+	// DeniedGate limits the denied token entries. If it is nil, the command makes its own gate.
+	DeniedGate *TokenDeniedGate
 	// RateLimits limits the requests of one verified client. It can be nil.
 	RateLimits *RateLimits
 	Issuer     string
@@ -107,6 +109,13 @@ var _ executor.ExecutorWithReturn[TokenExchange, TokenExchangeResult] = (*TokenE
 func NewTokenExchange(d TokenExchangeDeps) (*TokenExchangeCommand, error) {
 	if d.Log == nil {
 		d.Log = slog.Default()
+	}
+	if d.DeniedGate == nil {
+		g, err := NewTokenDeniedGate(d.RateLimits, d.Log)
+		if err != nil {
+			return nil, err
+		}
+		d.DeniedGate = g
 	}
 	if d.Now == nil {
 		d.Now = time.Now
@@ -195,7 +204,7 @@ func (c *TokenExchangeCommand) auditDenied(ctx context.Context, err error, st *r
 	if st.authenticated {
 		ctx = asClient(ctx, st.clientID, auth.PrincipalService)
 	}
-	entryAuditor{tx: c.d.Tx, w: c.d.Audit, log: c.d.Log}.denied(ctx, "audit_token_denied", c.d.Now(), ActionTokenIssue, targetClient, target, reason, details)
+	entryAuditor{tx: c.d.Tx, w: c.d.Audit, log: c.d.Log, gate: c.d.DeniedGate, authClient: authClientOf(st)}.denied(ctx, tokenDeniedTx, c.d.Now(), ActionTokenIssue, targetClient, target, reason, details)
 }
 
 func (c *TokenExchangeCommand) exchange(ctx context.Context, in TokenExchange, st *requestState) (TokenExchangeResult, error) {

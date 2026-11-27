@@ -50,13 +50,19 @@ func requireLimiterUnavailable(t *testing.T, err error) {
 // issueWithLimits makes the command of the fixture again, with rate limits.
 func issueWithLimits(t *testing.T, f *fixture, rl *commands.RateLimits) *commands.IssueServiceTokenCommand {
 	t.Helper()
+	return issueWithGate(t, f, rl, nil)
+}
+
+// issueWithGate is like issueWithLimits, with a gate for the denied entries.
+func issueWithGate(t *testing.T, f *fixture, rl *commands.RateLimits, gate *commands.TokenDeniedGate) *commands.IssueServiceTokenCommand {
+	t.Helper()
 	cmd, err := commands.NewIssueServiceToken(commands.IssueServiceTokenDeps{
 		Issuer: issuer, Clients: f.clients, ClientRoles: f.roles,
 		Manifests: &fakeManifests{apps: map[string]bool{"demo": true, "identity": true}},
 		JTI:       f.jti, Keys: fakeKeySource{key: tokensigner.Key{KID: "sig-1", Private: f.sign}},
 		Signer: jose.Signer{}, Parser: jose.AssertionParser{},
 		Log: slog.New(slog.DiscardHandler), Now: func() time.Time { return now }, RateLimits: rl,
-		Tx: mock.Tx{}, Audit: f.ev,
+		Tx: mock.Tx{}, Audit: f.ev, DeniedGate: gate,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -97,8 +103,8 @@ func TestIssue13_U8_BadSignatureNoCall(t *testing.T) {
 	if oe, ok := apperrors.AsOAuthError(err); !ok || oe.Code != apperrors.OAuthInvalidClient {
 		t.Fatalf("err = %v, want invalid_client", err)
 	}
-	if len(rl.Calls) != 0 {
-		t.Fatalf("calls = %+v, want none", rl.Calls)
+	if len(rl.CallsOf(ratelimit.BucketTokenClient)) != 0 {
+		t.Fatalf("calls = %+v, want no call of the client bucket", rl.Calls)
 	}
 }
 
