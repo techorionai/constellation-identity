@@ -82,7 +82,7 @@ The writer takes the actor only from the authenticated principal of the context.
 | ---- | ------------------------ | ----- | ---------------- |
 | Admin API and account API | The token principal | The user, client, or agent of the token | None |
 | Page with an account session | The user of the session | The user, type `user` | None |
-| `AcceptInvite`, `CompleteSetup`, set password with a one-time link | None | `identity`, type `service` | `invite`, `setup`, or `password_link` |
+| `AcceptInvite`, `CompleteSetup`, set password with a one-time link | None | `identity`, type `service` | `invite` or `setup`. The value `password_link` is reserved |
 | Subcommand `reset-mfa` | None | `identity`, type `service` | `cli` |
 | Own manifest publish at the start, sync of the clients file | None | `identity`, type `service` | None |
 
@@ -96,7 +96,7 @@ A page handler puts the user into the context only after it checked the session.
 | Reset MFA (API and subcommand) | `identity:mfa:reset` | `user` | None (API), `origin` (subcommand) |
 | Passkey add, rename, remove | `identity:mfa:passkey_add`, `identity:mfa:passkey_rename`, `identity:mfa:passkey_remove` | `user` | `passkeyId`. Rename also `oldName` and `newName` |
 | Link add, remove | `identity:identity_link:add`, `identity:identity_link:remove` | `user` | `provider`. `origin` for a link of an invite |
-| Set password | `identity:password:set` | `user` | `origin` (one-time link only) |
+| Set password | `identity:password:set` | `user` | None. The value `origin` `password_link` is reserved for a future one-time link flow |
 | Create user, update user | `identity:user:create`, `identity:user:update` | `user` | `fields` (the names of the fields) |
 | Create invite, accept invite | `identity:invite:create`, `identity:invite:accept` | `user` | `origin` (accept) |
 | Complete setup | `identity:setup:complete` | `user` | `origin` |
@@ -105,19 +105,21 @@ A page handler puts the user into the context only after it checked the session.
 | Create client, update client | `identity:client:create`, `identity:client:update` | `client` | `type` and `app` (create), `fields` (update) |
 | Add or remove a client key | `identity:client_key:add`, `identity:client_key:remove` | `client` | `kid` |
 | Assign or remove a client role | `identity:client_role:assign`, `identity:client_role:remove` | `client` | `role` |
-| Sync of the clients file | `identity:client:sync` | `client` | `fields` |
+| Sync of the clients file | `identity:client:sync` | `client` | `fields`, and `disabled` (the new state) if `fields` has `disabled` |
 | Create agent, update agent | `identity:agent:create`, `identity:agent:update` | `agent` | `clientId` (create), `fields` (update) |
 | Assign or remove an agent role | `identity:agent_role:assign`, `identity:agent_role:remove` | `agent` | `role` |
 | Create or revoke an API token | `identity:api_token:create`, `identity:api_token:revoke` | `api_token` | `scopes` (create) |
 | Publish a manifest that changes | `identity:manifest:publish` | `manifest` (the app) | `version`, `permissions`, `roles` (the counts) |
 
-Each entry has the result `success`, except the entries of the next section. `details` has IDs, names, and the names of changed fields only. It has no password, secret, token, TOTP secret, recovery code, private key, or email address. The audit data is personal data, and it stays 7 days in the outbox and in the stream by default. The entry has the request ID, the client IP, and the user agent of the request, if they agree with the contract. The writer leaves out a bad value and still writes the entry.
+An update lists only the fields whose stored value changed. An update or a role assign that changes nothing writes no entry. Each entry has the result `success`, except the entries of the next section. `details` has IDs, names, and the names of changed fields only. It has no password, secret, token, TOTP secret, recovery code, private key, or email address. The audit data is personal data, and it stays 7 days in the outbox and in the stream by default. The entry has the request ID, the client IP, and the user agent of the request, if they agree with the contract. The writer leaves out a bad value and still writes the entry.
 
 ### Denied admin requests
 
 Take an admin route (all `/v1` routes except `/v1/me`). A principal can lack a scope of the route. Then the request writes an entry. The entry has the result `denied`, the action of the route, and no target. `details.missingScopes` has the missing scopes. The step runs between the token check and the scope check. The answer is 403 in all cases. The step does not read the response status.
 
-The bucket `admin_denied` limits this step: 30 requests in 1 minute for each principal ID. A request over the limit gets 429 with `Retry-After` and writes no entry. If Valkey does not answer, the step writes the entry (fail open) and the answer is still 403. The limit stops a user with no admin scope from filling the outbox and the stream. With `IDENTITY_RATE_LIMIT__ENABLED=false` the step has no limit.
+`details.missingScopes` has the scopes that the principal does not have. A route that only reads data also writes an entry, with an action such as `identity:user:read`. The entry has no secret.
+
+Two buckets limit this step, with the principal ID as key. The bucket `admin_denied` allows 30 requests in 1 minute. The bucket `admin_denied_daily` allows 1000 requests in 24 hours. A request over a limit gets 429 with `Retry-After` and writes no entry. The service writes the log record `identity.audit.denied_dropped` for each dropped entry, with the action, the principal ID, and the reason. If Valkey does not answer, a small limit in the memory of each process applies instead (10 entries in 1 minute for each principal, and a maximum of 10000 principals). An entry over that limit is dropped with the same log record. The answer is 403 in these cases. The limits stop a user with no admin scope from filling the outbox and the stream. With `IDENTITY_RATE_LIMIT__ENABLED=false` the step has no shared limit, and the limit in the memory is not used.
 
 ## Client IP and trusted proxies
 

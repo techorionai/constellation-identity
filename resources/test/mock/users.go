@@ -354,13 +354,14 @@ func NewUserRoles(u *Users) *UserRoles {
 }
 
 // Assign gives a role.
-func (r *UserRoles) Assign(_ context.Context, userID string, role domain.RoleRef, _ domain.AssignmentSource) error {
+func (r *UserRoles) Assign(_ context.Context, userID string, role domain.RoleRef, _ domain.AssignmentSource) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !slices.Contains(r.Rows[userID], role) {
-		r.Rows[userID] = append(r.Rows[userID], role)
+	if slices.Contains(r.Rows[userID], role) {
+		return false, nil
 	}
-	return nil
+	r.Rows[userID] = append(r.Rows[userID], role)
+	return true, nil
 }
 
 // Assignments returns the assignments of a user.

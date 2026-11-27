@@ -2,10 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/techorionai/constellation-platform-go/auth"
 
+	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
 	"github.com/techorionai/constellation-identity/internal/ports/ratelimit"
 )
 
@@ -66,11 +68,14 @@ var adminActions = map[string]string{
 // the scope check, which answers 403. The step does not read the response
 // status.
 //
-// A rate limit (the bucket admin_denied, with the principal ID as key) comes
-// first. A request over the limit gets 429 and writes no entry. If the limiter
-// does not answer, the step writes the entry (fail open). The 403 does not
-// depend on the limiter. If the entry cannot be written, the step writes a log
-// record and the request still gets the 403.
+// Two rate limits come first, with the principal ID as key: the bucket
+// admin_denied (short window) and the bucket admin_denied_daily (long window).
+// A request over a limit gets 429 and writes no entry. The step writes a log
+// record for each entry that it drops. If the shared limiter does not answer,
+// a small in-process limiter of each principal limits the entries. An entry
+// over that limit is dropped, and the request still gets 403. The 403 does not
+// depend on the limiters. If the entry cannot be written, the step writes a
+// log record and the request still gets the 403.
 func (s *Server) auditDenied(pattern string, scopes []string, next http.Handler) http.Handler {
 	action, admin := adminActions[pattern]
 	if !admin || s.d.Denied == nil {
@@ -82,13 +87,36 @@ func (s *Server) auditDenied(pattern string, scopes []string, next http.Handler)
 			next.ServeHTTP(w, r)
 			return
 		}
-		if err := s.d.RateLimits.CheckOpen(r.Context(), ratelimit.BucketAdminDenied, p.ID); err != nil {
+		ctx := r.Context()
+		for _, bucket := range []string{ratelimit.BucketAdminDenied, ratelimit.BucketAdminDeniedDaily} {
+			err := s.d.RateLimits.Check(ctx, bucket, p.ID)
+			if err == nil {
+				continue
+			}
+			if errors.Is(err, apperrors.ErrRateLimiterUnavailable) {
+				// The shared limiter fails. Use the limit of this process.
+				if !s.deniedFallback.allow(p.ID) {
+					s.logDeniedDropped(ctx, action, p.ID, "fallback_limit")
+					next.ServeHTTP(w, r)
+					return
+				}
+				break
+			}
+			s.logDeniedDropped(ctx, action, p.ID, "rate_limit_"+bucket)
 			s.writeRateError(w, r, err)
 			return
 		}
-		if err := s.d.Denied.Record(r.Context(), action, p.MissingScopes(scopes...)); err != nil {
-			s.log.ErrorContext(r.Context(), "identity.audit.denied_failed", "event", "identity.audit.denied_failed", "action", action, "error", err)
+		if err := s.d.Denied.Record(ctx, action, p.MissingScopes(scopes...)); err != nil {
+			s.log.ErrorContext(ctx, "identity.audit.denied_failed", "event", "identity.audit.denied_failed", "action", action, "error", err)
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// logDeniedDropped writes the log record of a denied entry that the step did
+// not write. The record has the action, the principal ID, and the reason. It
+// has no token.
+func (s *Server) logDeniedDropped(ctx context.Context, action, principalID, reason string) {
+	s.log.WarnContext(ctx, "identity.audit.denied_dropped", "event", "identity.audit.denied_dropped",
+		"action", action, "principal_id", principalID, "reason", reason)
 }

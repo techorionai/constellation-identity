@@ -43,6 +43,8 @@ type Server struct {
 	d      Deps
 	log    *slog.Logger
 	authMW func(http.Handler) http.Handler
+	// deniedFallback limits the denied entries when the shared limiter fails.
+	deniedFallback *fallbackLimiter
 }
 
 var _ gen.StrictServerInterface = (*Server)(nil)
@@ -97,7 +99,7 @@ func New(d Deps) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	s := &Server{d: d, log: log}
+	s := &Server{d: d, log: log, deniedFallback: newFallbackLimiter(deniedFallbackLimit, deniedFallbackWindow, deniedFallbackKeys)}
 	if d.Verifier != nil {
 		s.authMW = auth.Middleware(d.Verifier)
 	}

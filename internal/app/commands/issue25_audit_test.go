@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/techorionai/constellation-platform-go/audit"
 	platformmock "github.com/techorionai/constellation-platform-go/resources/test/mock"
@@ -30,12 +31,12 @@ func newU25() *u25 {
 	e.addUser("b", "b@example.com", domain.UserActive, "pw")
 	e.roles.Perms[domain.AdminRole] = []string{domain.AdminPermission}
 	e.roles.Perms[domain.RoleRef{App: "ops", Role: "root"}] = []string{domain.AdminPermission}
-	_ = e.roles.Assign(ctx, "a", domain.AdminRole, domain.AssignmentAPI)
-	_ = e.roles.Assign(ctx, "b", domain.RoleRef{App: "ops", Role: "root"}, domain.AssignmentAPI)
+	_, _ = e.roles.Assign(ctx, "a", domain.AdminRole, domain.AssignmentAPI)
+	_, _ = e.roles.Assign(ctx, "b", domain.RoleRef{App: "ops", Role: "root"}, domain.AssignmentAPI)
 	ev := &mock.Events{}
 	return &u25{env: e, ev: ev, admin: commands.NewAdmin(commands.AdminDeps{
 		Users: e.users, UserRoles: e.roles, Sessions: e.sessions, Tokens: e.tokens, APITokens: mock.NewAPITokens(e.users),
-		Lock: noLock{}, Tx: mock.Tx{}, Audit: ev, Now: e.clock,
+		Lock: noLock{}, Tx: mock.Tx{}, Audit: ev, Now: e.clock, Manifests: &roleManifests{},
 	})}
 }
 
@@ -101,6 +102,19 @@ func TestIssue25_U2_Entries(t *testing.T) {
 		}
 		if len(u.ev.Audits) != 0 {
 			t.Fatalf("audits = %+v", u.ev.Audits)
+		}
+	})
+	t.Run("AssignUserRole writes an entry only when it adds the role (R10)", func(t *testing.T) {
+		u := newU25()
+		ref := roleMailUser
+		for range 2 {
+			if _, err := u.admin.AssignUserRole(ctx, "actor", "a", ref); err != nil {
+				t.Fatal(err)
+			}
+		}
+		a := u.only(t, commands.ActionUserRoleAssign, "user", "a")
+		if a.Details["role"] != ref.String() {
+			t.Fatalf("details = %v", a.Details)
 		}
 	})
 	t.Run("RemoveUserRole", func(t *testing.T) {
@@ -287,5 +301,35 @@ func TestIssue25_U8_FlowOrigin(t *testing.T) {
 	}
 	if got := lastEvent(t, ins); got.Actor != "identity" || got.ActorType != "service" || got.Data.Details["origin"] != "password_link" {
 		t.Fatalf("password link: %+v", got)
+	}
+}
+
+// Issue25_R12: an update entry lists the fields that changed. A request that
+// changes no stored value writes no entry.
+func TestIssue25_R12_UpdateChangedFields(t *testing.T) {
+	f := newFixture(t)
+	ev := &mock.Events{}
+	agents, aroles := mock.NewAgents(), mock.NewAgentRoles()
+	admin := commands.NewAdmin(commands.AdminDeps{
+		Clients: f.clients, Agents: agents, AgentRoles: aroles, Manifests: &roleManifests{}, Tx: mock.Tx{}, Audit: ev,
+		Now: func() time.Time { return now },
+	})
+	ag, err := admin.CreateAgent(ctx, "actor", "Agent R12", "helpdesk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev.Audits = nil
+	same, on, off := "Agent R12", true, false
+	if _, err := admin.UpdateAgent(ctx, "actor", ag.ID, &same, &on); err != nil {
+		t.Fatal(err)
+	}
+	if len(ev.Audits) != 0 {
+		t.Fatalf("a request with the stored values wrote %+v", ev.Audits)
+	}
+	if _, err := admin.UpdateAgent(ctx, "actor", ag.ID, &same, &off); err != nil {
+		t.Fatal(err)
+	}
+	if len(ev.Audits) != 1 || fmt.Sprint(ev.Audits[0].Details["fields"]) != "[enabled]" {
+		t.Fatalf("audits = %+v", ev.Audits)
 	}
 }

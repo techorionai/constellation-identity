@@ -75,7 +75,7 @@ func (c *SyncClientsCommand) Execute(ctx context.Context, p SyncClients) error {
 				return err
 			}
 			for _, id := range disabled {
-				if err := c.write(ctx, id, []string{"disabled"}); err != nil {
+				if err := c.write(ctx, id, []string{"disabled"}, true); err != nil {
 					return err
 				}
 			}
@@ -96,11 +96,18 @@ func (c *SyncClientsCommand) within(ctx context.Context, fn func(ctx context.Con
 	return c.tx.WithinTx(ctx, fn, txName(name))
 }
 
-func (c *SyncClientsCommand) write(ctx context.Context, id string, fields []string) error {
+// write writes the entry of a sync change. If the fields have disabled, the
+// details also have the new state (disabled), so that a reader can tell a
+// disable from an enable.
+func (c *SyncClientsCommand) write(ctx context.Context, id string, fields []string, disabled bool) error {
 	if len(fields) == 0 {
 		return nil
 	}
-	return writeAudit(ctx, c.audit, time.Now().UTC(), ActionClientSync, targetClient, id, map[string]any{"fields": fields})
+	details := map[string]any{"fields": fields}
+	if slices.Contains(fields, "disabled") {
+		details["disabled"] = disabled
+	}
+	return writeAudit(ctx, c.audit, time.Now().UTC(), ActionClientSync, targetClient, id, details)
 }
 
 func (c *SyncClientsCommand) upsert(ctx context.Context, cc domain.ClientConfig) error {
@@ -117,7 +124,7 @@ func (c *SyncClientsCommand) upsert(ctx context.Context, cc domain.ClientConfig)
 			c.log.WarnContext(ctx, "client in the clients file has the same ID as an api client and is ignored", "client_id", cc.Client.ID)
 			return nil
 		}
-		return c.write(ctx, cc.Client.ID, fields)
+		return c.write(ctx, cc.Client.ID, fields, false)
 	}, "sync_client")
 }
 

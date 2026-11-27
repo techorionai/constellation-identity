@@ -52,7 +52,7 @@ func newMFAEnv(t *testing.T) *mfaEnv {
 	m.addUser(userB, "b@example.com", domain.UserActive, "right password 1")
 	m.addUser(adminID, "admin@example.com", domain.UserActive, "right password 1")
 	m.roles.Perms[domain.AdminRole] = []string{domain.AdminPermission}
-	if err := m.roles.Assign(ctx, adminID, domain.AdminRole, domain.AssignmentAPI); err != nil {
+	if _, err := m.roles.Assign(ctx, adminID, domain.AdminRole, domain.AssignmentAPI); err != nil {
 		t.Fatal(err)
 	}
 	m.build(t)

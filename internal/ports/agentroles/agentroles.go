@@ -21,8 +21,9 @@ type Repository interface {
 	// GrantedPermissions returns the permission keys that the agent has through
 	// assignments that are not pending. The result has no duplicates.
 	GrantedPermissions(ctx context.Context, agentID string) ([]string, error)
-	// Assign gives a role to an agent. A second call does nothing.
-	Assign(ctx context.Context, agentID string, role domain.RoleRef, source domain.AssignmentSource) error
+	// Assign gives a role to an agent. It returns true if it added a row, and false
+	// if the role was there.
+	Assign(ctx context.Context, agentID string, role domain.RoleRef, source domain.AssignmentSource) (bool, error)
 	// Delete removes an assignment. It returns false if the agent does not
 	// have the role.
 	Delete(ctx context.Context, agentID string, role domain.RoleRef) (bool, error)

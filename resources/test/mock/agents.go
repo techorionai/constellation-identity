@@ -168,13 +168,14 @@ func (r *AgentRoles) GrantedPermissions(_ context.Context, agentID string) ([]st
 }
 
 // Assign gives a role.
-func (r *AgentRoles) Assign(_ context.Context, agentID string, role domain.RoleRef, _ domain.AssignmentSource) error {
+func (r *AgentRoles) Assign(_ context.Context, agentID string, role domain.RoleRef, _ domain.AssignmentSource) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !slices.Contains(r.Rows[agentID], role) {
-		r.Rows[agentID] = append(r.Rows[agentID], role)
+	if slices.Contains(r.Rows[agentID], role) {
+		return false, nil
 	}
-	return nil
+	r.Rows[agentID] = append(r.Rows[agentID], role)
+	return true, nil
 }
 
 // Delete removes a role.

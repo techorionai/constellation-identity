@@ -292,6 +292,16 @@ func TestIssue15Integration(t *testing.T) {
 		response := a.key.Create(t, raw)
 		resp, _, _ := f.jsonPost(a.web, "/account/passkeys/finish", response)
 		status(t, resp, http.StatusOK, "first finish")
+		// I3 (R9): each registration writes one entry with the user as the actor.
+		var adds int
+		for _, rec := range auditsOf(t, f.a, "identity:mfa:passkey_add") {
+			if rec["target_user_id"] == a.id && rec["actor"] == a.id && rec["actor_type"] == "user" {
+				adds++
+			}
+		}
+		if adds != 2 {
+			t.Fatalf("passkey_add entries of the user = %d, want 2 (the user helper and the finish step)", adds)
+		}
 		resp, m, _ := f.jsonPost(a.web, "/account/passkeys/finish", response)
 		if resp.StatusCode != http.StatusBadRequest || errorOf(m) != "expired" {
 			t.Fatalf("second finish: %d %v", resp.StatusCode, m)

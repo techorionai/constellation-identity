@@ -20,8 +20,9 @@ type Repository interface {
 	// through its assignments that are not pending, and through the implicit
 	// roles. The result has no duplicates.
 	GrantedPermissions(ctx context.Context, clientID string, implicit ...domain.RoleRef) ([]string, error)
-	// Assign gives a role to a client. A second call does nothing.
-	Assign(ctx context.Context, clientID string, role domain.RoleRef, source domain.AssignmentSource) error
+	// Assign gives a role to a client. A second call does nothing.. It returns true if it added a row, and false
+	// if the role was there.
+	Assign(ctx context.Context, clientID string, role domain.RoleRef, source domain.AssignmentSource) (bool, error)
 	// Delete removes an assignment. It returns false if the client does not
 	// have the role.
 	Delete(ctx context.Context, clientID string, role domain.RoleRef) (bool, error)

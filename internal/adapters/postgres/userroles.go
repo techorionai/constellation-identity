@@ -21,15 +21,17 @@ var _ userroles.Repository = (*UserRoles)(nil)
 // NewUserRoles makes the repository.
 func NewUserRoles(pool *pgxpool.Pool) *UserRoles { return &UserRoles{pool: pool} }
 
-// Assign gives a role to a user.
-func (r *UserRoles) Assign(ctx context.Context, userID string, role domain.RoleRef, source domain.AssignmentSource) error {
-	if _, err := clientspg.Conn(ctx, r.pool).Exec(ctx, `
+// Assign gives a role to a user. It returns true if it added a row, and false
+// if the user had the role.
+func (r *UserRoles) Assign(ctx context.Context, userID string, role domain.RoleRef, source domain.AssignmentSource) (bool, error) {
+	tag, err := clientspg.Conn(ctx, r.pool).Exec(ctx, `
 		INSERT INTO user_roles (user_id, app, role, source) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (user_id, app, role) DO NOTHING`,
-		userID, role.App, role.Role, string(source)); err != nil {
-		return fmt.Errorf("assign role %s: %w", role, err)
+		userID, role.App, role.Role, string(source))
+	if err != nil {
+		return false, fmt.Errorf("assign role %s: %w", role, err)
 	}
-	return nil
+	return tag.RowsAffected() == 1, nil
 }
 
 // Assignments returns the assignments of a user. Pending is calculated in this

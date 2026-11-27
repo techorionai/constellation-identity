@@ -289,6 +289,36 @@ func TestIssue25Integration(t *testing.T) {
 		}
 	})
 
+	// I12b (R16): the daily bucket limits the denied entries when the short
+	// bucket allows them.
+	t.Run("I12b_denied_daily_limit", func(t *testing.T) {
+		g := newFixtureOn(t, h.start, testserver.WithRateLimits(map[string]ratelimit.Rule{ratelimit.BucketAdminDeniedDaily: {Limit: 2, Window: time.Hour}}))
+		gadmin := g.adminToken(apiAdminScopes)
+		id, access := g.apiUser(gadmin, "i12b", "demo:agent")
+		var forbidden, limited int
+		for range 5 {
+			resp, _ := g.a.Do(t, http.MethodPatch, "/v1/users/"+id, access, `{"name":"x"}`)
+			switch resp.StatusCode {
+			case http.StatusForbidden:
+				forbidden++
+			case http.StatusTooManyRequests:
+				limited++
+			default:
+				t.Fatalf("status = %d", resp.StatusCode)
+			}
+		}
+		g.a.WaitAuditRelayed(t)
+		var denied int
+		for _, r := range g.a.audit.Find(t, "identity:user:update") {
+			if r.Data.Result == "denied" && r.Actor == id {
+				denied++
+			}
+		}
+		if forbidden != 2 || limited != 3 || denied != 2 {
+			t.Fatalf("403 = %d, 429 = %d, denied entries = %d, want 2, 3, 2", forbidden, limited, denied)
+		}
+	})
+
 	// I8: the client IP follows the trusted proxy rule. The same address is the
 	// key of the rate limit (the unit test of clientip checks the mapped IPv6
 	// proxy address).

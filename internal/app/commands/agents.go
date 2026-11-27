@@ -125,10 +125,10 @@ func (a *Admin) UpdateAgent(ctx context.Context, actor, id string, name *string,
 		name = &n
 	}
 	var fields []string
-	if name != nil {
+	if name != nil && *name != ag.Name {
 		fields = append(fields, "name")
 	}
-	if enabled != nil {
+	if enabled != nil && *enabled != ag.Enabled {
 		fields = append(fields, "enabled")
 	}
 	err = a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
@@ -136,6 +136,10 @@ func (a *Admin) UpdateAgent(ctx context.Context, actor, id string, name *string,
 		ag, err = a.d.Agents.Patch(ctx, ag.ID, name, enabled, a.agentNow())
 		if err != nil {
 			return err
+		}
+		if len(fields) == 0 {
+			// The request changed no stored value, so there is no entry.
+			return nil
 		}
 		return writeAudit(ctx, a.d.Audit, a.now(), ActionAgentUpdate, targetAgent, ag.ID, map[string]any{"fields": fields})
 	}, txName("update_agent"))
@@ -182,8 +186,13 @@ func (a *Admin) AssignAgentRole(ctx context.Context, actor, agentID string, ref 
 		return domain.RoleAssignment{}, err
 	}
 	err = a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
-		if err := a.d.AgentRoles.Assign(ctx, ag.ID, ref, domain.AssignmentAPI); err != nil {
+		added, err := a.d.AgentRoles.Assign(ctx, ag.ID, ref, domain.AssignmentAPI)
+		if err != nil {
 			return err
+		}
+		if !added {
+			// The agent had the role. Nothing changed, so there is no entry.
+			return nil
 		}
 		return writeAudit(ctx, a.d.Audit, a.now(), ActionAgentRoleAssign, targetAgent, ag.ID, map[string]any{"role": ref.String()})
 	}, txName("assign_agent_role"))

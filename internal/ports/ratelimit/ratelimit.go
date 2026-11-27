@@ -47,6 +47,9 @@ const (
 	// BucketAdminDenied limits the audit entries of the admin requests that the
 	// scope check denies. The key is the principal ID.
 	BucketAdminDenied = "admin_denied"
+	// BucketAdminDeniedDaily is the longer limit of the same entries. The key is
+	// the principal ID.
+	BucketAdminDeniedDaily = "admin_denied_daily"
 )
 
 // Buckets lists the names of all buckets.
@@ -54,6 +57,6 @@ func Buckets() []string {
 	return []string{
 		BucketPublicMeta, BucketOAuthPublic, BucketOAuthBackendIP, BucketTokenIP, BucketIntrospectIP,
 		BucketTokenClient, BucketIntrospectClient, BucketSetupInvite, BucketAPITokenCreate, BucketManifestPublish,
-		BucketMFAVerify, BucketPasskey, BucketIdp, BucketAdminDenied,
+		BucketMFAVerify, BucketPasskey, BucketIdp, BucketAdminDenied, BucketAdminDeniedDaily,
 	}
 }

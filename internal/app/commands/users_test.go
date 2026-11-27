@@ -219,7 +219,7 @@ func TestU7_EnsureSetupToken(t *testing.T) {
 	}
 	// With an active admin, no token is made.
 	e.addUser("admin", "admin@example.com", domain.UserActive, "x")
-	_ = e.roles.Assign(ctx, "admin", domain.AdminRole, domain.AssignmentAPI)
+	_, _ = e.roles.Assign(ctx, "admin", domain.AdminRole, domain.AssignmentAPI)
 	e.now = e.now.Add(2 * time.Hour)
 	fourth, err := cmd.Execute(ctx, commands.EnsureSetupToken{})
 	if err != nil || fourth.Link.URL != "" {
@@ -381,7 +381,7 @@ func TestU6f_SetupWithAdminFails(t *testing.T) {
 		t.Fatalf("ensure: %v", err)
 	}
 	e.addUser("admin", "admin@example.com", domain.UserActive, "x")
-	_ = e.roles.Assign(ctx, "admin", domain.AdminRole, domain.AssignmentAPI)
+	_, _ = e.roles.Assign(ctx, "admin", domain.AdminRole, domain.AssignmentAPI)
 	_, err = commands.NewCompleteSetup(e.setup()).Execute(ctx, commands.CompleteSetup{
 		Token: tokenOf(res.Link.URL), Email: "second@example.com", Name: "Second", Password: "a good password 12",
 	})

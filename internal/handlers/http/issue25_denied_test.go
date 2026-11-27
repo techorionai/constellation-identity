@@ -1,8 +1,11 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/techorionai/constellation-identity/internal/app/commands"
@@ -14,6 +17,11 @@ import (
 
 func deniedServer(t *testing.T, ev *mock.Events, rl *mock.RateLimiter, scopes ...string) http.Handler {
 	t.Helper()
+	return deniedServerLog(t, ev, rl, nil, scopes...)
+}
+
+func deniedServerLog(t *testing.T, ev *mock.Events, rl *mock.RateLimiter, log *slog.Logger, scopes ...string) http.Handler {
+	t.Helper()
 	limits, err := commands.NewRateLimits(commands.RateLimitsDeps{Limiter: rl, Rules: config.DefaultRateRules()})
 	if err != nil {
 		t.Fatal(err)
@@ -21,8 +29,8 @@ func deniedServer(t *testing.T, ev *mock.Events, rl *mock.RateLimiter, scopes ..
 	return httpapi.New(httpapi.Deps{
 		JWKS: queries.NewGetJWKS(fakeKeys{}), Discovery: queries.NewGetDiscovery("https://id.example.com"),
 		Verifier: allScopes{scopes: scopes}, Scopes: realScopes(t),
-		Admin:      commands.NewAdmin(commands.AdminDeps{Clients: noClients{}, Users: noUsers{}}),
-		RateLimits: limits, Denied: commands.NewDeniedAudit(mock.Tx{}, ev),
+		Admin: commands.NewAdmin(commands.AdminDeps{Clients: noClients{}, Users: noUsers{}}),
+		Log:   log, RateLimits: limits, Denied: commands.NewDeniedAudit(mock.Tx{}, ev),
 	}).Handler()
 }
 
@@ -58,11 +66,40 @@ func TestIssue25_U7_DeniedStep(t *testing.T) {
 			t.Fatalf("audits = %+v", ev.Audits)
 		}
 	})
-	t.Run("limiter fails", func(t *testing.T) {
-		ev, rl := &mock.Events{}, &mock.RateLimiter{Err: errors.New("down")}
+	t.Run("limiter denies, logs the dropped entry (R11)", func(t *testing.T) {
+		var buf bytes.Buffer
+		ev, rl := &mock.Events{}, &mock.RateLimiter{DenyRules: map[string]bool{"admin_denied": true}}
+		h := deniedServerLog(t, ev, rl, slog.New(slog.NewJSONHandler(&buf, nil)), "identity:user:read")
+		_ = call(h, http.MethodPatch, "/v1/users/u1", "ok", `{"name":"x"}`)
+		if out := buf.String(); !strings.Contains(out, "identity.audit.denied_dropped") || !strings.Contains(out, "rate_limit_admin_denied") {
+			t.Fatalf("log = %s", out)
+		}
+	})
+	t.Run("daily limit denies (R16)", func(t *testing.T) {
+		ev, rl := &mock.Events{}, &mock.RateLimiter{DenyRules: map[string]bool{"admin_denied_daily": true}}
 		rec := call(deniedServer(t, ev, rl, "identity:user:read"), http.MethodPatch, "/v1/users/u1", "ok", `{"name":"x"}`)
-		if rec.Code != http.StatusForbidden || len(ev.Audits) != 1 {
+		if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" || len(ev.Audits) != 0 {
 			t.Fatalf("status = %d, audits = %+v", rec.Code, ev.Audits)
+		}
+		if len(rl.CallsOf("admin_denied")) != 1 || len(rl.CallsOf("admin_denied_daily")) != 1 {
+			t.Fatalf("limiter calls = %+v", rl.Calls)
+		}
+	})
+	t.Run("limiter fails, the process limit applies (R17)", func(t *testing.T) {
+		var buf bytes.Buffer
+		ev, rl := &mock.Events{}, &mock.RateLimiter{Err: errors.New("down")}
+		h := deniedServerLog(t, ev, rl, slog.New(slog.NewJSONHandler(&buf, nil)), "identity:user:read")
+		for i := 0; i < 15; i++ {
+			rec := call(h, http.MethodPatch, "/v1/users/u1", "ok", `{"name":"x"}`)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("request %d: status = %d", i, rec.Code)
+			}
+		}
+		if len(ev.Audits) != 10 {
+			t.Fatalf("entries = %d, want 10", len(ev.Audits))
+		}
+		if n := strings.Count(buf.String(), "fallback_limit"); n != 5 {
+			t.Fatalf("dropped records = %d, want 5: %s", n, buf.String())
 		}
 	})
 	t.Run("the entry cannot be written", func(t *testing.T) {

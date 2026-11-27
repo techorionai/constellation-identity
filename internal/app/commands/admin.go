@@ -465,8 +465,13 @@ func (a *Admin) AssignUserRole(ctx context.Context, actor, userID string, ref do
 		return domain.RoleAssignment{}, err
 	}
 	err := a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
-		if err := a.d.UserRoles.Assign(ctx, userID, ref, domain.AssignmentAPI); err != nil {
+		added, err := a.d.UserRoles.Assign(ctx, userID, ref, domain.AssignmentAPI)
+		if err != nil {
 			return err
+		}
+		if !added {
+			// The user had the role. Nothing changed, so there is no entry.
+			return nil
 		}
 		return writeAudit(ctx, a.d.Audit, a.now(), ActionUserRoleAssign, targetUser, userID, map[string]any{"role": ref.String()})
 	}, txName("assign_user_role"))
@@ -827,6 +832,7 @@ func (a *Admin) UpdateClient(ctx context.Context, actor, id string, in UpdateCli
 		if c.Source == domain.SourceConfig {
 			return errManagedByConfig()
 		}
+		orig := c
 		if in.Type != nil && *in.Type != c.Type {
 			return apperrors.NewUnprocessable("client_type_immutable", "the type of a client cannot change")
 		}
@@ -869,7 +875,12 @@ func (a *Admin) UpdateClient(ctx context.Context, actor, id string, in UpdateCli
 				return err
 			}
 		}
-		return writeAudit(ctx, a.d.Audit, a.now(), ActionClientUpdate, targetClient, id, map[string]any{"fields": clientFields(in)})
+		changed := clientChangedFields(orig, c)
+		if len(changed) == 0 {
+			// The request changed no stored value, so there is no entry.
+			return nil
+		}
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionClientUpdate, targetClient, id, map[string]any{"fields": changed})
 	}, txName("update_client"))
 	if err != nil {
 		return ClientView{}, err
@@ -999,8 +1010,13 @@ func (a *Admin) AssignClientRole(ctx context.Context, actor, clientID string, re
 		return domain.RoleAssignment{}, err
 	}
 	err := a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
-		if err := a.d.ClientRoles.Assign(ctx, clientID, ref, domain.AssignmentAPI); err != nil {
+		added, err := a.d.ClientRoles.Assign(ctx, clientID, ref, domain.AssignmentAPI)
+		if err != nil {
 			return err
+		}
+		if !added {
+			// The client had the role. Nothing changed, so there is no entry.
+			return nil
 		}
 		return writeAudit(ctx, a.d.Audit, a.now(), ActionClientRoleAssign, targetClient, clientID, map[string]any{"role": ref.String()})
 	}, txName("assign_client_role"))
@@ -1050,19 +1066,20 @@ func (a *Admin) RemoveClientRole(ctx context.Context, actor, clientID string, re
 	return nil
 }
 
-// clientFields returns the names of the fields that a client change sets.
-func clientFields(in UpdateClientInput) []string {
+// clientChangedFields returns the names of the fields that differ between the
+// stored client and the changed client.
+func clientChangedFields(old, now domain.Client) []string {
 	var out []string
-	if in.Name != nil {
+	if old.Name != now.Name {
 		out = append(out, "name")
 	}
-	if in.RedirectURIs != nil {
+	if !slices.Equal(old.RedirectURIs, now.RedirectURIs) {
 		out = append(out, "redirectUris")
 	}
-	if in.PostLogoutRedirectURIs != nil {
+	if !slices.Equal(old.PostLogoutRedirectURIs, now.PostLogoutRedirectURIs) {
 		out = append(out, "postLogoutRedirectUris")
 	}
-	if in.Disabled != nil {
+	if old.Disabled != now.Disabled {
 		out = append(out, "disabled")
 	}
 	return out

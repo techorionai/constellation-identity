@@ -207,7 +207,7 @@ func (c *CompleteSetupCommand) Execute(ctx context.Context, in CompleteSetup) (I
 		if err := c.d.Users.Create(ctx, user); err != nil {
 			return createUserErr(err)
 		}
-		if err := c.d.Roles.Assign(ctx, user.ID, domain.AdminRole, domain.AssignmentAPI); err != nil {
+		if _, err := c.d.Roles.Assign(ctx, user.ID, domain.AdminRole, domain.AssignmentAPI); err != nil {
 			return err
 		}
 		issued, err = sessionIssuer{repo: c.d.Session, policy: c.d.Policy, now: c.d.Now}.issue(ctx, user.ID, in.UserAgent, in.IP, domain.MethodsPassword())
