@@ -168,7 +168,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	oidc, err := commands.NewOIDC(commands.OIDCDeps{
 		Issuer: cfg.Issuer, Clients: clientRepo, Users: userRepo, UserRoles: roles, Sessions: sessionRepo,
 		Refresh: refreshRepo, AuthRequests: store, Codes: store.Codes(), Keys: a.cache, Signer: adapterjose.Signer{},
-		Verifier: adapterjose.Verifier{}, Tx: tx, Audit: auditW, Policy: policy,
+		Verifier: adapterjose.Verifier{}, Tx: tx, Audit: auditW, DeniedGate: a.deniedGate, Policy: policy,
 		MFA: mfaRepo, PasskeysOn: passkeysOn, RequireMFAForAdmins: cfg.MFA.RequireForAdmins,
 		AuthRequestTTL: cfg.OIDC.AuthRequestTTL, CodeTTL: cfg.OIDC.CodeTTL, UserTokenTTL: cfg.OIDC.UserTokenTTL,
 		Log: log, Now: clock,

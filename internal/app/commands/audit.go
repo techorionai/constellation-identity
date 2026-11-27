@@ -181,6 +181,8 @@ type entryAuditor struct {
 	tx  transaction.Transactor
 	w   audit.Writer
 	log *slog.Logger
+	// gate limits the denied token entries. A nil gate does not limit.
+	gate *TokenDeniedGate
 }
 
 // ready reports whether the auditor can write.
@@ -201,6 +203,9 @@ func (a entryAuditor) success(ctx context.Context, name string, at time.Time, ac
 // does not change the response, because the request changed nothing. The log
 // record has the action and the reason only.
 func (a entryAuditor) denied(ctx context.Context, name string, at time.Time, action, targetType, targetID, reason string, details map[string]any) {
+	if name == tokenDeniedTx && !a.gate.Allow(ctx, action) {
+		return
+	}
 	d := make(map[string]any, len(details)+1)
 	for k, v := range details {
 		d[k] = v
@@ -307,3 +312,7 @@ func mfaMethodName(amr string) string {
 	}
 	return mfaTOTP
 }
+
+// tokenDeniedTx is the transaction name of the denied entry of a token
+// request. The token gate applies to this name only.
+const tokenDeniedTx = "audit_token_denied" //nolint:gosec // G101: This is a transaction name, not a credential.

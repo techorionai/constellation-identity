@@ -88,18 +88,18 @@ const CoarseFactor = 16
 // /48 prefix can make only a limited number of keys in one window.
 func (r *RateLimits) CheckIP(ctx context.Context, bucket, key, coarseKey string, failOpen bool) error {
 	if coarseKey != "" {
-		if err := r.checkRule(ctx, bucket, coarseKey, failOpen, CoarseFactor); err != nil {
+		if err := r.checkRule(ctx, bucket, coarseKey, failOpen, CoarseFactor, false); err != nil {
 			return err
 		}
 	}
-	return r.checkRule(ctx, bucket, key, failOpen, 1)
+	return r.checkRule(ctx, bucket, key, failOpen, 1, false)
 }
 
 func (r *RateLimits) check(ctx context.Context, bucket, key string, failOpen bool) error {
-	return r.checkRule(ctx, bucket, key, failOpen, 1)
+	return r.checkRule(ctx, bucket, key, failOpen, 1, false)
 }
 
-func (r *RateLimits) checkRule(ctx context.Context, bucket, key string, failOpen bool, factor int64) error {
+func (r *RateLimits) checkRule(ctx context.Context, bucket, key string, failOpen bool, factor int64, quiet bool) error {
 	if r == nil {
 		return nil
 	}
@@ -119,7 +119,9 @@ func (r *RateLimits) checkRule(ctx context.Context, bucket, key string, failOpen
 	}
 	if !dec.Allowed {
 		r.count(ctx, bucket, RateOutcomeLimited)
-		r.d.Log.InfoContext(ctx, "identity.rate_limit.limited", "event", "identity.rate_limit.limited", "bucket", bucket)
+		if !quiet {
+			r.d.Log.InfoContext(ctx, "identity.rate_limit.limited", "event", "identity.rate_limit.limited", "bucket", bucket)
+		}
 		return &apperrors.RateLimitedError{Bucket: bucket, RetryAfter: dec.RetryAfter}
 	}
 	r.count(ctx, bucket, RateOutcomeAllowed)
@@ -136,4 +138,22 @@ func oauthRateError(err error) error {
 		return apperrors.NewOAuthRateLimited(re.Bucket, re.RetryAfter)
 	}
 	return apperrors.NewOAuthLimiterUnavailable(err)
+}
+
+// CheckQuiet is like Check, but a refusal does not write the log record
+// identity.rate_limit.limited. It still counts the decision. The gate of the
+// denied token entries uses it, because it has its own log rule.
+func (r *RateLimits) CheckQuiet(ctx context.Context, bucket, key string) error {
+	return r.checkRule(ctx, bucket, key, false, 1, true)
+}
+
+// CheckIPQuiet is like CheckIP with fail closed, but a refusal does not write
+// the log record identity.rate_limit.limited.
+func (r *RateLimits) CheckIPQuiet(ctx context.Context, bucket, key, coarseKey string) error {
+	if coarseKey != "" {
+		if err := r.checkRule(ctx, bucket, coarseKey, false, CoarseFactor, true); err != nil {
+			return err
+		}
+	}
+	return r.checkRule(ctx, bucket, key, false, 1, true)
 }

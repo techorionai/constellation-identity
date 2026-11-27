@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/techorionai/constellation-platform-go/auth"
 
@@ -95,7 +96,7 @@ func (s *Server) auditDenied(pattern string, scopes []string, next http.Handler)
 			}
 			if errors.Is(err, apperrors.ErrRateLimiterUnavailable) {
 				// The shared limiter fails. Use the limit of this process.
-				if !s.deniedFallback.allow(p.ID) {
+				if !s.deniedFallback.Allow(p.ID) {
 					s.logDeniedDropped(ctx, action, p.ID, "fallback_limit")
 					next.ServeHTTP(w, r)
 					return
@@ -117,6 +118,15 @@ func (s *Server) auditDenied(pattern string, scopes []string, next http.Handler)
 // not write. The record has the action, the principal ID, and the reason. It
 // has no token.
 func (s *Server) logDeniedDropped(ctx context.Context, action, principalID, reason string) {
+	s.deniedDrops.Add(ctx, action, reason)
 	s.log.WarnContext(ctx, "identity.audit.denied_dropped", "event", "identity.audit.denied_dropped",
 		"action", action, "principal_id", principalID, "reason", reason)
 }
+
+// The limits of the in-process fallback of the denied step. The fallback runs
+// only while the shared limiter does not answer.
+const (
+	deniedFallbackLimit  = 10
+	deniedFallbackWindow = time.Minute
+	deniedFallbackKeys   = 10000
+)

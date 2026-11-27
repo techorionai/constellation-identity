@@ -176,6 +176,7 @@ type App struct {
 	pub        *http.Server
 	mgr        *keys.Manager
 	limits     *commands.RateLimits
+	deniedGate *commands.TokenDeniedGate
 	cache      *keys.Cache
 	verify     *jwt.Verifier
 	reg        metric.Registration
@@ -250,6 +251,9 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		return nil, err
 	}
 	a.limits = limits
+	if a.deniedGate, err = commands.NewTokenDeniedGate(limits, log); err != nil {
+		return nil, err
+	}
 
 	// 2. Start the admin server. /livez is 200. /readyz is 503.
 	var migrated atomic.Bool
@@ -403,6 +407,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		Parser:      adapterjose.AssertionParser{},
 		Log:         log,
 		RateLimits:  limits,
+		DeniedGate:  a.deniedGate,
 		Tx:          a.tx,
 		Audit:       a.audit,
 	})
@@ -431,7 +436,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		Manifests: manifestRepo, Users: postgres.NewUsers(a.db.Pool), UserRoles: users.userRoles,
 		Agents: postgres.NewAgents(a.db.Pool), AgentRoles: postgres.NewAgentRoles(a.db.Pool),
 		Keys: a.cache, Signer: adapterjose.Signer{}, Verifier: adapterjose.Verifier{}, Log: log, Now: o.clock, RateLimits: limits,
-		Tx: a.tx, Audit: a.audit,
+		Tx: a.tx, Audit: a.audit, DeniedGate: a.deniedGate,
 	})
 	if err != nil {
 		return nil, err

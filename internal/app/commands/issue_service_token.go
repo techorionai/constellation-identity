@@ -63,6 +63,8 @@ type KeySource interface {
 
 // IssueServiceTokenDeps are the ports of the command.
 type IssueServiceTokenDeps struct {
+	// DeniedGate limits the denied token entries. If it is nil, the command makes its own gate.
+	DeniedGate *TokenDeniedGate
 	// RateLimits limits the requests of one verified client. It can be nil.
 	RateLimits  *RateLimits
 	Issuer      string
@@ -98,6 +100,13 @@ var _ executor.ExecutorWithReturn[IssueServiceToken, IssueServiceTokenResult] = 
 func NewIssueServiceToken(d IssueServiceTokenDeps) (*IssueServiceTokenCommand, error) {
 	if d.Log == nil {
 		d.Log = slog.Default()
+	}
+	if d.DeniedGate == nil {
+		g, err := NewTokenDeniedGate(d.RateLimits, d.Log)
+		if err != nil {
+			return nil, err
+		}
+		d.DeniedGate = g
 	}
 	if d.Now == nil {
 		d.Now = time.Now
@@ -173,7 +182,7 @@ func (c *IssueServiceTokenCommand) auditDenied(ctx context.Context, err error, s
 	if st.authenticated {
 		ctx = asClient(ctx, st.clientID, auth.PrincipalService)
 	}
-	entryAuditor{tx: c.d.Tx, w: c.d.Audit, log: c.d.Log}.denied(ctx, "audit_token_denied", c.d.Now(), ActionTokenIssue, targetClient, targetIfKnown(st), reason, details)
+	entryAuditor{tx: c.d.Tx, w: c.d.Audit, log: c.d.Log, gate: c.d.DeniedGate}.denied(ctx, tokenDeniedTx, c.d.Now(), ActionTokenIssue, targetClient, targetIfKnown(st), reason, details)
 }
 
 // targetIfKnown returns the client ID of a known client, or an empty string.

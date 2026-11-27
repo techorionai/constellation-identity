@@ -21,6 +21,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/app/queries"
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
+	"github.com/techorionai/constellation-identity/internal/common/fallback"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/handlers/http/gen"
 )
@@ -44,7 +45,9 @@ type Server struct {
 	log    *slog.Logger
 	authMW func(http.Handler) http.Handler
 	// deniedFallback limits the denied entries when the shared limiter fails.
-	deniedFallback *fallbackLimiter
+	deniedFallback *fallback.Limiter
+	// deniedDrops counts the denied entries that the step does not write.
+	deniedDrops *commands.DeniedDrops
 }
 
 var _ gen.StrictServerInterface = (*Server)(nil)
@@ -99,7 +102,12 @@ func New(d Deps) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	s := &Server{d: d, log: log, deniedFallback: newFallbackLimiter(deniedFallbackLimit, deniedFallbackWindow, deniedFallbackKeys)}
+	s := &Server{d: d, log: log, deniedFallback: fallback.New(deniedFallbackLimit, deniedFallbackWindow, deniedFallbackKeys)}
+	if drops, err := commands.NewDeniedDrops(); err == nil {
+		s.deniedDrops = drops
+	} else {
+		log.Error("identity.audit.denied_drops_unavailable", "error", err)
+	}
 	if d.Verifier != nil {
 		s.authMW = auth.Middleware(d.Verifier)
 	}
