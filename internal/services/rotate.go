@@ -8,6 +8,7 @@ import (
 	clientpg "github.com/techorionai/constellation-platform-go/clients/postgres"
 	platformsecrets "github.com/techorionai/constellation-platform-go/secrets"
 	secretspg "github.com/techorionai/constellation-platform-go/secrets/postgres"
+	transactionpg "github.com/techorionai/constellation-platform-go/transaction/postgres"
 
 	"github.com/techorionai/constellation-identity/internal/adapters/postgres"
 	adaptersecrets "github.com/techorionai/constellation-identity/internal/adapters/secrets"
@@ -32,6 +33,13 @@ func ForceRotateSigningKeys(ctx context.Context, cfg config.Config, log *slog.Lo
 		return fmt.Errorf("master key: %w", err)
 	}
 	store := adaptersecrets.New(platformsecrets.NewService(ring, secretspg.NewRepository(db.Pool)))
-	mgr := keys.NewManager(postgres.NewSigningKeys(db.Pool), store, cfg.Keys.Policy(), keys.WithLogger(log))
+	w, err := newAuditWriter()
+	if err != nil {
+		return err
+	}
+	// The command writes only the audit outbox row. The relay of a running
+	// service publishes it.
+	mgr := keys.NewManager(postgres.NewSigningKeys(db.Pool), store, cfg.Keys.Policy(), keys.WithLogger(log),
+		keys.WithAudit(transactionpg.NewTransactor(db.Pool), w))
 	return mgr.ForceRotate(ctx)
 }

@@ -307,7 +307,7 @@ func (m *MFA) VerifyLogin(ctx context.Context, in VerifyLogin) (VerifiedLogin, e
 		return VerifiedLogin{}, err
 	}
 	if consume == nil {
-		return VerifiedLogin{}, m.badCode(ctx, p.UserID, method, hash, n, err)
+		return VerifiedLogin{}, m.badCode(ctx, p, method, hash, n, err)
 	}
 
 	if _, err := m.d.Pending.Take(ctx, hash); errors.Is(err, mfaflow.ErrNotFound) {
@@ -337,11 +337,13 @@ func (m *MFA) VerifyLogin(ctx context.Context, in VerifyLogin) (VerifiedLogin, e
 		if !used {
 			return errNotUsed
 		}
-		return nil
+		// The entry is in the transaction of the session. A writer error stops the
+		// login, and the code stays valid.
+		return writeLoginSuccess(ctx, m.d.Audit, m.now(), p.UserID, firstFactorMethod(p), mfaMethodName(method))
 	}, txName("verify_second_factor"))
 	if errors.Is(err, errNotUsed) {
 		// A parallel request used the same code.
-		return VerifiedLogin{}, m.badCode(ctx, p.UserID, method, hash, n, ErrMFAReplay)
+		return VerifiedLogin{}, m.badCode(ctx, p, method, hash, n, ErrMFAReplay)
 	}
 	if err != nil {
 		return VerifiedLogin{}, err
@@ -356,12 +358,14 @@ func (m *MFA) VerifyLogin(ctx context.Context, in VerifyLogin) (VerifiedLogin, e
 }
 
 // badCode counts and logs a wrong or used code and returns the error for the user.
-func (m *MFA) badCode(ctx context.Context, userID, method, hash string, attempts int64, cause error) error {
+func (m *MFA) badCode(ctx context.Context, p domain.PendingLogin, method, hash string, attempts int64, cause error) error {
+	userID := p.UserID
 	outcome := MFAOutcomeBadCode
 	if errors.Is(cause, ErrMFAReplay) {
 		outcome = MFAOutcomeReplay
 	}
 	m.count(ctx, method, outcome)
+	loginDenied(ctx, m.d.Tx, m.d.Audit, m.d.Log, m.now(), userID, firstFactorMethod(p), mfaMethodName(method), ReasonMFAFailed)
 	m.d.Log.InfoContext(ctx, "identity.mfa.failed", "event", "identity.mfa.failed", "user_id", userID, "method", method, "outcome", outcome)
 	if attempts >= MaxPendingAttempts {
 		_ = m.d.Pending.Delete(ctx, hash)

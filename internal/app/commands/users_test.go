@@ -19,6 +19,7 @@ type env struct {
 	sessions *mock.Sessions
 	hasher   *mock.Hasher
 	limiter  *mock.Limiter
+	logins   *mock.Events
 	now      time.Time
 }
 
@@ -26,7 +27,7 @@ func newEnv() *env {
 	u := mock.NewUsers()
 	return &env{
 		users: u, roles: mock.NewUserRoles(u), tokens: mock.NewOneTimeTokens(), sessions: mock.NewSessions(),
-		hasher: &mock.Hasher{}, limiter: mock.NewLimiter(), now: time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC),
+		hasher: &mock.Hasher{}, limiter: mock.NewLimiter(), logins: &mock.Events{}, now: time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -38,6 +39,7 @@ func (e *env) login() *commands.LoginCommand {
 	c, err := commands.NewLogin(commands.LoginDeps{
 		Users: e.users, Session: e.sessions, Hasher: e.hasher, Limiter: e.limiter,
 		Limits: commands.LoginLimits{MaxFailuresPerEmail: 3, MaxFailuresPerIP: 50}, Policy: policy, Now: e.clock,
+		Tx: mock.Tx{}, Audit: e.logins,
 	})
 	if err != nil {
 		panic(err)

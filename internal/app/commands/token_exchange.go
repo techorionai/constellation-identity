@@ -9,7 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
+	"github.com/techorionai/constellation-platform-go/auth"
 	"github.com/techorionai/constellation-platform-go/executor"
+	"github.com/techorionai/constellation-platform-go/transaction"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -81,6 +84,10 @@ type TokenExchangeDeps struct {
 	Signer      tokensigner.Signer
 	Verifier    tokenverifier.Verifier
 	Log         *slog.Logger
+	// Tx and Audit write the audit entry of each exchange and of each denied
+	// request. A command with no writer issues no token.
+	Tx    transaction.Transactor
+	Audit audit.Writer
 	// Now is the clock. The default is time.Now.
 	Now func() time.Time
 	// NewID makes the jti of a token. The default is a random UUID.
@@ -138,6 +145,7 @@ func (c *TokenExchangeCommand) Execute(ctx context.Context, in TokenExchange) (T
 			code = oe.Code
 		}
 		c.errors.Add(ctx, 1, metric.WithAttributes(attribute.String("error", code), withAgent))
+		c.auditDenied(ctx, err, &st)
 		field := "client.id_unverified"
 		if st.verified {
 			field = "client.id"
@@ -155,6 +163,23 @@ func (c *TokenExchangeCommand) Execute(ctx context.Context, in TokenExchange) (T
 	return res, nil
 }
 
+// auditDenied writes the denied entry of a refused request (decision D4). The
+// client ID is in the details only after the client authentication worked.
+func (c *TokenExchangeCommand) auditDenied(ctx context.Context, err error, st *requestState) {
+	reason, ok := deniedCode(err)
+	if !ok {
+		return
+	}
+	details := map[string]any{"grant": "token_exchange"}
+	target := ""
+	if st.authenticated {
+		details["clientId"] = st.clientID
+		target = st.clientID
+		ctx = asClient(ctx, st.clientID, auth.PrincipalService)
+	}
+	entryAuditor{tx: c.d.Tx, w: c.d.Audit, log: c.d.Log}.denied(ctx, "audit_token_denied", c.d.Now(), ActionTokenIssue, targetClient, target, reason, details)
+}
+
 func (c *TokenExchangeCommand) exchange(ctx context.Context, in TokenExchange, st *requestState) (TokenExchangeResult, error) {
 	// 1. The request.
 	switch {
@@ -169,7 +194,8 @@ func (c *TokenExchangeCommand) exchange(ctx context.Context, in TokenExchange, s
 	if err != nil {
 		return TokenExchangeResult{}, err
 	}
-	st.clientID, st.verified = client.ID, true
+	st.clientID, st.verified, st.known, st.authenticated = client.ID, true, true, true
+	ctx = asClient(ctx, client.ID, auth.PrincipalService)
 	if err := oauthRateError(c.d.RateLimits.Check(ctx, ratelimit.BucketTokenClient, client.ID)); err != nil {
 		return TokenExchangeResult{}, err
 	}
@@ -261,6 +287,25 @@ func (c *TokenExchangeCommand) exchange(ctx context.Context, in TokenExchange, s
 	signed, err := c.d.Signer.Sign(key, token.Claims(), map[string]any{"typ": domain.AccessTokenType})
 	if err != nil {
 		return TokenExchangeResult{}, fail(apperrors.OAuthServerError, serverFailed, err)
+	}
+	// The entry is written before the token leaves the service. The actor is the
+	// agent if the request has one, else the client (decision D10). The writer
+	// takes no act claim, because the agent is the authenticated caller.
+	actor := auth.Principal{ID: client.ID, Type: auth.PrincipalService}
+	if agent != nil {
+		actor = auth.Principal{ID: agent.ID, Type: auth.PrincipalAgent}
+	}
+	actx := auth.ContextWithPrincipal(ctx, actor)
+	details := map[string]any{
+		"grant": "token_exchange", "clientId": client.ID, "audience": in.Audience, "scopes": scopes,
+		"jti": token.JTI, "expiresAt": token.ExpiresAt().UTC().Format(time.RFC3339), "subjectType": "user",
+	}
+	if agent != nil {
+		details["agentId"] = agent.ID
+	}
+	err = entryAuditor{tx: c.d.Tx, w: c.d.Audit, log: c.d.Log}.success(actx, "audit_token_exchange", now, ActionTokenIssue, targetUser, user.ID, details)
+	if err != nil {
+		return TokenExchangeResult{}, tokenAuditError(err)
 	}
 	// The record has IDs only. It has no token, no assertion, and no actor value.
 	c.d.Log.InfoContext(ctx, "identity.token.exchange", "event", "identity.token.exchange", "client.id", client.ID,

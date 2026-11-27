@@ -26,6 +26,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/ports/clientroles"
 	"github.com/techorionai/constellation-identity/internal/ports/clients"
 	"github.com/techorionai/constellation-identity/internal/ports/tokensigner"
+	"github.com/techorionai/constellation-identity/resources/test/mock"
 )
 
 const issuer = "https://id.example.com"
@@ -138,6 +139,7 @@ type fixture struct {
 	sign    *ecdsa.PrivateKey
 	log     *bytes.Buffer
 	signer  *countingSigner
+	ev      *mock.Events
 }
 
 func newKey(t *testing.T) *ecdsa.PrivateKey {
@@ -180,6 +182,7 @@ func newFixture(t *testing.T) *fixture {
 		},
 	}
 	f.jti = &fakeJTI{used: map[string]bool{}}
+	f.ev = &mock.Events{}
 	f.roles = &fakeRoles{
 		assigned: []string{"demo:ticket:read"},
 		implicit: map[domain.RoleRef][]string{domain.ServiceRole: {"identity:manifest:publish"}},
@@ -196,6 +199,8 @@ func newFixture(t *testing.T) *fixture {
 		Parser:      jose.AssertionParser{},
 		Log:         slog.New(slog.NewTextHandler(f.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Now:         func() time.Time { return now },
+		Tx:          mock.Tx{},
+		Audit:       f.ev,
 		NewID:       func() string { counter++; return fmt.Sprintf("token-%d", counter) },
 	})
 	if err != nil {

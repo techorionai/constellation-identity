@@ -168,7 +168,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	oidc, err := commands.NewOIDC(commands.OIDCDeps{
 		Issuer: cfg.Issuer, Clients: clientRepo, Users: userRepo, UserRoles: roles, Sessions: sessionRepo,
 		Refresh: refreshRepo, AuthRequests: store, Codes: store.Codes(), Keys: a.cache, Signer: adapterjose.Signer{},
-		Verifier: adapterjose.Verifier{}, Tx: tx, Policy: policy,
+		Verifier: adapterjose.Verifier{}, Tx: tx, Audit: auditW, Policy: policy,
 		MFA: mfaRepo, PasskeysOn: passkeysOn, RequireMFAForAdmins: cfg.MFA.RequireForAdmins,
 		AuthRequestTTL: cfg.OIDC.AuthRequestTTL, CodeTTL: cfg.OIDC.CodeTTL, UserTokenTTL: cfg.OIDC.UserTokenTTL,
 		Log: log, Now: clock,
@@ -373,10 +373,16 @@ func SetupLink(ctx context.Context, cfg config.Config, log *slog.Logger) (string
 	if err := RunMigrations(ctx, db); err != nil {
 		return "", err
 	}
+	// The command writes only the audit outbox row. The relay of a running
+	// service publishes it.
+	cliAudit, err := newAuditWriter()
+	if err != nil {
+		return "", err
+	}
 	cmd := commands.NewReplaceSetupToken(commands.SetupDeps{
 		Issuer: cfg.Issuer, TTL: cfg.Setup.TTL,
 		Tokens: postgres.NewOneTimeTokens(db.Pool), Roles: postgres.NewUserRoles(db.Pool),
-		Tx: transactionpg.NewTransactor(db.Pool), Log: log,
+		Tx: transactionpg.NewTransactor(db.Pool), Audit: cliAudit, Log: log,
 	})
 	link, err := cmd.Execute(ctx, commands.ReplaceSetupToken{})
 	if err != nil {
@@ -385,16 +391,32 @@ func SetupLink(ctx context.Context, cfg config.Config, log *slog.Logger) (string
 	return link.URL, nil
 }
 
-// UnlockLogin removes the login lock of one email. It uses Valkey only. The
-// result is true if the email had a failure counter.
+// UnlockLogin removes the login lock of one email. It uses Valkey to delete the
+// counter and PostgreSQL to write the audit entry. It runs the migrations
+// first. The result is true if the email had a failure counter.
 func UnlockLogin(ctx context.Context, cfg config.Config, email string, log *slog.Logger) (bool, error) {
+	db, err := clientpg.New(ctx, cfg.Database)
+	if err != nil {
+		return false, fmt.Errorf("connect to PostgreSQL: %w", err)
+	}
+	defer db.Close()
+	if err := RunMigrations(ctx, db); err != nil {
+		return false, err
+	}
 	kv, err := clientvk.New(ctx, cfg.Valkey)
 	if err != nil {
 		return false, fmt.Errorf("connect to Valkey: %w", err)
 	}
 	defer kv.Close()
+	// The command writes only the audit outbox row. The relay of a running
+	// service publishes it.
+	cliAudit, err := newAuditWriter()
+	if err != nil {
+		return false, err
+	}
 	limiter := adaptervalkey.NewLoginLimiter(kv.Raw, kv.Keys, cfg.Login.FailureWindow)
-	return commands.NewUnlockLogin(limiter, log).Execute(ctx, commands.UnlockLogin{Email: email})
+	cmd := commands.NewUnlockLogin(limiter, log).WithAudit(postgres.NewUsers(db.Pool), transactionpg.NewTransactor(db.Pool), cliAudit)
+	return cmd.Execute(ctx, commands.UnlockLogin{Email: email})
 }
 
 // ResetMFA removes the second factors of the user with the email and revokes

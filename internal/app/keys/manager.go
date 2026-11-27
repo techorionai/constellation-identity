@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
+	"github.com/techorionai/constellation-platform-go/transaction"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -28,6 +30,8 @@ type Manager struct {
 	now    func() time.Time
 	log    *slog.Logger
 	rotate metric.Int64Counter
+	tx     transaction.Transactor
+	audit  audit.Writer
 
 	mu   sync.Mutex // Protects stop.
 	wg   sync.WaitGroup
@@ -42,6 +46,13 @@ func WithClock(now func() time.Time) Option { return func(m *Manager) { m.now = 
 
 // WithLogger sets the logger.
 func WithLogger(l *slog.Logger) Option { return func(m *Manager) { m.log = l } }
+
+// WithAudit sets the transactor and the audit writer. Each change of a key
+// writes its audit entry in the transaction of the change. The manager does not
+// change a key without them.
+func WithAudit(tx transaction.Transactor, w audit.Writer) Option {
+	return func(m *Manager) { m.tx, m.audit = tx, w }
+}
 
 // NewManager makes a key manager.
 func NewManager(repo signingkeys.Repository, store privatekeys.Store, policy domain.KeyPolicy, opts ...Option) *Manager {
@@ -109,23 +120,53 @@ func (m *Manager) Close() {
 }
 
 // ForceRotate deletes all signing keys and their secrets, then makes one new
-// active key. All tokens that the old keys signed become invalid.
+// active key. All tokens that the old keys signed become invalid. The new
+// secret is stored first. One transaction then deletes the rows, inserts the
+// new row, and writes the entries. After the commit, the old secrets are
+// deleted. A failure before the commit leaves the old keys. The next pass
+// deletes the new secret that has no row. A failure after the commit leaves
+// old secrets that the next pass deletes.
 func (m *Manager) ForceRotate(ctx context.Context) error {
 	return m.repo.WithLock(ctx, func(ctx context.Context) error {
-		keys, err := m.repo.List(ctx)
+		if err := m.checkAudit(); err != nil {
+			return err
+		}
+		old, err := m.repo.List(ctx)
 		if err != nil {
 			return err
 		}
-		for _, k := range keys {
-			if err := m.deleteKey(ctx, k); err != nil {
-				return err
-			}
-		}
-		if err := m.deleteSecrets(ctx, nil); err != nil {
+		fresh, err := m.newKey(ctx, domain.KeyActive, m.now())
+		if err != nil {
 			return err
 		}
-		_, err = m.createKey(ctx, domain.KeyActive, m.now())
-		return err
+		err = m.tx.WithinTx(ctx, func(ctx context.Context) error {
+			// The entries come before the row changes. A writer error stops
+			// the rotation before any row changes.
+			entries := make([]audit.Entry, 0, len(old)+2)
+			for _, k := range old {
+				entries = append(entries, m.entry(ActionDelete, k.KID, map[string]any{"forced": true, "origin": OriginCLI}))
+			}
+			entries = append(entries,
+				m.entry(ActionCreate, fresh.KID, createDetails(fresh, OriginCLI)),
+				m.entry(ActionForceRotate, fresh.KID, map[string]any{"deletedKeys": len(old), "newKid": fresh.KID, "origin": OriginCLI}))
+			if err := m.write(ctx, entries...); err != nil {
+				return err
+			}
+			for _, k := range old {
+				if err := m.repo.Delete(ctx, k.KID); err != nil {
+					return err
+				}
+			}
+			return m.repo.Insert(ctx, fresh)
+		}, transaction.Name("force_rotate_signing_keys"))
+		if err != nil {
+			return err
+		}
+		for _, k := range old {
+			m.logChange(ctx, k.KID, string(k.State), "deleted")
+		}
+		m.logChange(ctx, fresh.KID, "none", domain.KeyActive)
+		return m.deleteSecrets(ctx, []domain.SigningKey{fresh})
 	})
 }
 
@@ -175,7 +216,7 @@ func (m *Manager) pass(ctx context.Context) error {
 	live := keys[:0:0]
 	for _, k := range keys {
 		if k.State == domain.KeyRetired && !retiredSince(k).Add(m.policy.RetireAfter).After(now) {
-			if err := m.repo.Delete(ctx, k.KID); err != nil {
+			if err := m.deleteRow(ctx, k); err != nil {
 				return err
 			}
 			m.logChange(ctx, k.KID, string(k.State), "deleted")
@@ -216,13 +257,33 @@ func retiredSince(k domain.SigningKey) time.Time {
 // activate makes keys[i] active and retires each active key in one
 // transaction. On an error, the keys keep their states.
 func (m *Manager) activate(ctx context.Context, keys []domain.SigningKey, i int, now time.Time) error {
+	if err := m.checkAudit(); err != nil {
+		return err
+	}
 	var retire []string
 	for _, k := range keys {
 		if k.State == domain.KeyActive {
 			retire = append(retire, k.KID)
 		}
 	}
-	if err := m.repo.Activate(ctx, keys[i].KID, retire, now); err != nil {
+	err := m.tx.WithinTx(ctx, func(ctx context.Context) error {
+		entries := make([]audit.Entry, 0, len(retire)+1)
+		for _, kid := range retire {
+			entries = append(entries, m.entry(ActionRetire, kid, nil))
+		}
+		previous := ""
+		if len(retire) > 0 {
+			previous = retire[0]
+		}
+		entries = append(entries, m.entry(ActionActivate, keys[i].KID, map[string]any{"previousKid": previous}))
+		// The entries come before the row changes. A writer error stops the
+		// activation, and the old key stays active.
+		if err := m.write(ctx, entries...); err != nil {
+			return err
+		}
+		return m.repo.Activate(ctx, keys[i].KID, retire, now)
+	}, transaction.Name("activate_signing_key_audited"))
+	if err != nil {
 		return err
 	}
 	for j := range keys {
@@ -247,11 +308,10 @@ func find(keys []domain.SigningKey, state domain.KeyState) *domain.SigningKey {
 	return nil
 }
 
-// createKey writes the secret first, then the row. A failure after the put
-// leaves a secret with no row. The next pass deletes it.
-func (m *Manager) createKey(ctx context.Context, state domain.KeyState, activatesAt time.Time) (domain.SigningKey, error) {
-	now := m.now()
-	key, priv, err := domain.NewSigningKey(now, state, activatesAt)
+// newKey makes a key and stores its secret. A failure after the put leaves a
+// secret with no row. The next pass deletes it.
+func (m *Manager) newKey(ctx context.Context, state domain.KeyState, activatesAt time.Time) (domain.SigningKey, error) {
+	key, priv, err := domain.NewSigningKey(m.now(), state, activatesAt)
 	if err != nil {
 		return domain.SigningKey{}, err
 	}
@@ -262,24 +322,44 @@ func (m *Manager) createKey(ctx context.Context, state domain.KeyState, activate
 	if err := m.store.Put(ctx, key.PrivateKeyName, pem); err != nil {
 		return domain.SigningKey{}, fmt.Errorf("store private key: %w", err)
 	}
-	if err := m.repo.Insert(ctx, key); err != nil {
+	return key, nil
+}
+
+// createKey writes the secret first. Then one transaction inserts the row and
+// writes the audit entry.
+func (m *Manager) createKey(ctx context.Context, state domain.KeyState, activatesAt time.Time) (domain.SigningKey, error) {
+	if err := m.checkAudit(); err != nil {
+		return domain.SigningKey{}, err
+	}
+	key, err := m.newKey(ctx, state, activatesAt)
+	if err != nil {
+		return domain.SigningKey{}, err
+	}
+	err = m.tx.WithinTx(ctx, func(ctx context.Context) error {
+		if err := m.write(ctx, m.entry(ActionCreate, key.KID, createDetails(key, ""))); err != nil {
+			return err
+		}
+		return m.repo.Insert(ctx, key)
+	}, transaction.Name("create_signing_key"))
+	if err != nil {
 		return domain.SigningKey{}, err
 	}
 	m.logChange(ctx, key.KID, "none", state)
 	return key, nil
 }
 
-// deleteKey deletes the row first, then the secret. A failure after the row
-// delete leaves a secret with no row. The next pass deletes it.
-func (m *Manager) deleteKey(ctx context.Context, k domain.SigningKey) error {
-	if err := m.repo.Delete(ctx, k.KID); err != nil {
+// deleteRow deletes the row of a retired key and writes its audit entry in one
+// transaction. The secret goes later in deleteSecrets.
+func (m *Manager) deleteRow(ctx context.Context, k domain.SigningKey) error {
+	if err := m.checkAudit(); err != nil {
 		return err
 	}
-	m.logChange(ctx, k.KID, string(k.State), "deleted")
-	if err := m.store.Delete(ctx, k.PrivateKeyName); err != nil {
-		return fmt.Errorf("delete private key: %w", err)
-	}
-	return nil
+	return m.tx.WithinTx(ctx, func(ctx context.Context) error {
+		if err := m.write(ctx, m.entry(ActionDelete, k.KID, map[string]any{"forced": false})); err != nil {
+			return err
+		}
+		return m.repo.Delete(ctx, k.KID)
+	}, transaction.Name("delete_signing_key"))
 }
 
 // deleteSecrets deletes each secret under the prefix that has no row, or whose

@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
 	"github.com/techorionai/constellation-platform-go/executor"
+	"github.com/techorionai/constellation-platform-go/transaction"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -61,6 +63,10 @@ type LoginDeps struct {
 	PasskeysOn bool
 	// RequireMFAForAdmins is the setting IDENTITY_MFA__REQUIRE_FOR_ADMINS.
 	RequireMFAForAdmins bool
+	// Tx and Audit write the audit entry of a login in the transaction of the
+	// session. A command with no writer makes no session.
+	Tx    transaction.Transactor
+	Audit audit.Writer
 	// Now is the clock. The default is time.Now.
 	Now Clock
 }
@@ -172,6 +178,12 @@ func (c *LoginCommand) Execute(ctx context.Context, in Login) (IssuedSession, er
 			outcome = OutcomeDisabled
 		}
 		c.fail(ctx, outcome)
+		targetID := ""
+		if found {
+			targetID = user.ID
+		}
+		// The entry has no email. The target is the user only for a known email.
+		loginDenied(ctx, c.d.Tx, c.d.Audit, c.d.Log, c.d.Now(), targetID, LoginMethodPassword, "", outcome)
 		return IssuedSession{}, ErrBadCredentials
 	}
 
@@ -193,8 +205,13 @@ func (c *LoginCommand) Execute(ctx context.Context, in Login) (IssuedSession, er
 	if err := c.d.Limiter.RecordSuccess(ctx, email, in.counterKey()); err != nil {
 		c.d.Log.WarnContext(ctx, "identity.login.reset_failed", "event", "identity.login.reset_failed", "error", err)
 	}
-	issued, err := sessionStarter{sessionIssuer{repo: c.d.Session, policy: c.d.Policy, now: c.d.Now}}.
-		start(ctx, user.ID, in.PreviousToken, in.UserAgent, in.IP, domain.MethodsPassword())
+	var issued IssuedSession
+	err = withLoginEntry(ctx, c.d.Tx, c.d.Audit, c.d.Now(), user.ID, LoginMethodPassword, "", "login_password", func(ctx context.Context) error {
+		var err error
+		issued, err = sessionStarter{sessionIssuer{repo: c.d.Session, policy: c.d.Policy, now: c.d.Now}}.
+			start(ctx, user.ID, in.PreviousToken, in.UserAgent, in.IP, domain.MethodsPassword())
+		return err
+	})
 	if err != nil {
 		return IssuedSession{}, err
 	}

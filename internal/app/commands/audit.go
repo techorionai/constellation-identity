@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/techorionai/constellation-platform-go/audit"
@@ -11,6 +12,7 @@ import (
 	"github.com/techorionai/constellation-platform-go/transaction"
 
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
+	"github.com/techorionai/constellation-identity/internal/domain"
 )
 
 // The actions of the audit entries of the identity service. The entry has the
@@ -139,4 +141,169 @@ func (d *DeniedAudit) Record(ctx context.Context, action string, missingScopes [
 		}
 		return nil
 	}, txName("audit_denied"))
+}
+
+// The actions of the audit entries of the tokens, the logins, and the operator
+// commands.
+const (
+	ActionTokenIssue   = "identity:token:issue"
+	ActionSessionLogin = "identity:session:login"
+	ActionLoginUnlock  = "identity:login:unlock"
+	ActionSetupLinkNew = "identity:setup:link_create"
+	ActionIdpSecretSet = "identity:idp:secret_set" //nolint:gosec // G101: This is the name of an action, not a credential.
+)
+
+// The values of details.method of a login entry.
+const (
+	LoginMethodPassword = "password"
+	LoginMethodUpstream = "upstream"
+	LoginMethodPasskey  = "passkey"
+)
+
+// The reasons of a denied entry.
+const (
+	ReasonRefreshTokenReuse = "refresh_token_reuse" //nolint:gosec // G101: This is the name of a reason, not a credential.
+	ReasonMFAFailed         = "mfa_failed"
+	ReasonBadCredentials    = "bad_credentials"
+)
+
+// asClient returns a context with the authenticated client as the principal.
+// The audit writer then takes the client as the actor of the entry. A use case
+// calls it only after the client authentication works, or after the code or the
+// refresh token verified the client.
+func asClient(ctx context.Context, id string, typ auth.PrincipalType) context.Context {
+	return auth.ContextWithPrincipal(ctx, auth.Principal{ID: id, Type: typ})
+}
+
+// entryAuditor writes an audit entry in its own short transaction. A token
+// path that has no transaction uses it.
+type entryAuditor struct {
+	tx  transaction.Transactor
+	w   audit.Writer
+	log *slog.Logger
+}
+
+// ready reports whether the auditor can write.
+func (a entryAuditor) ready() bool { return a.tx != nil && a.w != nil }
+
+// success writes an entry with the result success. An error means that the
+// caller must not give the result to the requester.
+func (a entryAuditor) success(ctx context.Context, name string, at time.Time, action, targetType, targetID string, details map[string]any) error {
+	if !a.ready() {
+		return ErrNoAuditWriter
+	}
+	return a.tx.WithinTx(ctx, func(ctx context.Context) error {
+		return writeAudit(ctx, a.w, at, action, targetType, targetID, details)
+	}, txName(name))
+}
+
+// denied writes an entry with the result denied. A writer error is logged and
+// does not change the response, because the request changed nothing. The log
+// record has the action and the reason only.
+func (a entryAuditor) denied(ctx context.Context, name string, at time.Time, action, targetType, targetID, reason string, details map[string]any) {
+	d := make(map[string]any, len(details)+1)
+	for k, v := range details {
+		d[k] = v
+	}
+	d["reason"] = reason
+	e := audit.Entry{Action: action, Result: audit.Denied, Time: at, Details: d}
+	if targetID != "" {
+		e.Target = &audit.Target{Type: targetType, ID: targetID}
+	}
+	var err error
+	if !a.ready() {
+		err = ErrNoAuditWriter
+	} else {
+		err = a.tx.WithinTx(ctx, func(ctx context.Context) error { return a.w.Write(ctx, e) }, txName(name))
+	}
+	if err != nil {
+		a.log.ErrorContext(ctx, "identity.audit.failed", "event", "identity.audit.failed", "action", action, "reason", reason)
+	}
+}
+
+// deniedCode returns the OAuth error code of a token request failure that gets
+// a denied entry (decision D4). It returns false for a request that fails the
+// validation, for a rate limit, and for a server error.
+func deniedCode(err error) (string, bool) {
+	oe, ok := apperrors.AsOAuthError(err)
+	if !ok || oe.RateLimited {
+		return "", false
+	}
+	switch oe.Code {
+	case apperrors.OAuthInvalidClient, apperrors.OAuthInvalidGrant, apperrors.OAuthUnauthorizedClient, apperrors.OAuthInvalidScope:
+		return oe.Code, true
+	}
+	return "", false
+}
+
+// tokenAuditError maps the error of the audit entry of a token issue to the
+// OAuth error temporarily_unavailable. The response is 503 and has no token.
+func tokenAuditError(err error) error {
+	return apperrors.NewOAuthError(apperrors.OAuthTemporarilyUnavailable, "The service is not available. Try again.", err)
+}
+
+// loginDetails are the details of a login entry. The details never have the
+// email.
+func loginDetails(method, mfaMethod string) map[string]any {
+	d := map[string]any{"method": method}
+	if mfaMethod != "" {
+		d["mfa"] = mfaMethod
+	}
+	return d
+}
+
+// writeLoginSuccess writes the success entry of a login. The user is the
+// principal, because all steps of the login worked (decision D9). It must run
+// in the transaction that makes the session.
+func writeLoginSuccess(ctx context.Context, w audit.Writer, at time.Time, userID, method, mfaMethod string) error {
+	return writeAudit(asUser(ctx, userID), w, at, ActionSessionLogin, targetUser, userID, loginDetails(method, mfaMethod))
+}
+
+// withLoginEntry runs fn, which makes the session, and writes the success entry
+// of the login in the same transaction. A writer error stops the login.
+func withLoginEntry(ctx context.Context, tx transaction.Transactor, w audit.Writer, at time.Time, userID, method, mfaMethod, name string, fn func(ctx context.Context) error) error {
+	if tx == nil || w == nil {
+		return ErrNoAuditWriter
+	}
+	return tx.WithinTx(ctx, func(ctx context.Context) error {
+		if err := fn(ctx); err != nil {
+			return err
+		}
+		return writeLoginSuccess(ctx, w, at, userID, method, mfaMethod)
+	}, txName(name))
+}
+
+// loginDenied writes the denied entry of a failed login or a failed second
+// factor. The actor is the service identity, because the user is not verified.
+// The target is the user only when the user is known. A writer error is logged
+// and does not change the result of the login.
+func loginDenied(ctx context.Context, tx transaction.Transactor, w audit.Writer, log *slog.Logger, at time.Time, userID, method, mfaMethod, reason string) {
+	if log == nil {
+		log = slog.Default()
+	}
+	entryAuditor{tx: tx, w: w, log: log}.denied(ctx, "audit_login_denied", at, ActionSessionLogin, targetUser, userID, reason, loginDetails(method, mfaMethod))
+}
+
+// The values of details.mfa of a login entry.
+const (
+	mfaTOTP     = "totp"
+	mfaRecovery = "recovery_code"
+	mfaPasskey  = "passkey"
+)
+
+// firstFactorMethod returns the details.method of the pending login: upstream
+// for a login with a provider, else password.
+func firstFactorMethod(p domain.PendingLogin) string {
+	if p.Provider != "" {
+		return LoginMethodUpstream
+	}
+	return LoginMethodPassword
+}
+
+// mfaMethodName returns the details.mfa value of the AMR value of a code.
+func mfaMethodName(amr string) string {
+	if amr == domain.AMRRecovery {
+		return mfaRecovery
+	}
+	return mfaTOTP
 }

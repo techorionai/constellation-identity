@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
+	"github.com/techorionai/constellation-platform-go/auth"
 	"github.com/techorionai/constellation-platform-go/transaction"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -55,7 +57,10 @@ type OIDCDeps struct {
 	Verifier     tokenverifier.Verifier
 	ServiceAuth  ServiceAuthenticator
 	Tx           transaction.Transactor
-	Policy       domain.SessionPolicy
+	// Audit writes the audit entry of each token issue and of each denied token
+	// request, in the transaction of the change.
+	Audit  audit.Writer
+	Policy domain.SessionPolicy
 	// MFA reads the second factors of a user. It can be nil. A nil value means
 	// that no user has a second factor.
 	MFA mfa.Repository
@@ -507,14 +512,42 @@ type ExchangeCode struct {
 // ExchangeCode runs the checks of the token request for a code in the order of
 // the plan, claims the code, and makes the tokens.
 func (o *OIDC) ExchangeCode(ctx context.Context, in ExchangeCode) (UserTokenResult, error) {
-	res, err := o.exchangeCode(ctx, in)
+	var st grantState
+	res, err := o.exchangeCode(ctx, in, &st)
 	if err != nil {
 		o.countError(ctx, "authorization_code", in.ClientID, err)
+		o.auditDenied(ctx, "authorization_code", err, &st)
 	}
 	return res, err
 }
 
-func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode) (UserTokenResult, error) {
+// grantState is what the denied entry of a token request may say. clientID is
+// set only for a client that exists. reason is set when it is not the OAuth
+// error code.
+type grantState struct {
+	clientID string
+	reason   string
+}
+
+// auditDenied writes the denied entry of a refused token request (decision D4).
+// The client ID is in the details only for a client that exists. The client is
+// not authenticated, so the actor is the service identity.
+func (o *OIDC) auditDenied(ctx context.Context, grant string, err error, st *grantState) {
+	reason, ok := deniedCode(err)
+	if !ok {
+		return
+	}
+	if st.reason != "" {
+		reason = st.reason
+	}
+	details := map[string]any{"grant": grant}
+	if st.clientID != "" {
+		details["clientId"] = st.clientID
+	}
+	entryAuditor{tx: o.d.Tx, w: o.d.Audit, log: o.d.Log}.denied(ctx, "audit_token_denied", o.now(), ActionTokenIssue, targetClient, st.clientID, reason, details)
+}
+
+func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode, st *grantState) (UserTokenResult, error) {
 	if in.SecondAuthentication || in.RepeatedParameter {
 		return UserTokenResult{}, apperrors.NewOAuthError(apperrors.OAuthInvalidRequest, "A public client sends client_id only. The request must not have a secret or repeated parameters.", nil)
 	}
@@ -529,6 +562,7 @@ func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode) (UserTokenResu
 	if !ok {
 		return UserTokenResult{}, apperrors.NewOAuthError(apperrors.OAuthInvalidClient, "The client is not known.", nil)
 	}
+	st.clientID = client.ID
 	// 2. Read the code. A read does not delete it.
 	hash := domain.HashSecret(in.Code)
 	rec, err := o.d.Codes.Peek(ctx, hash)
@@ -570,7 +604,7 @@ func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode) (UserTokenResu
 	}
 	// 7. The tokens are signed before the code is claimed. If the key or the
 	// signer fails, the code stays valid and the client can try again.
-	access, idToken, err := o.mint(ctx, client, user, rec.Scope, rec.OIDCScopes, tokenAuth{AuthTime: rec.AuthTime, Methods: rec.AuthMethods, UpstreamAuthValid: rec.UpstreamAuthValid}, &idTokenInput{
+	access, idToken, jti, err := o.mint(ctx, client, user, rec.Scope, rec.OIDCScopes, tokenAuth{AuthTime: rec.AuthTime, Methods: rec.AuthMethods, UpstreamAuthValid: rec.UpstreamAuthValid}, &idTokenInput{
 		Nonce: rec.Nonce, AuthTime: rec.AuthTime, SessionID: sess.ID,
 	})
 	if err != nil {
@@ -586,33 +620,47 @@ func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode) (UserTokenResu
 	if err := o.d.Codes.MarkUsed(ctx, hash, marker, usedCodeTTL); err != nil {
 		return UserTokenResult{}, unavailableErr(err)
 	}
-	// 9. The refresh token. The family is made now, in one statement that checks the
-	// session.
+	// 9. The refresh token and the audit entry. The family is made now, in one
+	// statement that checks the session. The family and the entry are one
+	// transaction. A writer error gives no token. The client is verified by the
+	// code and PKCE, so it is the principal of the entry (decision D8).
 	refresh := ""
-	if slices.Contains(rec.OIDCScopes, domain.ScopeOfflineAccess) {
-		value, tokenHash, err := domain.NewSecret()
-		if err != nil {
-			return UserTokenResult{}, serverErr(err)
+	err = o.d.Tx.WithinTx(asClient(ctx, client.ID, auth.PrincipalService), func(ctx context.Context) error {
+		if slices.Contains(rec.OIDCScopes, domain.ScopeOfflineAccess) {
+			value, tokenHash, err := domain.NewSecret()
+			if err != nil {
+				return serverErr(err)
+			}
+			fam := domain.RefreshFamily{
+				ID: newUUID(), SessionID: sess.ID, ClientID: client.ID, UserID: user.ID,
+				Scope: rec.Scope, OIDCScopes: rec.OIDCScopes, CreatedAt: now,
+				AuthTime: rec.AuthTime, AuthMethods: rec.AuthMethods, UpstreamAuthValid: rec.UpstreamAuthValid,
+			}
+			tok := domain.RefreshToken{Hash: tokenHash, FamilyID: fam.ID, CreatedAt: now, ExpiresAt: sess.ExpiresAt}
+			inserted, err := o.d.Refresh.InsertFamilyIfSessionValid(ctx, fam, tok, now)
+			if err != nil {
+				return serverErr(err)
+			}
+			if !inserted {
+				return grantErr("The session has ended.")
+			}
+			refresh = value
+		} else {
+			again, err := o.d.Sessions.GetByID(ctx, sess.ID)
+			if err != nil || !again.Valid(now) {
+				return grantErr("The session has ended.")
+			}
 		}
-		fam := domain.RefreshFamily{
-			ID: newUUID(), SessionID: sess.ID, ClientID: client.ID, UserID: user.ID,
-			Scope: rec.Scope, OIDCScopes: rec.OIDCScopes, CreatedAt: now,
-			AuthTime: rec.AuthTime, AuthMethods: rec.AuthMethods, UpstreamAuthValid: rec.UpstreamAuthValid,
+		if err := writeAudit(ctx, o.d.Audit, now, ActionTokenIssue, targetUser, user.ID, o.issueDetails("authorization_code", client, rec.Scope, jti, now)); err != nil {
+			return tokenAuditError(err)
 		}
-		tok := domain.RefreshToken{Hash: tokenHash, FamilyID: fam.ID, CreatedAt: now, ExpiresAt: sess.ExpiresAt}
-		inserted, err := o.d.Refresh.InsertFamilyIfSessionValid(ctx, fam, tok, now)
-		if err != nil {
-			return UserTokenResult{}, serverErr(err)
+		return nil
+	}, txName("exchange_code"))
+	if err != nil {
+		if _, ok := apperrors.AsOAuthError(err); !ok {
+			err = serverErr(err)
 		}
-		if !inserted {
-			return UserTokenResult{}, grantErr("The session has ended.")
-		}
-		refresh = value
-	} else {
-		again, err := o.d.Sessions.GetByID(ctx, sess.ID)
-		if err != nil || !again.Valid(now) {
-			return UserTokenResult{}, grantErr("The session has ended.")
-		}
+		return UserTokenResult{}, err
 	}
 	o.issued.Add(ctx, 1, metric.WithAttributes(attribute.String("grant_type", "authorization_code"), attribute.String("principal_type", domain.PrincipalUser)))
 	return UserTokenResult{
@@ -643,6 +691,15 @@ func (o *OIDC) unknownCode(ctx context.Context, hash string, in ExchangeCode) er
 	return grantErr("The code is not valid.")
 }
 
+// issueDetails are the details of the entry of a token issue to a user. They
+// have the jti and never the token text.
+func (o *OIDC) issueDetails(grant string, client domain.Client, scopes []string, jti string, now time.Time) map[string]any {
+	return map[string]any{
+		"grant": grant, "clientId": client.ID, "audience": client.App, "scopes": scopes,
+		"jti": jti, "expiresAt": now.Add(o.d.UserTokenTTL).UTC().Format(time.RFC3339),
+	}
+}
+
 type idTokenInput struct {
 	Nonce     string
 	AuthTime  time.Time
@@ -660,33 +717,33 @@ type tokenAuth struct {
 }
 
 // mint signs the access token, and the ID token if the scope has openid.
-func (o *OIDC) mint(ctx context.Context, client domain.Client, user domain.User, scopes, oidcScopes []string, auth tokenAuth, idt *idTokenInput) (string, string, error) {
+func (o *OIDC) mint(ctx context.Context, client domain.Client, user domain.User, scopes, oidcScopes []string, ta tokenAuth, idt *idTokenInput) (string, string, string, error) {
 	key, err := o.d.Keys.ActiveKey()
 	if err != nil {
-		return "", "", unavailableErr(err)
+		return "", "", "", unavailableErr(err)
 	}
 	now := o.now()
 	jti := newUUID()
 	access, err := o.d.Signer.Sign(key, domain.UserAccessToken{
 		Issuer: o.d.Issuer, Audience: client.App, UserID: user.ID, ClientID: client.ID,
 		Scopes: scopes, Now: now, TTL: o.d.UserTokenTTL, JTI: jti,
-		AuthMethods: auth.Methods, AuthTime: auth.AuthTime,
+		AuthMethods: ta.Methods, AuthTime: ta.AuthTime,
 	}.Claims(), map[string]any{"typ": domain.AccessTokenType})
 	if err != nil {
-		return "", "", serverErr(err)
+		return "", "", "", serverErr(err)
 	}
-	if auth.UpstreamAuthValid {
+	if ta.UpstreamAuthValid {
 		// The service keeps the fact in its storage. The tokens do not have it.
 		if err := o.d.Sessions.MarkAccessToken(ctx, jti, user.ID, now.Add(o.d.UserTokenTTL), now); err != nil {
-			return "", "", serverErr(err)
+			return "", "", "", serverErr(err)
 		}
 	}
 	if idt == nil || !slices.Contains(oidcScopes, domain.ScopeOpenID) {
-		return access, "", nil
+		return access, "", jti, nil
 	}
 	t := domain.IDToken{
 		Issuer: o.d.Issuer, UserID: user.ID, ClientID: client.ID, AuthTime: idt.AuthTime, Nonce: idt.Nonce,
-		SessionID: idt.SessionID, Now: now, TTL: o.d.UserTokenTTL, AuthMethods: auth.Methods,
+		SessionID: idt.SessionID, Now: now, TTL: o.d.UserTokenTTL, AuthMethods: ta.Methods,
 	}
 	if slices.Contains(oidcScopes, domain.ScopeEmail) {
 		email := user.Email
@@ -698,9 +755,9 @@ func (o *OIDC) mint(ctx context.Context, client domain.Client, user domain.User,
 	}
 	id, err := o.d.Signer.Sign(key, t.Claims(), map[string]any{"typ": domain.IDTokenType})
 	if err != nil {
-		return "", "", serverErr(err)
+		return "", "", "", serverErr(err)
 	}
-	return access, id, nil
+	return access, id, jti, nil
 }
 
 // RefreshTokens is the input of the refresh_token grant.
@@ -722,14 +779,16 @@ var errRefreshScope = errors.New("the refresh scope is not valid")
 // RefreshTokens rotates a refresh token. All checks run inside the family lock,
 // before the token is marked as used.
 func (o *OIDC) RefreshTokens(ctx context.Context, in RefreshTokens) (UserTokenResult, error) {
-	res, err := o.refresh(ctx, in)
+	var st grantState
+	res, err := o.refresh(ctx, in, &st)
 	if err != nil {
 		o.countError(ctx, "refresh_token", in.ClientID, err)
+		o.auditDenied(ctx, "refresh_token", err, &st)
 	}
 	return res, err
 }
 
-func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, error) {
+func (o *OIDC) refresh(ctx context.Context, in RefreshTokens, st *grantState) (UserTokenResult, error) {
 	if in.SecondAuthentication || in.RepeatedParameter {
 		return UserTokenResult{}, apperrors.NewOAuthError(apperrors.OAuthInvalidRequest, "A public client sends client_id only. The request must not have a secret or repeated parameters.", nil)
 	}
@@ -746,6 +805,9 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 	if err == nil && c.Type != domain.ClientTypePublic {
 		return UserTokenResult{}, apperrors.NewOAuthError(apperrors.OAuthInvalidClient, "The client is not known.", nil)
 	}
+	if err == nil {
+		st.clientID = c.ID
+	}
 	hash := domain.HashSecret(in.RefreshToken)
 	value, tokenHash, err := domain.NewSecret()
 	if err != nil {
@@ -757,6 +819,8 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 		scopes    []string
 		access    string
 		mintErr   error
+		jti       string
+		auditErr  error
 	)
 	err = o.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		// 0. The session row first. 1. The family row. This is the lock order of
@@ -828,7 +892,7 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 		if !ok {
 			return errRefreshRejected
 		}
-		if access, _, mintErr = o.mint(ctx, client, u, effective, nil, tokenAuth{AuthTime: f.AuthTime, Methods: f.AuthMethods, UpstreamAuthValid: f.UpstreamAuthValid}, nil); mintErr != nil {
+		if access, _, jti, mintErr = o.mint(ctx, client, u, effective, nil, tokenAuth{AuthTime: f.AuthTime, Methods: f.AuthMethods, UpstreamAuthValid: f.UpstreamAuthValid}, nil); mintErr != nil {
 			return mintErr
 		}
 		// 5. Mark the token as used.
@@ -850,12 +914,22 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 				return err
 			}
 		}
+		// The entry is in the transaction of the rotation. A writer error rolls the
+		// rotation back, and the old refresh token stays valid. The client is
+		// verified by the refresh token, so it is the principal (decision D8).
+		if err := writeAudit(asClient(ctx, client.ID, auth.PrincipalService), o.d.Audit, now, ActionTokenIssue, targetUser, u.ID,
+			o.issueDetails("refresh_token", client, effective, jti, now)); err != nil {
+			auditErr = tokenAuditError(err)
+			return auditErr
+		}
 		scopes = effective
 		return nil
 	})
 	switch {
 	case mintErr != nil && errors.Is(err, mintErr):
 		return UserTokenResult{}, mintErr
+	case auditErr != nil && errors.Is(err, auditErr):
+		return UserTokenResult{}, auditErr
 	case errors.Is(err, errRefreshRejected):
 		return UserTokenResult{}, grantErr("The refresh token is not valid.")
 	case errors.Is(err, errRefreshScope):
@@ -864,6 +938,7 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens) (UserTokenResult, 
 		return UserTokenResult{}, serverErr(err)
 	}
 	if reused {
+		st.reason = ReasonRefreshTokenReuse
 		o.refreshReuse.Add(ctx, 1)
 		o.d.Log.WarnContext(ctx, "refresh token reuse", "event", "identity.refresh_token.reuse",
 			"session_id", reusedFam.SessionID, "family_id", reusedFam.ID, "client_id", reusedFam.ClientID)

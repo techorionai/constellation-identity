@@ -32,11 +32,12 @@ func states(ks []domain.SigningKey) []string {
 var policy = domain.KeyPolicy{RotationPeriod: 90 * 24 * time.Hour, PublishDelay: time.Hour, RetireAfter: 24 * time.Hour}
 
 type rig struct {
-	repo  *mock.SigningKeys
-	store *mock.PrivateKeys
-	clock *testClock
-	logs  *bytes.Buffer
-	mgr   *keys.Manager
+	repo   *mock.SigningKeys
+	store  *mock.PrivateKeys
+	clock  *testClock
+	logs   *bytes.Buffer
+	mgr    *keys.Manager
+	events *mock.Events
 }
 
 func newRig() *rig { return newRigWith(policy) }
@@ -44,7 +45,8 @@ func newRig() *rig { return newRigWith(policy) }
 func newRigWith(p domain.KeyPolicy) *rig {
 	r := &rig{repo: &mock.SigningKeys{}, store: &mock.PrivateKeys{}, clock: newClock(), logs: &bytes.Buffer{}}
 	log := slog.New(slog.NewJSONHandler(r.logs, nil))
-	r.mgr = keys.NewManager(r.repo, r.store, p, keys.WithClock(r.clock.Now), keys.WithLogger(log))
+	r.events = &mock.Events{}
+	r.mgr = keys.NewManager(r.repo, r.store, p, keys.WithClock(r.clock.Now), keys.WithLogger(log), keys.WithAudit(mock.Tx{}, r.events))
 	return r
 }
 

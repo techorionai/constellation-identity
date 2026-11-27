@@ -341,7 +341,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	if o.policy != nil {
 		policy = *o.policy
 	}
-	a.mgr = keys.NewManager(signingRepo, store, policy, keys.WithLogger(log))
+	a.mgr = keys.NewManager(signingRepo, store, policy, keys.WithLogger(log), keys.WithAudit(a.tx, a.audit))
 	if err := a.reloadCache(ctx); err != nil {
 		return nil, err
 	}
@@ -403,6 +403,8 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		Parser:      adapterjose.AssertionParser{},
 		Log:         log,
 		RateLimits:  limits,
+		Tx:          a.tx,
+		Audit:       a.audit,
 	})
 	if err != nil {
 		return nil, err
@@ -429,6 +431,7 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		Manifests: manifestRepo, Users: postgres.NewUsers(a.db.Pool), UserRoles: users.userRoles,
 		Agents: postgres.NewAgents(a.db.Pool), AgentRoles: postgres.NewAgentRoles(a.db.Pool),
 		Keys: a.cache, Signer: adapterjose.Signer{}, Verifier: adapterjose.Verifier{}, Log: log, Now: o.clock, RateLimits: limits,
+		Tx: a.tx, Audit: a.audit,
 	})
 	if err != nil {
 		return nil, err
