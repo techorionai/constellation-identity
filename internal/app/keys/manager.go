@@ -166,7 +166,12 @@ func (m *Manager) ForceRotate(ctx context.Context) error {
 			m.logChange(ctx, k.KID, string(k.State), "deleted")
 		}
 		m.logChange(ctx, fresh.KID, "none", domain.KeyActive)
-		return m.deleteSecrets(ctx, []domain.SigningKey{fresh})
+		// The rotation is done and the entries are committed. A failed delete of
+		// an old secret is not an error of the rotation. The next pass deletes it.
+		if err := m.deleteSecrets(ctx, []domain.SigningKey{fresh}); err != nil {
+			m.log.ErrorContext(ctx, "identity.key.secret_delete_failed", "event", "identity.key.secret_delete_failed", "error", err)
+		}
+		return nil
 	})
 }
 

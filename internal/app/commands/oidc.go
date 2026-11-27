@@ -42,6 +42,13 @@ type ServiceAuthenticator interface {
 	AuthenticateService(ctx context.Context, assertionType, assertion, clientID string) (domain.Client, error)
 }
 
+// ServiceAuthenticatorState is a ServiceAuthenticator that also reports the
+// subject of the assertion and whether a client with that ID exists.
+type ServiceAuthenticatorState interface {
+	ServiceAuthenticator
+	AuthenticateServiceState(ctx context.Context, assertionType, assertion, clientID string) (client domain.Client, subject string, known bool, err error)
+}
+
 // OIDCDeps are the ports and the settings of the code flow use cases.
 type OIDCDeps struct {
 	Issuer       string
@@ -527,6 +534,9 @@ func (o *OIDC) ExchangeCode(ctx context.Context, in ExchangeCode) (UserTokenResu
 type grantState struct {
 	clientID string
 	reason   string
+	// audited is true when the use case already wrote the denied entry in the
+	// transaction of the change. The caller then writes no second entry.
+	audited bool
 }
 
 // auditDenied writes the denied entry of a refused token request (decision D4).
@@ -534,7 +544,7 @@ type grantState struct {
 // not authenticated, so the actor is the service identity.
 func (o *OIDC) auditDenied(ctx context.Context, grant string, err error, st *grantState) {
 	reason, ok := deniedCode(err)
-	if !ok {
+	if !ok || st.audited {
 		return
 	}
 	if st.reason != "" {
@@ -545,6 +555,27 @@ func (o *OIDC) auditDenied(ctx context.Context, grant string, err error, st *gra
 		details["clientId"] = st.clientID
 	}
 	entryAuditor{tx: o.d.Tx, w: o.d.Audit, log: o.d.Log}.denied(ctx, "audit_token_denied", o.now(), ActionTokenIssue, targetClient, st.clientID, reason, details)
+}
+
+// auditReuse writes the denied entry of a refresh token reuse. It must run in
+// the transaction of the revocation. The entry has the client and the user of
+// the family, and the IDs of the family and the session.
+func (o *OIDC) auditReuse(ctx context.Context, f domain.RefreshFamily, at time.Time) error {
+	if o.d.Audit == nil {
+		return ErrNoAuditWriter
+	}
+	e := audit.Entry{
+		Action: ActionTokenIssue, Result: audit.Denied, Time: at,
+		Target: &audit.Target{Type: targetUser, ID: f.UserID},
+		Details: map[string]any{
+			"grant": "refresh_token", "reason": ReasonRefreshTokenReuse,
+			"clientId": f.ClientID, "familyId": f.ID, "sessionId": f.SessionID,
+		},
+	}
+	if err := o.d.Audit.Write(ctx, e); err != nil {
+		return fmt.Errorf("write the audit entry %s: %w", ActionTokenIssue, err)
+	}
+	return nil
 }
 
 func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode, st *grantState) (UserTokenResult, error) {
@@ -603,7 +634,10 @@ func (o *OIDC) exchangeCode(ctx context.Context, in ExchangeCode, st *grantState
 		return UserTokenResult{}, grantErr("The session has ended.")
 	}
 	// 7. The tokens are signed before the code is claimed. If the key or the
-	// signer fails, the code stays valid and the client can try again.
+	// signer fails, the code stays valid and the client can try again. After
+	// the claim (step 8), the code is gone. A failure of step 9, also a writer
+	// error of the audit entry, gives no token, and the client must start a new
+	// authorization.
 	access, idToken, jti, err := o.mint(ctx, client, user, rec.Scope, rec.OIDCScopes, tokenAuth{AuthTime: rec.AuthTime, Methods: rec.AuthMethods, UpstreamAuthValid: rec.UpstreamAuthValid}, &idTokenInput{
 		Nonce: rec.Nonce, AuthTime: rec.AuthTime, SessionID: sess.ID,
 	})
@@ -847,12 +881,23 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens, st *grantState) (U
 		// other families of the session. The transaction commits. The error comes
 		// after the commit.
 		if tok.UsedAt != nil {
-			reused, reusedFam = true, f
 			if err := o.d.Refresh.RevokeFamily(ctx, f.ID, now); err != nil {
 				return err
 			}
-			_, err := o.d.Sessions.RevokeCascade(ctx, f.SessionID, now)
-			return err
+			if _, err := o.d.Sessions.RevokeCascade(ctx, f.SessionID, now); err != nil {
+				return err
+			}
+			// The denied entry is in the same transaction as the revocation. It
+			// names the client and the user of the family, not the client_id of
+			// the request, which can be any public client. A writer error rolls
+			// the revocation back, and the next request with the token starts
+			// the reuse detection again.
+			if err := o.auditReuse(ctx, f, now); err != nil {
+				auditErr = tokenAuditError(err)
+				return auditErr
+			}
+			reused, reusedFam = true, f
+			return nil
 		}
 		// 3. The checks, inside the lock.
 		st, err := o.d.Refresh.RefreshState(ctx, f.ID)
@@ -938,7 +983,7 @@ func (o *OIDC) refresh(ctx context.Context, in RefreshTokens, st *grantState) (U
 		return UserTokenResult{}, serverErr(err)
 	}
 	if reused {
-		st.reason = ReasonRefreshTokenReuse
+		st.reason, st.audited = ReasonRefreshTokenReuse, true
 		o.refreshReuse.Add(ctx, 1)
 		o.d.Log.WarnContext(ctx, "refresh token reuse", "event", "identity.refresh_token.reuse",
 			"session_id", reusedFam.SessionID, "family_id", reusedFam.ID, "client_id", reusedFam.ClientID)

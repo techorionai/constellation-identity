@@ -271,6 +271,11 @@ func TestIssue26Integration(t *testing.T) {
 		if reuse.Data.Result != "denied" || reuse.Actor != "identity" || reuse.Data.Details["grant"] != "refresh_token" || reuse.Data.Details["clientId"] != "demo-ui" {
 			t.Fatalf("reuse entry = %s", reuse.Raw)
 		}
+		// The entry names the user, the family, and the session of the reused token.
+		if reuse.Data.Target == nil || reuse.Data.Target.Type != "user" || reuse.Data.Target.ID == "" ||
+			reuse.Data.Details["familyId"] == nil || reuse.Data.Details["sessionId"] == nil {
+			t.Fatalf("reuse entry has no user, family, or session: %s", reuse.Raw)
+		}
 	})
 
 	// I8 and I16: a password login with TOTP, a failed password login, a wrong

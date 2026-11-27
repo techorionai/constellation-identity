@@ -163,8 +163,24 @@ func (c *TokenExchangeCommand) Execute(ctx context.Context, in TokenExchange) (T
 	return res, nil
 }
 
+// authenticate checks the client authentication. A failed authentication of a
+// known client sets st.clientID and st.known, so that the denied entry has the
+// client ID (decision D4).
+func (c *TokenExchangeCommand) authenticate(ctx context.Context, in TokenExchange, st *requestState) (domain.Client, error) {
+	sa, ok := c.d.Auth.(ServiceAuthenticatorState)
+	if !ok {
+		return c.d.Auth.AuthenticateService(ctx, in.AssertionType, in.Assertion, in.ClientID)
+	}
+	client, subject, known, err := sa.AuthenticateServiceState(ctx, in.AssertionType, in.Assertion, in.ClientID)
+	if err != nil && known {
+		st.clientID, st.known = subject, true
+	}
+	return client, err
+}
+
 // auditDenied writes the denied entry of a refused request (decision D4). The
-// client ID is in the details only after the client authentication worked.
+// client ID is in the details only for a client that exists. The actor is the
+// client only after the client authentication worked.
 func (c *TokenExchangeCommand) auditDenied(ctx context.Context, err error, st *requestState) {
 	reason, ok := deniedCode(err)
 	if !ok {
@@ -172,9 +188,11 @@ func (c *TokenExchangeCommand) auditDenied(ctx context.Context, err error, st *r
 	}
 	details := map[string]any{"grant": "token_exchange"}
 	target := ""
-	if st.authenticated {
+	if st.known {
 		details["clientId"] = st.clientID
 		target = st.clientID
+	}
+	if st.authenticated {
 		ctx = asClient(ctx, st.clientID, auth.PrincipalService)
 	}
 	entryAuditor{tx: c.d.Tx, w: c.d.Audit, log: c.d.Log}.denied(ctx, "audit_token_denied", c.d.Now(), ActionTokenIssue, targetClient, target, reason, details)
@@ -190,7 +208,7 @@ func (c *TokenExchangeCommand) exchange(ctx context.Context, in TokenExchange, s
 	}
 
 	// 2. The client authentication.
-	client, err := c.d.Auth.AuthenticateService(ctx, in.AssertionType, in.Assertion, in.ClientID)
+	client, err := c.authenticate(ctx, in, st)
 	if err != nil {
 		return TokenExchangeResult{}, err
 	}

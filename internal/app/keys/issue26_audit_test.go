@@ -191,3 +191,24 @@ func TestIssue26_ManagerWithoutAuditChangesNothing(t *testing.T) {
 		t.Fatalf("keys = %+v", ks)
 	}
 }
+
+// Issue26_R9: a failed delete of an old secret after the commit is not an error
+// of the rotation. The rotation is done, the entries are written, and the next
+// pass deletes the old secret.
+func TestIssue26_R9_ForceRotateSecretDeleteFails(t *testing.T) {
+	r := newRig()
+	old := r.run(t)[0]
+	r.store.DeleteHook = func(string) error { return errors.New("delete failed") }
+	if err := r.mgr.ForceRotate(context.Background()); err != nil {
+		t.Fatalf("err = %v, want no error after the commit", err)
+	}
+	ks, _ := r.repo.List(context.Background())
+	if len(ks) != 1 || ks[0].KID == old.KID {
+		t.Fatalf("keys = %+v, want one new key", ks)
+	}
+	r.store.DeleteHook = nil
+	r.run(t)
+	if names := r.store.Names(); len(names) != 1 || names[0] != domain.PrivateKeyName(ks[0].KID) {
+		t.Fatalf("secrets = %v, want the secret of the new key only", names)
+	}
+}

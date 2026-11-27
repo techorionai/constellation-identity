@@ -317,7 +317,8 @@ func (m *MFA) VerifyLogin(ctx context.Context, in VerifyLogin) (VerifiedLogin, e
 	}
 	// The session and the use of the code change in one transaction. If the
 	// session cannot start, or a parallel request used the code, the transaction
-	// ends with no change. The code stays valid in the first case.
+	// ends with no change. The pending login is already deleted, so the user
+	// starts again from the first factor in both cases.
 	var issued IssuedSession
 	errNotUsed := errors.New("the factor was not used")
 	err = m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
@@ -338,7 +339,8 @@ func (m *MFA) VerifyLogin(ctx context.Context, in VerifyLogin) (VerifiedLogin, e
 			return errNotUsed
 		}
 		// The entry is in the transaction of the session. A writer error stops the
-		// login, and the code stays valid.
+		// login with no session. The pending login is already deleted, so the
+		// user starts again from the password step.
 		return writeLoginSuccess(ctx, m.d.Audit, m.now(), p.UserID, firstFactorMethod(p), mfaMethodName(method))
 	}, txName("verify_second_factor"))
 	if errors.Is(err, errNotUsed) {

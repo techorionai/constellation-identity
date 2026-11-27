@@ -29,6 +29,7 @@ type UnlockLoginCommand struct {
 	users   users.Repository
 	tx      transaction.Transactor
 	audit   audit.Writer
+	now     func() time.Time
 }
 
 var _ executor.ExecutorWithReturn[UnlockLogin, bool] = (*UnlockLoginCommand)(nil)
@@ -38,7 +39,15 @@ func NewUnlockLogin(limiter loginlimiter.Limiter, log *slog.Logger) *UnlockLogin
 	if log == nil {
 		log = slog.Default()
 	}
-	return &UnlockLoginCommand{limiter: limiter, log: log}
+	return &UnlockLoginCommand{limiter: limiter, log: log, now: func() time.Time { return time.Now().UTC() }}
+}
+
+// WithClock sets the clock of the audit entry. The default is time.Now.
+func (c *UnlockLoginCommand) WithClock(now func() time.Time) *UnlockLoginCommand {
+	if now != nil {
+		c.now = now
+	}
+	return c
 }
 
 // WithAudit sets the user repository, the transactor, and the audit writer.
@@ -77,7 +86,7 @@ func (c *UnlockLoginCommand) Execute(ctx context.Context, in UnlockLogin) (bool,
 		if unlocked, err = c.limiter.Unlock(ctx, email); err != nil {
 			return fmt.Errorf("unlock the login: %w", err)
 		}
-		return writeAudit(ctx, c.audit, time.Time{}, ActionLoginUnlock, targetUser, targetID, originDetails(OriginCLI, map[string]any{
+		return writeAudit(ctx, c.audit, c.now(), ActionLoginUnlock, targetUser, targetID, originDetails(OriginCLI, map[string]any{
 			"knownUser": targetID != "", "wasLocked": unlocked,
 		}))
 	}, txName("unlock_login"))

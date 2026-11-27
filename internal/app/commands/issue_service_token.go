@@ -274,9 +274,18 @@ func (c *IssueServiceTokenCommand) issue(ctx context.Context, in IssueServiceTok
 // client, the key, the signature, the claims, and the one-time jti. The
 // revoke endpoint uses it too. Each failure is an *apperrors.OAuthError.
 func (c *IssueServiceTokenCommand) AuthenticateService(ctx context.Context, assertionType, assertionValue, formClientID string) (domain.Client, error) {
+	client, _, _, err := c.AuthenticateServiceState(ctx, assertionType, assertionValue, formClientID)
+	return client, err
+}
+
+// AuthenticateServiceState does the same as AuthenticateService. It also
+// returns the subject of the assertion and whether a client with that ID
+// exists. The denied audit entry of a caller uses them: a known client that
+// fails the authentication still gets its client ID in the entry.
+func (c *IssueServiceTokenCommand) AuthenticateServiceState(ctx context.Context, assertionType, assertionValue, formClientID string) (domain.Client, string, bool, error) {
 	var st requestState
 	if assertionType != domain.AssertionType || assertionValue == "" {
-		return domain.Client{}, fail(apperrors.OAuthInvalidRequest, "The client_assertion_type and the client_assertion are required.", nil)
+		return domain.Client{}, "", false, fail(apperrors.OAuthInvalidRequest, "The client_assertion_type and the client_assertion are required.", nil)
 	}
 	client, err := c.authenticate(ctx, assertionType, assertionValue, formClientID, false, &st)
 	if err != nil {
@@ -286,7 +295,7 @@ func (c *IssueServiceTokenCommand) AuthenticateService(ctx context.Context, asse
 		}
 		c.d.Log.WarnContext(ctx, "client authentication failed", "error_code", code, "client.id_unverified", truncate(st.clientID, 64))
 	}
-	return client, err
+	return client, st.clientID, st.known, err
 }
 
 func (c *IssueServiceTokenCommand) authenticate(ctx context.Context, assertionType, assertionValue, formClientID string, requireApp bool, st *requestState) (domain.Client, error) {
