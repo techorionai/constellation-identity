@@ -48,14 +48,14 @@ func (e *env) login() *commands.LoginCommand {
 func (e *env) invites() commands.InviteDeps {
 	return commands.InviteDeps{
 		Issuer: "https://id.example.com", TTL: time.Hour, Tokens: e.tokens, Users: e.users, Session: e.sessions,
-		Hasher: e.hasher, Tx: mock.Tx{}, Policy: policy, Now: e.clock,
+		Hasher: e.hasher, Tx: mock.Tx{}, Audit: &mock.Events{}, Policy: policy, Now: e.clock,
 	}
 }
 
 func (e *env) setup() commands.SetupDeps {
 	return commands.SetupDeps{
 		Issuer: "https://id.example.com", TTL: time.Hour, Tokens: e.tokens, Roles: e.roles, Users: e.users,
-		Session: e.sessions, Hasher: e.hasher, Tx: mock.Tx{}, Policy: policy, Now: e.clock,
+		Session: e.sessions, Hasher: e.hasher, Tx: mock.Tx{}, Audit: &mock.Events{}, Policy: policy, Now: e.clock,
 	}
 }
 

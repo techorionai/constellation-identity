@@ -189,7 +189,7 @@ func TestIssue13_U9_PublishManifest(t *testing.T) {
 	f := newFixture(t)
 	rl := &mock.RateLimiter{Deny: true}
 	repo := &publishRepo{}
-	cmd := commands.NewPublishManifest(repo, f.clients, nil).WithRateLimits(newLimits(t, rl))
+	cmd := commands.NewPublishManifest(repo, f.clients, nil).WithAudit(mock.Tx{}, &mock.Events{}).WithRateLimits(newLimits(t, rl))
 	own := domain.Manifest{App: "identity", Permissions: []domain.PermissionDef{{Key: "identity:admin", Description: "Administer the identity service."}}}
 	if _, err := cmd.Execute(ctx, commands.PublishManifest{Manifest: own, PublishedBy: "identity", Internal: true}); err != nil {
 		t.Fatalf("internal publish: %v", err)
@@ -206,7 +206,7 @@ func TestIssue13_U9_PublishManifest(t *testing.T) {
 	if c := rl.CallsOf(ratelimit.BucketManifestPublish); len(c) != 1 || c[0].Key != "helpdesk" || repo.published != 1 {
 		t.Fatalf("calls = %+v, published = %d", rl.Calls, repo.published)
 	}
-	cmd = commands.NewPublishManifest(repo, f.clients, nil).WithRateLimits(newLimits(t, &mock.RateLimiter{Err: errors.New("down")}))
+	cmd = commands.NewPublishManifest(repo, f.clients, nil).WithAudit(mock.Tx{}, &mock.Events{}).WithRateLimits(newLimits(t, &mock.RateLimiter{Err: errors.New("down")}))
 	_, err = cmd.Execute(ctx, in)
 	requireLimiterUnavailable(t, err)
 }
@@ -217,7 +217,7 @@ func TestIssue13_U10_CreateAPIToken(t *testing.T) {
 	rl := &mock.RateLimiter{Deny: true}
 	build := func(l ratelimit.Limiter) *commands.APITokens {
 		return commands.NewAPITokens(commands.APITokensDeps{
-			Tokens: e.api, Users: e.users, UserRoles: e.roles, Tx: mock.Tx{}, Log: e.logger(), Now: e.clock, RateLimits: newLimits(t, l),
+			Tokens: e.api, Users: e.users, UserRoles: e.roles, Tx: mock.Tx{}, Audit: &mock.Events{}, Log: e.logger(), Now: e.clock, RateLimits: newLimits(t, l),
 			Settings: commands.APITokenSettings{DefaultTTLDays: 90, MaxTTLDays: 365, MaxPerUser: e.max},
 		})
 	}
@@ -297,7 +297,7 @@ func TestIssue13_UnlockLogin(t *testing.T) {
 func TestR5_PublishKeyOfUserCaller(t *testing.T) {
 	f := newFixture(t)
 	rl := &mock.RateLimiter{Deny: true}
-	cmd := commands.NewPublishManifest(&publishRepo{}, f.clients, nil).WithRateLimits(newLimits(t, rl))
+	cmd := commands.NewPublishManifest(&publishRepo{}, f.clients, nil).WithAudit(mock.Tx{}, &mock.Events{}).WithRateLimits(newLimits(t, rl))
 	for _, caller := range []string{"user-1", "user-2"} {
 		_, err := cmd.Execute(ctx, commands.PublishManifest{
 			PathApp: "helpdesk", CallerClientID: "web", CallerIsService: false, PublishedBy: caller,

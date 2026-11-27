@@ -200,6 +200,8 @@ type Server struct {
 	PublicURL string
 	AdminURL  string
 	DB        DB
+	// Env is the environment that started the server.
+	Env *Env
 }
 
 // Start starts a server. It fails the test on an error and stops the server at
@@ -273,6 +275,7 @@ func (e *Env) TryStart(t testing.TB, opts ...Option) (*Server, error) {
 		PublicURL: "http://" + app.PublicAddr(),
 		AdminURL:  "http://" + app.AdminAddr(),
 		DB:        *s.db,
+		Env:       e,
 	}
 	t.Cleanup(srv.Stop)
 	return srv, nil
@@ -355,7 +358,7 @@ func (e *Env) buildConfig(t testing.TB, opts []Option) (config.Config, *settings
 	if err != nil {
 		return config.Config{}, nil, err
 	}
-	user, password := e.VK.NewACLUser(t, "identity")
+	user, password := e.VK.NewACLUser(t, "identity", containers.ValkeyACLAuditProducer())
 	cfg := config.Config{
 		Issuer: fmt.Sprintf("http://localhost:%d", port),
 		HTTP:   config.HTTP{Addr: fmt.Sprintf("127.0.0.1:%d", port)},
@@ -385,6 +388,8 @@ func (e *Env) buildConfig(t testing.TB, opts []Option) (config.Config, *settings
 			RefreshTokens:        retention.Config{Interval: time.Hour, BatchSize: 1000},
 			RefreshTokenFamilies: retention.Config{Interval: time.Hour, BatchSize: 1000},
 			APITokens:            retention.Config{Interval: time.Hour, BatchSize: 1000},
+			AuditOutbox:          retention.Config{Interval: time.Hour, BatchSize: 1000},
+			AuditStream:          retention.Config{Interval: time.Hour, BatchSize: 1000},
 		},
 		IDP:         config.IDP{Microsoft: config.MicrosoftIDP{Tenant: "organizations"}, HTTPTimeout: 10 * time.Second},
 		APIToken:    config.APIToken{DefaultTTLDays: 90, MaxTTLDays: 365, MaxPerUser: 50},

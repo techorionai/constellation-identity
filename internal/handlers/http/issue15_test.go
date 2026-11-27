@@ -16,7 +16,6 @@ import (
 	"github.com/techorionai/constellation-identity/internal/app/queries"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	httpapi "github.com/techorionai/constellation-identity/internal/handlers/http"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
 	"github.com/techorionai/constellation-identity/resources/test/mock"
 )
 
@@ -88,7 +87,7 @@ func newPasskeyRig(t *testing.T, on bool) *passkeyRig {
 	cmd, err := commands.NewMFA(commands.MFADeps{
 		Users: users, UserRoles: roles, Sessions: r.sess, MFA: repo, Sealer: mock.Sealer{}, Pending: mock.NewPending(),
 		Passkeys: r.keys, WebAuthn: &mock.WebAuthn{}, Ceremonies: mock.NewCeremonies(), PasskeysOn: on,
-		Setups: mock.NewSetups(), Failures: mock.NewFailures(), Limiter: mock.NewLimiter(), Events: r.events, Tx: mock.Tx{},
+		Setups: mock.NewSetups(), Failures: mock.NewFailures(), Limiter: mock.NewLimiter(), Events: r.events, Audit: r.events, Tx: mock.Tx{},
 		RequireMFAForAdmins: true, Issuer: "Constellation", MaxFailures: 10, FailureWindow: time.Minute,
 		Log: slog.New(slog.NewTextHandler(devNull{}, nil)), Now: func() time.Time { return mfaNow },
 	})
@@ -174,7 +173,7 @@ func TestIssue15_RemoveOrder(t *testing.T) {
 	if rec := call(r.h, http.MethodDelete, path, "user-fresh", ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("remove: %d %s", rec.Code, rec.Body)
 	}
-	if len(r.events.Audits) != 1 || r.events.Audits[0].Action != securityevents.ActionPasskeyRemove || len(r.events.Notices) != 1 {
+	if len(r.events.Audits) != 1 || r.events.Audits[0].Action != commands.ActionPasskeyRemove || len(r.events.Notices) != 1 {
 		t.Fatalf("events = %+v %+v", r.events.Audits, r.events.Notices)
 	}
 }
@@ -221,8 +220,8 @@ func TestIssue15_UpdateOrder(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK || got["name"] != "Renamed" || got["id"] != pkOwn {
 		t.Fatalf("rename: %d %s", rec.Code, rec.Body)
 	}
-	if len(r.events.Audits) != 1 || r.events.Audits[0].Action != securityevents.ActionPasskeyRename ||
-		r.events.Audits[0].Changes["old_name"] != "Laptop" || r.events.Audits[0].Changes["new_name"] != "Renamed" {
+	if len(r.events.Audits) != 1 || r.events.Audits[0].Action != commands.ActionPasskeyRename ||
+		r.events.Audits[0].Details["oldName"] != "Laptop" || r.events.Audits[0].Details["newName"] != "Renamed" {
 		t.Fatalf("audits = %+v", r.events.Audits)
 	}
 }

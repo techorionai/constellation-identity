@@ -89,7 +89,7 @@ func newLinkRig(t *testing.T) *linkRig {
 	}
 	r := &linkRig{links: mock.NewIdentityLinks(), users: users, events: &mock.Events{}, sess: mock.NewSessions(), mfa: mock.NewMFA()}
 	cmd := commands.NewIdentityLinks(commands.IdentityLinksDeps{
-		Users: users, Links: r.links, Sessions: r.sess, APITokens: mock.NewAPITokens(users), MFA: r.mfa, Events: r.events, Tx: mock.Tx{},
+		Users: users, Links: r.links, Sessions: r.sess, APITokens: mock.NewAPITokens(users), MFA: r.mfa, Events: r.events, Audit: r.events, Tx: mock.Tx{},
 		PasskeysOn: true, ProviderOn: func(p string) bool { return p == "google" || p == "microsoft" },
 		Log: slog.New(slog.NewTextHandler(devNull{}, nil)), Now: func() time.Time { return mfaNow },
 	})

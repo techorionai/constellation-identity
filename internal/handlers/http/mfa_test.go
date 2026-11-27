@@ -16,7 +16,6 @@ import (
 	"github.com/techorionai/constellation-identity/internal/app/queries"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	httpapi "github.com/techorionai/constellation-identity/internal/handlers/http"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
 	"github.com/techorionai/constellation-identity/resources/test/mock"
 )
 
@@ -110,7 +109,7 @@ func newMFARig(t *testing.T) *mfaRig {
 	r := &mfaRig{mfa: mock.NewMFA(), events: &mock.Events{}, sess: mock.NewSessions()}
 	cmd, err := commands.NewMFA(commands.MFADeps{
 		Users: users, UserRoles: roles, Sessions: r.sess, MFA: r.mfa, Sealer: mock.Sealer{}, Pending: mock.NewPending(),
-		Setups: mock.NewSetups(), Failures: mock.NewFailures(), Limiter: mock.NewLimiter(), Events: r.events, Tx: mock.Tx{},
+		Setups: mock.NewSetups(), Failures: mock.NewFailures(), Limiter: mock.NewLimiter(), Events: r.events, Audit: r.events, Tx: mock.Tx{},
 		RequireMFAForAdmins: true, Issuer: "Constellation", MaxFailures: 10, FailureWindow: time.Minute,
 		Log: slog.New(slog.NewTextHandler(devNull{}, nil)), Now: func() time.Time { return mfaNow },
 	})
@@ -330,8 +329,8 @@ func TestI40_SecurityEvents(t *testing.T) {
 		t.Fatalf("audits = %d, notices = %d", len(r.events.Audits), len(r.events.Notices))
 	}
 	a0, a1 := r.events.Audits[0], r.events.Audits[1]
-	if a0.Action != securityevents.ActionTotpRemove || a0.Actor != mfaUser || a0.TargetUserID != mfaUser ||
-		a1.Action != securityevents.ActionMfaReset || a1.Actor != mfaAdmin || a1.TargetUserID != mfaOther {
+	if a0.Action != commands.ActionTotpRemove || a0.Actor != mfaUser || a0.TargetUserID != mfaUser ||
+		a1.Action != commands.ActionMfaReset || a1.Actor != mfaAdmin || a1.TargetUserID != mfaOther {
 		t.Fatalf("audits = %+v", r.events.Audits)
 	}
 }

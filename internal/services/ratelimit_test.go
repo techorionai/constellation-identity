@@ -119,7 +119,7 @@ func TestR1_RealDecoratorsRateLimited(t *testing.T) {
 	limited := apperrors.NewOAuthRateLimited("token_client", 7e9)
 	unavailable := apperrors.NewOAuthLimiterUnavailable(errors.New("down"))
 	spans := spanStatuses(t, func() {
-		publish := newPublishAPI(stubManifests{}, stubClients{}, limits, log)
+		publish := newPublishAPI(stubManifests{}, stubClients{}, limits, mock.Tx{}, &mock.Events{}, log)
 		if _, err := publish.Execute(context.Background(), in); !errors.Is(err, apperrors.ErrRateLimited) {
 			t.Errorf("publish: err = %v, want rate limited", err)
 		}

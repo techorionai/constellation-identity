@@ -9,7 +9,7 @@ import (
 
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/domain"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/securitynotices"
 	"github.com/techorionai/constellation-identity/internal/ports/upstreamidp"
 	"github.com/techorionai/constellation-identity/resources/test/mock"
 )
@@ -31,7 +31,7 @@ func newIdpEnv(t *testing.T) *idpEnv {
 	}
 	idp, err := commands.NewIdp(commands.IdpDeps{
 		Client: e.client, Flows: e.flows, Links: e.links, Users: e.users, Sessions: e.sessions, Tokens: e.env.tokens,
-		MFA: e.mfa, UserRoles: e.roles, Pending: e.pending, Factors: e.cmd, Remover: e.links2, Events: e.events, Tx: mock.Tx{}, Policy: policy,
+		MFA: e.mfa, UserRoles: e.roles, Pending: e.pending, Factors: e.cmd, Remover: e.links2, Events: e.events, Audit: e.events, Tx: mock.Tx{}, Policy: policy,
 		LookupAuthRequest: func(_ context.Context, id string) (commands.AuthRequestInfo, error) {
 			if id == "gone" {
 				return commands.AuthRequestInfo{}, commands.ErrAuthRequestGone
@@ -327,11 +327,11 @@ func TestIssue16_LinkFlow(t *testing.T) {
 	if err != nil || got.Subject != "new-subject" || got.Email != "up@example.com" {
 		t.Fatalf("link = %+v, %v", got, err)
 	}
-	if len(e.events.Audits) != 1 || e.events.Audits[0].Action != securityevents.ActionIdentityLinkAdd ||
-		e.events.Audits[0].TargetUserID != userA || e.events.Audits[0].Changes["provider"] != "google" {
+	if len(e.events.Audits) != 1 || e.events.Audits[0].Action != commands.ActionLinkAdd ||
+		e.events.Audits[0].TargetUserID != userA || e.events.Audits[0].Details["provider"] != "google" {
 		t.Fatalf("audits = %+v", e.events.Audits)
 	}
-	if len(e.events.Notices) != 1 || e.events.Notices[0].Kind != securityevents.NoticeIdentityLinkAdded {
+	if len(e.events.Notices) != 1 || e.events.Notices[0].Kind != securitynotices.NoticeIdentityLinkAdded {
 		t.Fatalf("notices = %+v", e.events.Notices)
 	}
 	// A second link of the same provider.
@@ -409,7 +409,9 @@ func TestIssue16_InviteFlow(t *testing.T) {
 	if ok, _ := e.env.tokens.IsValid(ctx, domain.HashSecret("invite-token"), domain.PurposeInvite, e.now); ok {
 		t.Fatal("the token must be used")
 	}
-	if len(e.events.Audits) != 1 || e.events.Audits[0].Action != securityevents.ActionIdentityLinkAdd || len(e.events.Notices) != 1 {
+	// The invite writes the link entry and the accept entry. Both have the origin invite.
+	if len(e.events.Audits) != 2 || e.events.Audits[0].Action != commands.ActionLinkAdd || e.events.Audits[1].Action != commands.ActionInviteAccept ||
+		e.events.Audits[0].Details["origin"] != commands.OriginInvite || e.events.Audits[1].Details["origin"] != commands.OriginInvite || len(e.events.Notices) != 1 {
 		t.Fatalf("events = %+v %+v", e.events.Audits, e.events.Notices)
 	}
 	// The token is used: a second flow does not start.

@@ -10,7 +10,7 @@ import (
 
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/domain"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/securitynotices"
 	"github.com/techorionai/constellation-identity/resources/test/mock"
 )
 
@@ -51,7 +51,7 @@ func (e *linkEnv) rebuild(t *testing.T, passkeysOn bool) {
 		Users: e.users, UserRoles: e.roles, Sessions: e.sessions, MFA: e.mfa, TOTP: e.totp, Sealer: mock.Sealer{}, Hasher: e.hasher,
 		Passkeys: e.keys, WebAuthn: e.wa, Ceremonies: e.ceremonies, PasskeysOn: passkeysOn,
 		Links: e.links, APITokens: e.tokens, ProviderOn: e.providerOn,
-		Pending: e.pending, Setups: e.setups, Failures: e.failures, Limiter: e.limiter, Events: e.events, Tx: mock.Tx{},
+		Pending: e.pending, Setups: e.setups, Failures: e.failures, Limiter: e.limiter, Events: e.events, Audit: e.events, Tx: mock.Tx{},
 		Policy: policy, RequireMFAForAdmins: e.require, Issuer: "Constellation", MaxFailures: 10, FailureWindow: 15 * time.Minute,
 		Log: log, Now: e.clock,
 	})
@@ -60,7 +60,7 @@ func (e *linkEnv) rebuild(t *testing.T, passkeysOn bool) {
 	}
 	e.cmd = cmd
 	e.links2 = commands.NewIdentityLinks(commands.IdentityLinksDeps{
-		Users: e.users, Links: e.links, Sessions: e.sessions, APITokens: e.tokens, MFA: e.mfa, Events: e.events, Tx: mock.Tx{},
+		Users: e.users, Links: e.links, Sessions: e.sessions, APITokens: e.tokens, MFA: e.mfa, Events: e.events, Audit: e.events, Tx: mock.Tx{},
 		PasskeysOn: passkeysOn, ProviderOn: e.providerOn, Log: log, Now: e.clock,
 	})
 }
@@ -140,16 +140,16 @@ func TestIssue16_U27_LinkRemovalRevokes(t *testing.T) {
 	if len(e.links.Rows) != 0 {
 		t.Fatal("the link must be gone")
 	}
-	if len(e.events.Audits) != 1 || e.events.Audits[0].Action != securityevents.ActionIdentityLinkRemove ||
-		e.events.Audits[0].TargetUserID != userA || e.events.Audits[0].Changes["provider"] != "google" || e.events.Audits[0].Result != securityevents.ResultSuccess {
+	if len(e.events.Audits) != 1 || e.events.Audits[0].Action != commands.ActionLinkRemove ||
+		e.events.Audits[0].TargetUserID != userA || e.events.Audits[0].Details["provider"] != "google" || e.events.Audits[0].Result != "success" {
 		t.Fatalf("audits = %+v", e.events.Audits)
 	}
-	if len(e.events.Notices) != 1 || e.events.Notices[0].Kind != securityevents.NoticeIdentityLinkRemoved {
+	if len(e.events.Notices) != 1 || e.events.Notices[0].Kind != securitynotices.NoticeIdentityLinkRemoved {
 		t.Fatalf("notices = %+v", e.events.Notices)
 	}
-	for _, v := range e.events.Audits[0].Changes {
-		if strings.Contains(v, "subject") || strings.Contains(v, "@") {
-			t.Fatalf("the audit entry has a subject or an email: %v", e.events.Audits[0].Changes)
+	for _, v := range e.events.Audits[0].Details {
+		if s, ok := v.(string); ok && (strings.Contains(s, "subject") || strings.Contains(s, "@")) {
+			t.Fatalf("the audit entry has a subject or an email: %v", e.events.Audits[0].Details)
 		}
 	}
 }
@@ -267,7 +267,7 @@ func TestIssue16_ResetLastLoginMethod(t *testing.T) {
 		t.Fatalf("own reset: %v", err)
 	}
 	// The subcommand.
-	if err := e.cmd.ResetMFA(ctx, commands.ResetMFA{UserID: userNoPassword, Actor: securityevents.ActorCLI, Operator: true}); err != nil {
+	if err := e.cmd.ResetMFA(ctx, commands.ResetMFA{UserID: userNoPassword, Actor: "", Operator: true}); err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := e.keys.Count(ctx, userNoPassword); n != 0 || !e.revoked("hwk") || !e.tokenRevoked("t-hwk") {
@@ -282,7 +282,7 @@ func TestIssue16_ResetLastLoginMethod(t *testing.T) {
 	// A user with a password: no event.
 	e.logs.Reset()
 	e.addPasskey(userA, passkeyID2, "key")
-	if err := e.cmd.ResetMFA(ctx, commands.ResetMFA{UserID: userA, Actor: securityevents.ActorCLI, Operator: true}); err != nil {
+	if err := e.cmd.ResetMFA(ctx, commands.ResetMFA{UserID: userA, Actor: "", Operator: true}); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(e.logs.String(), "reset_last_login_method") {
@@ -407,9 +407,9 @@ func TestIssue16_APITokenRecordsAMR(t *testing.T) {
 func TestIssue16_U32_SetPasswordAudit(t *testing.T) {
 	e := newLinkEnv(t)
 	cmd := commands.NewSetPassword(commands.SetPasswordDeps{
-		Users: e.users, Hasher: e.hasher, Tx: mock.Tx{}, Events: e.events, Now: e.clock,
+		Users: e.users, Hasher: e.hasher, Tx: mock.Tx{}, Events: e.events, Audit: e.events, Now: e.clock,
 	})
-	if err := cmd.Execute(ctx, commands.SetPassword{UserID: userNoPassword, Password: "a long new password", Actor: userNoPassword}); err != nil {
+	if err := cmd.Execute(asUser(userNoPassword), commands.SetPassword{UserID: userNoPassword, Password: "a long new password", Actor: userNoPassword}); err != nil {
 		t.Fatal(err)
 	}
 	if e.users.Rows[userNoPassword].PasswordHash == "" {
@@ -417,7 +417,7 @@ func TestIssue16_U32_SetPasswordAudit(t *testing.T) {
 	}
 	if len(e.events.Audits) != 1 || e.events.Audits[0].Action != "identity:password:set" ||
 		e.events.Audits[0].Actor != userNoPassword || e.events.Audits[0].TargetUserID != userNoPassword ||
-		e.events.Audits[0].Result != securityevents.ResultSuccess {
+		e.events.Audits[0].Result != "success" {
 		t.Fatalf("audits = %+v", e.events.Audits)
 	}
 	if len(e.events.Notices) != 1 || e.events.Notices[0].Kind != "password_set" || e.events.Notices[0].TargetUserID != userNoPassword {

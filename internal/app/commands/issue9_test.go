@@ -52,7 +52,7 @@ func (e *tokenEnv) logger() *slog.Logger {
 
 func (e *tokenEnv) cmd() *commands.APITokens {
 	return commands.NewAPITokens(commands.APITokensDeps{
-		Tokens: e.api, Users: e.users, UserRoles: e.roles, Tx: mock.Tx{}, Log: e.logger(), Now: e.clock,
+		Tokens: e.api, Users: e.users, UserRoles: e.roles, Tx: mock.Tx{}, Audit: &mock.Events{}, Log: e.logger(), Now: e.clock,
 		Settings: commands.APITokenSettings{DefaultTTLDays: 90, MaxTTLDays: 365, MaxPerUser: e.max},
 	})
 }
@@ -382,7 +382,7 @@ func TestIssue9_U19_LogRecords(t *testing.T) {
 	e.roles.Rows[user2] = []domain.RoleRef{domain.AdminRole}
 	admin := commands.NewAdmin(commands.AdminDeps{
 		Users: e.users, UserRoles: e.roles, Sessions: e.sessions, Tokens: e.tokens, APITokens: e.api,
-		Lock: noLock{}, Tx: mock.Tx{}, Log: e.logger(), Now: e.clock,
+		Lock: noLock{}, Tx: mock.Tx{}, Audit: &mock.Events{}, Log: e.logger(), Now: e.clock,
 	})
 	disabled := true
 	if _, err := admin.UpdateUser(ctx, user2, user1, nil, &disabled); err != nil {
@@ -433,7 +433,7 @@ func adminWithRoles(e *tokenEnv, rows ...domain.RoleRef) *commands.Admin {
 	}
 	return commands.NewAdmin(commands.AdminDeps{
 		Users: e.users, UserRoles: e.roles, Sessions: e.sessions, Tokens: e.tokens, APITokens: e.api,
-		Lock: noLock{}, Tx: mock.Tx{}, Log: e.logger(), Now: e.clock,
+		Lock: noLock{}, Tx: mock.Tx{}, Audit: &mock.Events{}, Log: e.logger(), Now: e.clock,
 	})
 }
 

@@ -296,6 +296,13 @@ func (s *Server) PostAuthorization(t testing.TB, path string, form url.Values, a
 // An empty token sends no Authorization header. An empty body sends no body.
 func (s *Server) Do(t testing.TB, method, path, token, body string) (Response, []byte) {
 	t.Helper()
+	return s.DoWith(t, method, path, token, body, nil)
+}
+
+// DoWith is Do with more request headers. A header with an empty value is
+// removed from the request. This is a way to send no User-Agent header.
+func (s *Server) DoWith(t testing.TB, method, path, token, body string, headers map[string]string) (Response, []byte) {
+	t.Helper()
 	var r io.Reader
 	if body != "" {
 		r = strings.NewReader(body)
@@ -309,6 +316,9 @@ func (s *Server) Do(t testing.TB, method, path, token, body string) (Response, [
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

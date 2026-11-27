@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/techorionai/constellation-platform-go/audit"
+	auditpg "github.com/techorionai/constellation-platform-go/audit/postgres"
 	"github.com/techorionai/constellation-platform-go/resources/test/containers"
 	"github.com/techorionai/constellation-platform-go/retention"
 	transactionpg "github.com/techorionai/constellation-platform-go/transaction/postgres"
@@ -141,6 +143,8 @@ type app struct {
 	*testserver.Server
 	logs   *testserver.LogCapture
 	ledger *secretLedger
+	// audit reads the audit stream audit.stream:identity.
+	audit *testserver.AuditReader
 }
 
 func (h *harness) start(t *testing.T, opts ...testserver.Option) *app {
@@ -151,7 +155,7 @@ func (h *harness) start(t *testing.T, opts ...testserver.Option) *app {
 	h.ledger.mu.Unlock()
 	opts = append([]testserver.Option{testserver.WithLogger(logs.Logger()), testserver.WithMasterKey(h.masterKey, "test")}, opts...)
 	s := h.env.Start(t, opts...)
-	return &app{Server: s, logs: logs, ledger: h.ledger}
+	return &app{Server: s, logs: logs, ledger: h.ledger, audit: h.env.NewAuditReader(t)}
 }
 
 // startOwnValkey starts a server with a new Valkey container, so that the login
@@ -216,8 +220,12 @@ func (a *app) commands(t *testing.T) userCommands {
 	if err != nil {
 		t.Fatal(err)
 	}
+	audits, err := audit.New(auditpg.NewInserter(), audit.Config{App: "identity", ClientID: "identity"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	d := commands.InviteDeps{
-		Issuer: a.Config.Issuer, TTL: a.Config.Invite.TTL,
+		Issuer: a.Config.Issuer, TTL: a.Config.Invite.TTL, Audit: audits,
 		Tokens: postgres.NewOneTimeTokens(pool), Users: postgres.NewUsers(pool), Session: postgres.NewSessions(pool),
 		Hasher: hasher, Tx: transactionpg.NewTransactor(pool), Policy: a.Config.Session.Policy(),
 	}

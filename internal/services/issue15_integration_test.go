@@ -25,9 +25,35 @@ import (
 	swa "github.com/techorionai/constellation-identity/resources/test/webauthn"
 )
 
-// recordsOf returns the log records with the message.
+// auditMaps returns the entries of the audit stream as maps with the keys
+// action, actor, actor_type, target_user_id, result, and changes (the details).
+// It waits until the relay of the server moved all rows. The stream is shared by
+// all servers of the test environment.
+func auditMaps(t *testing.T, a *app) []map[string]any {
+	t.Helper()
+	a.WaitAuditRelayed(t)
+	var out []map[string]any
+	for _, rec := range a.audit.All(t) {
+		m := map[string]any{
+			"msg": "identity.audit", "action": rec.Data.Action, "actor": rec.Actor, "actor_type": rec.ActorType,
+			"result": rec.Data.Result, "changes": rec.Data.Details, "request_id": rec.Data.RequestID,
+			"ip_address": rec.Data.IPAddress, "user_agent": rec.Data.UserAgent,
+		}
+		if rec.Data.Target != nil {
+			m["target_user_id"], m["target_type"] = rec.Data.Target.ID, rec.Data.Target.Type
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// recordsOf returns the log records with the message. The message
+// identity.audit gives the entries of the audit stream (see auditMaps).
 func recordsOf(t *testing.T, a *app, msg string) []map[string]any {
 	t.Helper()
+	if msg == "identity.audit" {
+		return auditMaps(t, a)
+	}
 	var out []map[string]any
 	for _, r := range a.logs.Records(t) {
 		if r["msg"] == msg {

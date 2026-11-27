@@ -8,7 +8,7 @@ import (
 
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/domain"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/securitynotices"
 	"github.com/techorionai/constellation-identity/internal/ports/webauthn"
 	"github.com/techorionai/constellation-identity/resources/test/mock"
 )
@@ -39,7 +39,7 @@ func (p *passkeyEnv) buildPasskeys(t *testing.T, on bool) {
 	cmd, err := commands.NewMFA(commands.MFADeps{
 		Users: p.users, UserRoles: p.roles, Sessions: p.sessions, MFA: p.mfa, TOTP: p.totp, Sealer: mock.Sealer{},
 		Passkeys: p.keys, WebAuthn: p.wa, Ceremonies: p.ceremonies, PasskeysOn: on,
-		Pending: p.pending, Setups: p.setups, Failures: p.failures, Limiter: p.limiter, Events: p.events, Tx: mock.Tx{},
+		Pending: p.pending, Setups: p.setups, Failures: p.failures, Limiter: p.limiter, Events: p.events, Audit: p.events, Tx: mock.Tx{},
 		Policy: policy, RequireMFAForAdmins: p.require, Issuer: "Constellation", MaxFailures: 10, FailureWindow: 15 * time.Minute,
 		Log: slog.New(slog.NewTextHandler(discard{}, nil)), Now: p.clock,
 	})
@@ -134,10 +134,10 @@ func TestIssue15_U12_Registration(t *testing.T) {
 	if added.Passkey.Name != "My key" || !added.Passkey.BackupState {
 		t.Fatalf("passkey = %+v", added.Passkey)
 	}
-	if len(p.events.Audits) != 1 || p.events.Audits[0].Action != securityevents.ActionPasskeyAdd || p.events.Audits[0].TargetUserID != userA {
+	if len(p.events.Audits) != 1 || p.events.Audits[0].Action != commands.ActionPasskeyAdd || p.events.Audits[0].TargetUserID != userA {
 		t.Fatalf("audits = %+v", p.events.Audits)
 	}
-	if len(p.events.Notices) != 1 || p.events.Notices[0].Kind != securityevents.NoticePasskeyAdded {
+	if len(p.events.Notices) != 1 || p.events.Notices[0].Kind != securitynotices.NoticePasskeyAdded {
 		t.Fatalf("notices = %+v", p.events.Notices)
 	}
 	// A session with no second factor gets the methods of a passkey.
@@ -170,10 +170,10 @@ func TestIssue15_U13_Removal(t *testing.T) {
 	if err := p.cmd.RemovePasskey(ctx, commands.RemovePasskey{UserID: adminID, PasskeyID: passkeyID1, Actor: adminID}); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.events.Audits) != 1 || p.events.Audits[0].Action != securityevents.ActionPasskeyRemove {
+	if len(p.events.Audits) != 1 || p.events.Audits[0].Action != commands.ActionPasskeyRemove {
 		t.Fatalf("audits = %+v", p.events.Audits)
 	}
-	if len(p.events.Notices) != 1 || p.events.Notices[0].Kind != securityevents.NoticePasskeyRemoved {
+	if len(p.events.Notices) != 1 || p.events.Notices[0].Kind != securitynotices.NoticePasskeyRemoved {
 		t.Fatalf("notices = %+v", p.events.Notices)
 	}
 
@@ -202,7 +202,7 @@ func TestIssue15_U16_Rename(t *testing.T) {
 	p := newPasskeyEnv(t)
 	p.addPasskey(userA, passkeyID1, "Old name")
 	p.buildPasskeys(t, true)
-	pk, err := p.cmd.RenamePasskey(ctx, commands.RenamePasskey{UserID: userA, PasskeyID: passkeyID1, Name: "New name", Actor: userA})
+	pk, err := p.cmd.RenamePasskey(asUser(userA), commands.RenamePasskey{UserID: userA, PasskeyID: passkeyID1, Name: "New name", Actor: userA})
 	if err != nil || pk.Name != "New name" {
 		t.Fatalf("rename: %+v, %v", pk, err)
 	}
@@ -210,7 +210,7 @@ func TestIssue15_U16_Rename(t *testing.T) {
 		t.Fatalf("audits = %+v", p.events.Audits)
 	}
 	a := p.events.Audits[0]
-	if a.Action != securityevents.ActionPasskeyRename || a.Changes["old_name"] != "Old name" || a.Changes["new_name"] != "New name" || a.TargetUserID != userA {
+	if a.Action != commands.ActionPasskeyRename || a.Details["oldName"] != "Old name" || a.Details["newName"] != "New name" || a.Actor != userA || a.TargetUserID != userA {
 		t.Fatalf("audit = %+v", a)
 	}
 	if len(p.events.Notices) != 0 {

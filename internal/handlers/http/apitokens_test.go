@@ -50,7 +50,7 @@ func apiTokenServer(t *testing.T) http.Handler {
 	roles.Perms[domain.RoleRef{App: "helpdesk", Role: "agent"}] = []string{"helpdesk:ticket:read"}
 	roles.Rows[testUser] = []domain.RoleRef{{App: "helpdesk", Role: "agent"}}
 	cmd := commands.NewAPITokens(commands.APITokensDeps{
-		Tokens: mock.NewAPITokens(users), Users: users, UserRoles: roles, Tx: mock.Tx{}, Now: time.Now,
+		Tokens: mock.NewAPITokens(users), Users: users, UserRoles: roles, Tx: mock.Tx{}, Audit: &mock.Events{}, Now: time.Now,
 		Settings: commands.APITokenSettings{DefaultTTLDays: 90, MaxTTLDays: 365, MaxPerUser: 5},
 	})
 	return httpapi.New(httpapi.Deps{

@@ -21,7 +21,7 @@ func (e *env) admin() *commands.Admin {
 	e.roles.Perms[domain.AdminRole] = []string{domain.AdminPermission}
 	e.roles.Perms[domain.RoleRef{App: "ops", Role: "root"}] = []string{domain.AdminPermission}
 	return commands.NewAdmin(commands.AdminDeps{
-		Users: e.users, UserRoles: e.roles, Sessions: e.sessions, Tokens: e.tokens, APITokens: mock.NewAPITokens(e.users), Lock: noLock{}, Tx: mock.Tx{}, Now: e.clock,
+		Users: e.users, UserRoles: e.roles, Sessions: e.sessions, Tokens: e.tokens, APITokens: mock.NewAPITokens(e.users), Lock: noLock{}, Tx: mock.Tx{}, Audit: &mock.Events{}, Now: e.clock,
 	})
 }
 
@@ -228,7 +228,7 @@ func TestIssue4_U15_Paging(t *testing.T) {
 
 // Issue4_U6_U7: client rules.
 func TestIssue4_U6_U7_ClientRules(t *testing.T) {
-	a := commands.NewAdmin(commands.AdminDeps{Tx: mock.Tx{}})
+	a := commands.NewAdmin(commands.AdminDeps{Tx: mock.Tx{}, Audit: &mock.Events{}})
 	if _, err := a.CreateClient(ctx, "actor", commands.CreateClientInput{Type: domain.ClientTypeService, App: "identity", Name: "S"}); problemCode(err) != "app_reserved" {
 		t.Fatalf("app_reserved: %v", err)
 	}

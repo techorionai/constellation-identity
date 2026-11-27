@@ -10,7 +10,7 @@ import (
 
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/domain"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/securitynotices"
 	"github.com/techorionai/constellation-identity/internal/ports/sessions"
 	"github.com/techorionai/constellation-identity/resources/test/mock"
 )
@@ -30,7 +30,7 @@ func TestR2_SessionFailureKeepsCode(t *testing.T) {
 	secret, codes := m.enable(t, userA, "a@example.com")
 	cmd, err := commands.NewMFA(commands.MFADeps{
 		Users: m.users, UserRoles: m.roles, Sessions: failingSessions{m.sessions}, MFA: m.mfa, TOTP: m.totp, Sealer: mock.Sealer{},
-		Pending: m.pending, Setups: m.setups, Failures: m.failures, Limiter: m.limiter, Events: m.events, Tx: mock.Tx{},
+		Pending: m.pending, Setups: m.setups, Failures: m.failures, Limiter: m.limiter, Events: m.events, Audit: m.events, Tx: mock.Tx{},
 		Policy: policy, RequireMFAForAdmins: m.require, Issuer: "Constellation", MaxFailures: 10, FailureWindow: 15 * time.Minute,
 		Log: slog.New(slog.NewTextHandler(discard{}, nil)), Now: m.clock,
 	})
@@ -119,7 +119,7 @@ func TestR13_NoticeAndDailyLimit(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	}
-	if len(m.events.Notices) != 1 || m.events.Notices[0].Kind != securityevents.NoticeMfaLimited || m.events.Notices[0].TargetUserID != userA {
+	if len(m.events.Notices) != 1 || m.events.Notices[0].Kind != securitynotices.NoticeMfaLimited || m.events.Notices[0].TargetUserID != userA {
 		t.Fatalf("notices = %+v", m.events.Notices)
 	}
 	m.failures.Counts[userA] = 0
