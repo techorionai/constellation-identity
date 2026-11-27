@@ -87,7 +87,7 @@ func TestIssue25Integration(t *testing.T) {
 		vk := h.env.VK.Admin(t)
 		ok, err := vk.Do(context.Background(), vk.B().Sismember().Key("audit.streams").Member("identity").Build()).AsBool()
 		if err != nil || ok {
-			t.Fatalf("audit.streams has identity = %v, %v", ok, err)
+			t.Fatalf("audit.streams must not have identity: SISMEMBER = %v, err = %v", ok, err)
 		}
 	})
 
