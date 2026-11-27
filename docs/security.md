@@ -68,7 +68,7 @@ A person can lock out a user with failed logins for the email of that user. An o
 identity unlock-login <email>
 ```
 
-The command normalizes the email in the same way as the login. It deletes the failure counter of the email in Valkey and does not change the counters of the IPs. It writes `unlocked` or `not locked` to standard output and exits with code 0. A Valkey error gives exit code 1. A wrong number of arguments gives exit code 2. The command writes the log event `identity.login.unlocked` with no email.
+The command normalizes the email in the same way as the login. It deletes the failure counter of the email in Valkey and does not change the counters of the IPs. It also writes the audit entry `identity:login:unlock` in PostgreSQL, so it needs the database variables `IDENTITY_DATABASE__*` and runs the migrations first. It writes `unlocked` or `not locked` to standard output and exits with code 0. A Valkey error or a database error gives exit code 1. A wrong number of arguments gives exit code 2. The command writes the log event `identity.login.unlocked` with no email.
 
 ## Audit entries
 
@@ -112,6 +112,47 @@ A page handler puts the user into the context only after it checked the session.
 | Publish a manifest that changes | `identity:manifest:publish` | `manifest` (the app) | `version`, `permissions`, `roles` (the counts) |
 
 An update lists only the fields whose stored value changed. An update or a role assign that changes nothing writes no entry. Each entry has the result `success`, except the entries of the next section. `details` has IDs, names, and the names of changed fields only. It has no password, secret, token, TOTP secret, recovery code, private key, or email address. The audit data is personal data, and it stays 7 days in the outbox and in the stream by default. The entry has the request ID, the client IP, and the user agent of the request, if they agree with the contract. The writer leaves out a bad value and still writes the entry.
+
+### Signing keys, tokens, logins, and operator commands
+
+These entries have the result `success`, except the entries that the table marks `denied`. The actor of each entry is the verified principal of the context. A flow with no principal has the actor `identity` (type `service`).
+
+| Action | Action key | Target | `details` |
+| ------ | ---------- | ------ | --------- |
+| Create a signing key | `identity:signing_key:create` | `signing_key` (the `kid`) | `kid`, `algorithm`, `state` |
+| Activate a signing key | `identity:signing_key:activate` | `signing_key` | `kid`, `previousKid` |
+| Retire a signing key | `identity:signing_key:retire` | `signing_key` | `kid` |
+| Delete a signing key | `identity:signing_key:delete` | `signing_key` | `kid`, `forced` |
+| Forced rotation | `identity:signing_key:force_rotate` | `signing_key` (the new `kid`) | `deletedKeys`, `newKid`, `origin` |
+| Issue a token | `identity:token:issue` | `client` (client credentials), `user` (other grants) | `grant`, `clientId`, `audience`, `scopes`, `jti`, `expiresAt`, and `agentId` and `subjectType` (token exchange) |
+| Refuse a token request (`denied`) | `identity:token:issue` | `client`, only for a client that exists | `grant`, `reason`, `clientId` (only for a client that exists) |
+| Log in | `identity:session:login` | `user` | `method` (`password`, `upstream`, `passkey`), `mfa` (`totp`, `passkey`, `recovery_code`) |
+| Refuse a login or a second factor (`denied`) | `identity:session:login` | `user`, only for a known email | `method`, `mfa`, `reason` |
+| Unlock a login | `identity:login:unlock` | `user`, only for a known email | `origin`, `knownUser`, `wasLocked` |
+| Make a setup link | `identity:setup:link_create` | None | `origin`, `expiresAt` |
+| Store an upstream client secret | `identity:idp:secret_set` | `idp_provider` | `provider`, `origin` |
+
+Actor of each flow:
+
+| Flow | Actor | `details.origin` |
+| ---- | ----- | ---------------- |
+| Automatic key action (ticker, startup) | `identity` (`service`) | None |
+| Operator command (`rotate-signing-keys --force`, `unlock-login`, `setup-link`, `set-idp-secret`) | `identity` (`service`) | `cli` |
+| Token issue after the client authentication | The client (`service`) or, for a token exchange with an agent, the agent (`agent`) | None |
+| Token request with `invalid_client` | `identity` (`service`) | None |
+| Login success | The user (`user`) | None |
+| Login denied, failed second factor | `identity` (`service`) | None |
+
+Rules:
+
+- A key change and its entry commit in one transaction. The secret store call stays outside the transaction. A secret with no row is deleted at the next pass. The forced rotation stores the new secret first. One transaction then deletes the rows, inserts the new row, and writes the entries. The old secrets go after the commit. If the transaction fails, the old keys stay.
+- A token is never issued without its entry. A writer error gives 503 and no token. The authorization code path and the refresh path write the entry in the transaction of the refresh token. The client credentials path and the token exchange path use a short transaction. The entry has the `jti`, never the token text.
+- A token request that fails with `invalid_client`, `invalid_grant` (also a refresh token reuse, with the reason `refresh_token_reuse`), `unauthorized_client`, or `invalid_scope` writes an entry with the result `denied` and `details.reason`. A request with `invalid_request` or `unsupported_grant_type` writes no entry. A request that a rate limit stops writes no entry, so the rate limits of the token endpoint control the number of entries. If the writer fails for a `denied` entry, the response stays the OAuth error, and the service writes the log record `identity.audit.failed` with the action and the reason only.
+- A login that the login limiter stops writes no entry. A denied login has the target user only when the email is known. No entry has an email address. The entry of a login with a second factor is written when the second factor step works, in the transaction of the session.
+- Introspection calls and JWKS reads write no entry.
+- An operator command writes only the row of the audit outbox. It runs no audit relay. The relay of a running service publishes the entry to `audit.stream:identity`. If no service instance runs, the entry stays in the outbox until an instance starts.
+- `unlock-login` opens PostgreSQL and runs the migrations, the same as the other subcommands. It deletes the Valkey counter inside the transaction and commits only after the delete works. If the commit fails after the delete, the user can log in again and no entry exists. The command then writes the log record `identity.audit.failed` with the user ID and exits with code 1.
+- The cost: each token issue adds one insert in a short transaction. A full database stops the token issue.
 
 ### Denied admin requests
 
@@ -245,4 +286,4 @@ A user can log in with a Google account or a Microsoft work account. The service
 
 ## Not in this version
 
-Password reset by email needs R12. Audit entries for logins, for token issue, for the signing keys, and for the unlock command come with the next identity issue of the audit work. Until then the structured log records (`identity.login.ok`, `identity.login.failed`, and others) are the only record of these actions. Other providers, a generic OIDC provider setting, and Microsoft personal accounts are not in this version.
+Password reset by email needs R12. The audit entries of logins, token issue, signing keys, and operator commands are in [Signing keys, tokens, logins, and operator commands](#signing-keys-tokens-logins-and-operator-commands). Other providers, a generic OIDC provider setting, and Microsoft personal accounts are not in this version.

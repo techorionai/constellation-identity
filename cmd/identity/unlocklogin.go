@@ -14,9 +14,9 @@ import (
 
 const unlockLoginUsage = "usage: identity unlock-login <email>"
 
-// runUnlockLogin removes the login lock of one email. It connects to Valkey
-// only. It prints "unlocked" or "not locked". It does not change the counters
-// of the IPs.
+// runUnlockLogin removes the login lock of one email. It connects to Valkey, and
+// to PostgreSQL for the audit entry. It prints "unlocked" or "not locked". It
+// does not change the counters of the IPs.
 func runUnlockLogin(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		_, _ = fmt.Fprintln(stderr, unlockLoginUsage)
