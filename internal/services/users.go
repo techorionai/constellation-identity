@@ -157,7 +157,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		Limits: commands.LoginLimits{
 			MaxFailuresPerEmail: int64(cfg.Login.MaxFailuresPerEmail), MaxFailuresPerIP: int64(cfg.Login.MaxFailuresPerIP),
 		},
-		Policy: policy, Log: log, Now: clock,
+		Tx: tx, Audit: auditW, Policy: policy, Log: log, Now: clock,
 	}
 	login, err := commands.NewLogin(loginDeps)
 	if err != nil {

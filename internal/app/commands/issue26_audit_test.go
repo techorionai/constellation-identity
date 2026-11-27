@@ -48,7 +48,7 @@ func TestIssue26_U3_TokenEntries(t *testing.T) {
 		if _, err := e.cmd.Execute(ctx, in); err != nil {
 			t.Fatal(err)
 		}
-		a := oneTokenEntry(t, e.fixture.ev, "success")
+		a := oneTokenEntry(t, e.ev, "success")
 		if a.Actor != agent1 || a.TargetType != "user" || a.TargetUserID != user1 || a.Details["grant"] != "token_exchange" ||
 			a.Details["subjectType"] != "user" || a.Details["clientId"] != "helpdesk" {
 			t.Fatalf("entry = %+v", a)
@@ -62,7 +62,7 @@ func TestIssue26_U3_TokenEntries(t *testing.T) {
 		if _, err := e.cmd.Execute(ctx, e.in(t)); err != nil {
 			t.Fatal(err)
 		}
-		if a := oneTokenEntry(t, e.fixture.ev, "success"); a.Actor != "helpdesk" {
+		if a := oneTokenEntry(t, e.ev, "success"); a.Actor != "helpdesk" {
 			t.Fatalf("entry = %+v", a)
 		}
 	})
@@ -78,7 +78,7 @@ func TestIssue26_U4_WriterErrorGivesNoToken(t *testing.T) {
 		t.Fatalf("res = %+v, err = %v", res, err)
 	}
 	e := newExchangeEnv(t)
-	e.fixture.ev.AuditErr = errAuditDown
+	e.ev.AuditErr = errAuditDown
 	xr, err := e.cmd.Execute(ctx, e.in(t))
 	if oauthCode(t, err) != apperrors.OAuthTemporarilyUnavailable || xr.AccessToken != "" {
 		t.Fatalf("exchange: res = %+v, err = %v", xr, err)

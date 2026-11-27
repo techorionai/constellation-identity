@@ -163,7 +163,7 @@ func TestIssue13_TokenExchangeSharesTokenClientBucket(t *testing.T) {
 		Log: slog.New(slog.DiscardHandler), Now: func() time.Time { return now },
 		NewID:      func() string { n++; return fmt.Sprintf("x-%d", n) },
 		RateLimits: newLimits(t, rl),
-		Tx:         mock.Tx{}, Audit: e.fixture.ev,
+		Tx:         mock.Tx{}, Audit: e.ev,
 	})
 	if err != nil {
 		t.Fatal(err)
