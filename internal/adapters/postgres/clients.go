@@ -28,10 +28,20 @@ var _ clients.Repository = (*Clients)(nil)
 func NewClients(pool *pgxpool.Pool) *Clients { return &Clients{pool: pool, now: time.Now} }
 
 // UpsertConfig adds or updates a client of the clients file and replaces its
-// keys and redirect URIs, in one transaction.
+// keys and redirect URIs, in one transaction. If the context has a transaction,
+// the work is a savepoint in it, so the caller can write an audit entry in the
+// same transaction.
 func (r *Clients) UpsertConfig(ctx context.Context, c domain.ClientConfig) (bool, error) {
 	now := r.now().UTC()
-	tx, err := r.pool.Begin(ctx)
+	var (
+		tx  pgx.Tx
+		err error
+	)
+	if outer, ok := clientspg.TxFromContext(ctx); ok {
+		tx, err = outer.Begin(ctx)
+	} else {
+		tx, err = r.pool.Begin(ctx)
+	}
 	if err != nil {
 		return false, fmt.Errorf("begin: %w", err)
 	}
@@ -118,7 +128,7 @@ func (r *Clients) DisableConfigNotIn(ctx context.Context, ids []string) ([]strin
 	if ids == nil {
 		ids = []string{}
 	}
-	rows, err := r.pool.Query(ctx, `
+	rows, err := clientspg.Conn(ctx, r.pool).Query(ctx, `
 		UPDATE clients SET disabled = true, updated_at = $2
 		WHERE source = 'config' AND NOT disabled AND NOT (id = ANY($1))
 		RETURNING id`, ids, r.now().UTC())

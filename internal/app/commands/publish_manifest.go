@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
 	"github.com/techorionai/constellation-platform-go/executor"
+	"github.com/techorionai/constellation-platform-go/transaction"
 
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
 	"github.com/techorionai/constellation-identity/internal/domain"
@@ -38,6 +41,8 @@ type PublishManifestCommand struct {
 	clients clients.Repository
 	log     *slog.Logger
 	limits  *RateLimits
+	tx      transaction.Transactor
+	audit   audit.Writer
 }
 
 var _ executor.ExecutorWithReturn[PublishManifest, domain.PublishedManifest] = (*PublishManifestCommand)(nil)
@@ -48,6 +53,15 @@ func NewPublishManifest(repo manifests.Repository, cl clients.Repository, log *s
 		log = slog.Default()
 	}
 	return &PublishManifestCommand{repo: repo, clients: cl, log: log}
+}
+
+// WithAudit sets the transactor and the audit writer. A publish that changes
+// the manifest writes one audit entry in the transaction of the change. A
+// publish of the same manifest changes nothing and writes no entry. Without
+// them, a publish gives ErrNoAuditWriter.
+func (c *PublishManifestCommand) WithAudit(tx transaction.Transactor, w audit.Writer) *PublishManifestCommand {
+	c.tx, c.audit = tx, w
+	return c
 }
 
 // WithRateLimits sets the rate limits of the publish. The own publish of the
@@ -81,7 +95,19 @@ func (c *PublishManifestCommand) Execute(ctx context.Context, p PublishManifest)
 	if fes := domain.CheckManifest(p.Manifest); len(fes) > 0 {
 		return domain.PublishedManifest{}, apperrors.NewValidationError(fes)
 	}
-	out, err := c.repo.Publish(ctx, p.Manifest, p.PublishedBy)
+	if c.tx == nil || c.audit == nil {
+		return domain.PublishedManifest{}, ErrNoAuditWriter
+	}
+	var out domain.PublishedManifest
+	err := c.tx.WithinTx(ctx, func(ctx context.Context) error {
+		var err error
+		if out, err = c.repo.Publish(ctx, p.Manifest, p.PublishedBy); err != nil || !out.Changed {
+			return err
+		}
+		return writeAudit(ctx, c.audit, time.Now().UTC(), ActionManifestPublish, targetManifest, out.Manifest.App, map[string]any{
+			"version": out.Version, "permissions": len(out.Manifest.Permissions), "roles": len(out.Manifest.Roles),
+		})
+	}, txName("publish_manifest"))
 	if err != nil {
 		return domain.PublishedManifest{}, fmt.Errorf("publish manifest of %s: %w", p.Manifest.App, err)
 	}

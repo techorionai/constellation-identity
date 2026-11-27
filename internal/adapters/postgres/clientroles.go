@@ -94,14 +94,16 @@ func (r *ClientRoles) Page(ctx context.Context, clientID string, after *domain.R
 	return rolePage(ctx, clientspg.Conn(ctx, r.pool), `client_roles`, `client_id`, clientID, after, limit)
 }
 
-// Assign gives a role to a client.
-func (r *ClientRoles) Assign(ctx context.Context, clientID string, role domain.RoleRef, source domain.AssignmentSource) error {
-	if _, err := clientspg.Conn(ctx, r.pool).Exec(ctx, `
+// Assign gives a role to a client. It returns true if it added a row, and false
+// if the role was there.
+func (r *ClientRoles) Assign(ctx context.Context, clientID string, role domain.RoleRef, source domain.AssignmentSource) (bool, error) {
+	tag, err := clientspg.Conn(ctx, r.pool).Exec(ctx, `
 		INSERT INTO client_roles (client_id, app, role, source) VALUES ($1, $2, $3, $4)
-		ON CONFLICT (client_id, app, role) DO NOTHING`, clientID, role.App, role.Role, string(source)); err != nil {
-		return fmt.Errorf("assign client role %s: %w", role, err)
+		ON CONFLICT (client_id, app, role) DO NOTHING`, clientID, role.App, role.Role, string(source))
+	if err != nil {
+		return false, fmt.Errorf("assign client role %s: %w", role, err)
 	}
-	return nil
+	return tag.RowsAffected() == 1, nil
 }
 
 // Delete removes an assignment.

@@ -149,14 +149,14 @@ func TestR2_ProblemUnavailableWithRetryAfter(t *testing.T) {
 	}
 	users := mock.NewUsers()
 	tokens := commands.NewAPITokens(commands.APITokensDeps{
-		Tokens: mock.NewAPITokens(users), Users: users, UserRoles: mock.NewUserRoles(users), Tx: mock.Tx{}, Now: time.Now,
+		Tokens: mock.NewAPITokens(users), Users: users, UserRoles: mock.NewUserRoles(users), Tx: mock.Tx{}, Audit: &mock.Events{}, Now: time.Now,
 		Settings:   commands.APITokenSettings{DefaultTTLDays: 90, MaxTTLDays: 365, MaxPerUser: 5},
 		RateLimits: limits,
 	})
 	h := httpapi.New(httpapi.Deps{
 		JWKS: queries.NewGetJWKS(fakeKeys{}), Discovery: queries.NewGetDiscovery("https://id.example.com"),
 		Verifier: bothScopes{}, Scopes: realScopes(t), APITokens: tokens,
-		PublishManifest: commands.NewPublishManifest(nil, nil, nil).WithRateLimits(limits),
+		PublishManifest: commands.NewPublishManifest(nil, nil, nil).WithAudit(mock.Tx{}, &mock.Events{}).WithRateLimits(limits),
 	}).Handler()
 	for name, op := range map[string]struct{ method, path, body string }{
 		"MeApiTokens_create":          {http.MethodPost, "/v1/me/api-tokens", createBody},

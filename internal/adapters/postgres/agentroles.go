@@ -88,14 +88,16 @@ func (r *AgentRoles) GrantedPermissions(ctx context.Context, agentID string) ([]
 	return out, nil
 }
 
-// Assign gives a role to an agent.
-func (r *AgentRoles) Assign(ctx context.Context, agentID string, role domain.RoleRef, source domain.AssignmentSource) error {
-	if _, err := clientspg.Conn(ctx, r.pool).Exec(ctx, `
+// Assign gives a role to an agent. It returns true if it added a row, and false
+// if the role was there.
+func (r *AgentRoles) Assign(ctx context.Context, agentID string, role domain.RoleRef, source domain.AssignmentSource) (bool, error) {
+	tag, err := clientspg.Conn(ctx, r.pool).Exec(ctx, `
 		INSERT INTO agent_roles (agent_id, app, role, source) VALUES ($1, $2, $3, $4)
-		ON CONFLICT (agent_id, app, role) DO NOTHING`, agentID, role.App, role.Role, string(source)); err != nil {
-		return fmt.Errorf("assign agent role %s: %w", role, err)
+		ON CONFLICT (agent_id, app, role) DO NOTHING`, agentID, role.App, role.Role, string(source))
+	if err != nil {
+		return false, fmt.Errorf("assign agent role %s: %w", role, err)
 	}
-	return nil
+	return tag.RowsAffected() == 1, nil
 }
 
 // Delete removes an assignment.

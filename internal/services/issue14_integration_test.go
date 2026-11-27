@@ -523,10 +523,12 @@ func TestIssue14Integration(t *testing.T) {
 		}
 		// The port got one audit entry and one notice (I40).
 		var audits, notices int
-		for _, r := range f.a.logs.Records(t) {
-			if r["msg"] == "identity.audit" && r["action"] == "identity:mfa:totp_remove" && r["target_user_id"] == u.id && r["actor"] == u.id && r["result"] == "success" {
+		for _, r := range auditMaps(t, f.a) {
+			if r["action"] == "identity:mfa:totp_remove" && r["target_user_id"] == u.id && r["actor"] == u.id && r["result"] == "success" {
 				audits++
 			}
+		}
+		for _, r := range f.a.logs.Records(t) {
 			if r["msg"] == "identity.security_notice" && r["kind"] == "mfa_totp_removed" && r["target_user_id"] == u.id {
 				notices++
 			}
@@ -891,16 +893,14 @@ func TestIssue14Integration(t *testing.T) {
 		}
 		// I40: the audit entries and the notices are in the log.
 		var audits, notices int
+		for _, r := range auditMaps(t, f2.a) {
+			if r["action"] == "identity:mfa:reset" && r["target_user_id"] == id && r["actor"] == gAdmin.id && r["result"] == "success" {
+				audits++
+			}
+		}
 		for _, r := range f2.a.logs.Records(t) {
-			switch r["msg"] {
-			case "identity.audit":
-				if r["action"] == "identity:mfa:reset" && r["target_user_id"] == id && r["actor"] == gAdmin.id && r["result"] == "success" {
-					audits++
-				}
-			case "identity.security_notice":
-				if r["kind"] == "mfa_reset" && r["target_user_id"] == id {
-					notices++
-				}
+			if r["msg"] == "identity.security_notice" && r["kind"] == "mfa_reset" && r["target_user_id"] == id {
+				notices++
 			}
 		}
 		if audits != 2 || notices != 2 {
@@ -926,8 +926,9 @@ func TestIssue14Integration(t *testing.T) {
 		web := g.a.NewWeb()
 		g.passwordLogin(web, "admin@example.com", adminPassword, "/account/totp?required=1")
 		found := false
-		for _, r := range g.a.logs.Records(t) {
-			if r["msg"] == "identity.audit" && r["action"] == "identity:mfa:reset" && r["actor"] == "cli" && r["target_user_id"] == gAdmin.id {
+		for _, r := range auditMaps(t, g.a) {
+			details, _ := r["changes"].(map[string]any)
+			if r["action"] == "identity:mfa:reset" && r["actor"] == "identity" && r["actor_type"] == "service" && details["origin"] == "cli" && r["target_user_id"] == gAdmin.id {
 				found = true
 			}
 		}

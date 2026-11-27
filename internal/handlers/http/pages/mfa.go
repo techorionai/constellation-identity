@@ -356,7 +356,7 @@ func (h *Handler) totpRemove(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	err := h.d.MFA.RemoveTOTP(r.Context(), commands.RemoveTOTP{UserID: res.User.ID, Actor: res.User.ID})
+	err := h.d.MFA.RemoveTOTP(sessionContext(r, res.User.ID), commands.RemoveTOTP{UserID: res.User.ID, Actor: res.User.ID})
 	switch {
 	case err == nil:
 		http.Redirect(w, r, "/account/security", http.StatusSeeOther)

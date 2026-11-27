@@ -73,3 +73,10 @@ func CodeOf(err error) ErrorCode {
 	}
 	return Internal
 }
+
+// NewUnavailable wraps an error of a dependency that the request needs, for
+// example the audit outbox. The handler gives 503. The original error is for
+// the logs only.
+func NewUnavailable(err error, msg string) error {
+	return &AppError{original: err, code: Unavailable, message: msg}
+}

@@ -21,7 +21,7 @@ func (e *env) admin() *commands.Admin {
 	e.roles.Perms[domain.AdminRole] = []string{domain.AdminPermission}
 	e.roles.Perms[domain.RoleRef{App: "ops", Role: "root"}] = []string{domain.AdminPermission}
 	return commands.NewAdmin(commands.AdminDeps{
-		Users: e.users, UserRoles: e.roles, Sessions: e.sessions, Tokens: e.tokens, APITokens: mock.NewAPITokens(e.users), Lock: noLock{}, Tx: mock.Tx{}, Now: e.clock,
+		Users: e.users, UserRoles: e.roles, Sessions: e.sessions, Tokens: e.tokens, APITokens: mock.NewAPITokens(e.users), Lock: noLock{}, Tx: mock.Tx{}, Audit: &mock.Events{}, Now: e.clock,
 	})
 }
 
@@ -97,7 +97,7 @@ func TestIssue4_U12_LoginPreviousSession(t *testing.T) {
 func TestIssue4_U5_LastAdmin(t *testing.T) {
 	e := newEnv()
 	e.addUser("a", "a@example.com", domain.UserActive, "x")
-	_ = e.roles.Assign(ctx, "a", domain.AdminRole, domain.AssignmentAPI)
+	_, _ = e.roles.Assign(ctx, "a", domain.AdminRole, domain.AssignmentAPI)
 	a := e.admin()
 	disabled := true
 	// The mock transactor does not roll back, so each check has its own data.
@@ -106,18 +106,18 @@ func TestIssue4_U5_LastAdmin(t *testing.T) {
 	}
 	e = newEnv()
 	e.addUser("a", "a@example.com", domain.UserActive, "x")
-	_ = e.roles.Assign(ctx, "a", domain.AdminRole, domain.AssignmentAPI)
+	_, _ = e.roles.Assign(ctx, "a", domain.AdminRole, domain.AssignmentAPI)
 	a = e.admin()
 	if _, err := a.UpdateUser(ctx, "actor", "a", nil, &disabled); problemCode(err) != "last_admin" {
 		t.Fatalf("disable: %v", err)
 	}
 	e = newEnv()
 	e.addUser("a", "a@example.com", domain.UserActive, "x")
-	_ = e.roles.Assign(ctx, "a", domain.AdminRole, domain.AssignmentAPI)
+	_, _ = e.roles.Assign(ctx, "a", domain.AdminRole, domain.AssignmentAPI)
 	a = e.admin()
 	// A second admin makes the change valid.
 	e.addUser("b", "b@example.com", domain.UserActive, "x")
-	_ = e.roles.Assign(ctx, "b", domain.AdminRole, domain.AssignmentAPI)
+	_, _ = e.roles.Assign(ctx, "b", domain.AdminRole, domain.AssignmentAPI)
 	if _, err := a.UpdateUser(ctx, "actor", "a", nil, &disabled); err != nil {
 		t.Fatalf("disable with a second admin: %v", err)
 	}
@@ -133,17 +133,17 @@ func TestIssue4_U16_CountHolders(t *testing.T) {
 	e.addUser("p", "p@example.com", domain.UserActive, "x")
 	e.addUser("d", "d@example.com", domain.UserDisabled, "x")
 	e.addUser("o", "o@example.com", domain.UserActive, "x")
-	_ = e.roles.Assign(ctx, "a", domain.AdminRole, domain.AssignmentAPI)
+	_, _ = e.roles.Assign(ctx, "a", domain.AdminRole, domain.AssignmentAPI)
 	// A pending assignment has no permissions in the mock.
-	_ = e.roles.Assign(ctx, "p", domain.RoleRef{App: "ghost", Role: "admin"}, domain.AssignmentAPI)
-	_ = e.roles.Assign(ctx, "d", domain.AdminRole, domain.AssignmentAPI)
+	_, _ = e.roles.Assign(ctx, "p", domain.RoleRef{App: "ghost", Role: "admin"}, domain.AssignmentAPI)
+	_, _ = e.roles.Assign(ctx, "d", domain.AdminRole, domain.AssignmentAPI)
 	e.admin()
 	n, _ := e.roles.CountActiveHolders(ctx, domain.AdminPermission)
 	if n != 1 {
 		t.Fatalf("holders = %d, want 1 (pending and disabled do not count)", n)
 	}
 	// A second role that grants identity:admin counts.
-	_ = e.roles.Assign(ctx, "o", domain.RoleRef{App: "ops", Role: "root"}, domain.AssignmentAPI)
+	_, _ = e.roles.Assign(ctx, "o", domain.RoleRef{App: "ops", Role: "root"}, domain.AssignmentAPI)
 	if n, _ = e.roles.CountActiveHolders(ctx, domain.AdminPermission); n != 2 {
 		t.Fatalf("holders = %d, want 2", n)
 	}
@@ -228,7 +228,7 @@ func TestIssue4_U15_Paging(t *testing.T) {
 
 // Issue4_U6_U7: client rules.
 func TestIssue4_U6_U7_ClientRules(t *testing.T) {
-	a := commands.NewAdmin(commands.AdminDeps{Tx: mock.Tx{}})
+	a := commands.NewAdmin(commands.AdminDeps{Tx: mock.Tx{}, Audit: &mock.Events{}})
 	if _, err := a.CreateClient(ctx, "actor", commands.CreateClientInput{Type: domain.ClientTypeService, App: "identity", Name: "S"}); problemCode(err) != "app_reserved" {
 		t.Fatalf("app_reserved: %v", err)
 	}

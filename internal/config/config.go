@@ -196,6 +196,10 @@ type Retention struct {
 	RefreshTokens        retention.Config `envPrefix:"REFRESH_TOKENS__"`
 	RefreshTokenFamilies retention.Config `envPrefix:"REFRESH_TOKEN_FAMILIES__"`
 	APITokens            retention.Config `envPrefix:"API_TOKENS__"`
+	// AuditOutbox and AuditStream are the jobs of the audit outbox table and of
+	// the audit stream. The default period is 7 days.
+	AuditOutbox retention.Config `envPrefix:"AUDIT_OUTBOX__"`
+	AuditStream retention.Config `envPrefix:"AUDIT_STREAM__"`
 }
 
 // Limits of the OIDC settings.
@@ -351,6 +355,12 @@ func (c Config) validateUsers() []error {
 	}
 	if err := c.Retention.APITokens.Validate(); err != nil {
 		bad("RETENTION__API_TOKENS__*", err.Error())
+	}
+	if err := c.Retention.AuditOutbox.Validate(); err != nil {
+		bad("RETENTION__AUDIT_OUTBOX__*", err.Error())
+	}
+	if err := c.Retention.AuditStream.Validate(); err != nil {
+		bad("RETENTION__AUDIT_STREAM__*", err.Error())
 	}
 	if c.APIToken.MaxTTLDays < maxAPITokenTTLDaysMin || c.APIToken.MaxTTLDays > MaxAPITokenTTLDays {
 		bad("API_TOKEN__MAX_TTL_DAYS", fmt.Sprintf("must be from %d to %d", maxAPITokenTTLDaysMin, MaxAPITokenTTLDays))

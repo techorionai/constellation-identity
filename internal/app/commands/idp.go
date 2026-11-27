@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
 	"github.com/techorionai/constellation-platform-go/transaction"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -20,7 +21,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/ports/mfa"
 	"github.com/techorionai/constellation-identity/internal/ports/mfaflow"
 	"github.com/techorionai/constellation-identity/internal/ports/onetimetokens"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/securitynotices"
 	"github.com/techorionai/constellation-identity/internal/ports/sessions"
 	"github.com/techorionai/constellation-identity/internal/ports/upstreamidp"
 	"github.com/techorionai/constellation-identity/internal/ports/userroles"
@@ -114,7 +115,8 @@ type IdpDeps struct {
 	Factors LocalFactors
 	// Remover removes a link for the purpose unlink.
 	Remover LinkRemover
-	Events  securityevents.Events
+	Events  securitynotices.Notices
+	Audit   audit.Writer
 	Tx      transaction.Transactor
 	Policy  domain.SessionPolicy
 	// LookupAuthRequest checks that an auth request exists.
@@ -690,6 +692,9 @@ func (i *Idp) link(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id d
 		i.failed(ctx, in.Provider, domain.FlowLink, IdpOutcomeBadState)
 		return IdpResult{}, ErrIdpExpired
 	}
+	// The session of the start is checked here, so the actor of the audit entry
+	// is the user of the session.
+	ctx = asUser(ctx, sess.UserID)
 	err = i.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		u, err := i.d.Users.LockByID(ctx, sess.UserID)
 		if err != nil {
@@ -698,7 +703,7 @@ func (i *Idp) link(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id d
 		if u.Status != domain.UserActive {
 			return ErrIdpFailed
 		}
-		return i.createLink(ctx, u.ID, id)
+		return i.createLink(ctx, u.ID, id, "")
 	}, txName("link_identity"))
 	switch {
 	case errors.Is(err, ErrIdpAlreadyLinked):
@@ -712,7 +717,7 @@ func (i *Idp) link(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id d
 	case err != nil:
 		return IdpResult{}, fmt.Errorf("add the link: %w", err)
 	}
-	i.linked(ctx, in.Provider, domain.FlowLink, sess.UserID, sess.UserID)
+	i.linked(ctx, in.Provider, domain.FlowLink, sess.UserID)
 	return IdpResult{Kind: IdpLinked, Purpose: domain.FlowLink}, nil
 }
 
@@ -743,7 +748,7 @@ func (i *Idp) unlink(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id
 	if i.d.Remover == nil {
 		return IdpResult{}, ErrIdpFailed
 	}
-	err = i.d.Remover.Remove(ctx, RemoveIdentityLink{
+	err = i.d.Remover.Remove(asUser(ctx, sess.UserID), RemoveIdentityLink{
 		UserID: sess.UserID, Provider: rec.RemoveProvider, Actor: sess.UserID, Self: true, UpstreamFresh: true,
 	})
 	if err != nil {
@@ -756,7 +761,7 @@ func (i *Idp) unlink(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id
 }
 
 // createLink adds the link of an upstream account. It runs in a transaction.
-func (i *Idp) createLink(ctx context.Context, userID string, id domain.UpstreamIdentity) error {
+func (i *Idp) createLink(ctx context.Context, userID string, id domain.UpstreamIdentity, origin string) error {
 	if _, err := i.d.Links.GetByUserProvider(ctx, userID, id.Provider); err == nil {
 		return ErrIdpAlreadyLinked
 	} else if !errors.Is(err, identitylinks.ErrNotFound) {
@@ -770,16 +775,18 @@ func (i *Idp) createLink(ctx context.Context, userID string, id domain.UpstreamI
 		return ErrIdpLinkedElsewhere
 	case errors.Is(err, identitylinks.ErrProviderLinked):
 		return ErrIdpAlreadyLinked
+	case err != nil:
+		return err
 	}
-	return err
+	return writeAudit(ctx, i.d.Audit, i.now(), ActionLinkAdd, targetUser, userID, originDetails(origin, map[string]any{"provider": id.Provider}))
 }
 
-// linked writes the log record, the audit entry, and the notice of a new link.
-func (i *Idp) linked(ctx context.Context, provider, purpose, actor, target string) {
+// linked writes the log record and the notice of a new link. The audit entry is
+// in the transaction of the link.
+func (i *Idp) linked(ctx context.Context, provider, purpose, target string) {
 	i.count(ctx, provider, purpose, IdpOutcomeOK)
 	i.d.Log.InfoContext(ctx, "identity.idp.linked", "event", "identity.idp.linked", "user_id", target, "provider", provider)
-	recordLinkEvent(ctx, i.d.Events, i.d.Log, securityevents.ActionIdentityLinkAdd,
-		securityevents.NoticeIdentityLinkAdded, actor, target, provider, i.now())
+	notifyLink(ctx, i.d.Events, i.d.Log, securitynotices.NoticeIdentityLinkAdded, target, i.now())
 }
 
 // invite is the purpose invite: the verified email of the upstream account must
@@ -837,10 +844,13 @@ func (i *Idp) invite(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id
 		} else if !ok {
 			return ErrIdpExpired
 		}
-		if err := i.createLink(ctx, user.ID, id); err != nil {
+		if err := i.createLink(ctx, user.ID, id, OriginInvite); err != nil {
 			return err
 		}
 		if err := i.d.Users.Activate(ctx, user.ID, "", now); err != nil {
+			return err
+		}
+		if err := writeAudit(ctx, i.d.Audit, now, ActionInviteAccept, targetUser, user.ID, originDetails(OriginInvite, nil)); err != nil {
 			return err
 		}
 		issued, err = sessionIssuer{repo: i.d.Sessions, policy: i.d.Policy, now: i.d.Now}.
@@ -860,7 +870,7 @@ func (i *Idp) invite(ctx context.Context, in CallbackIdp, rec domain.IdpFlow, id
 		return IdpResult{}, fmt.Errorf("accept the invite: %w", err)
 	}
 	issued.SetupRequired = needsMFA
-	i.linked(ctx, in.Provider, domain.FlowInvite, invited.ID, invited.ID)
+	i.linked(ctx, in.Provider, domain.FlowInvite, invited.ID)
 	i.d.Log.InfoContext(ctx, "identity.invite.accepted", "event", "identity.invite.accepted", "user_id", invited.ID)
 	return IdpResult{Kind: IdpSession, Purpose: domain.FlowInvite, Session: issued}, nil
 }

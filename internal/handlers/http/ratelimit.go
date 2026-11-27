@@ -43,7 +43,7 @@ func (s *Server) rateLimit(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		ip := clientip.ClientIP(r.RemoteAddr, r.Header.Values("X-Forwarded-For"), s.d.TrustedProxies)
+		ip := clientip.FromRequest(r)
 		err := s.d.RateLimits.CheckIP(r.Context(), b.name, clientip.Key(ip), clientip.CoarseKey(ip), b.failOpen)
 		if err == nil {
 			next.ServeHTTP(w, r)

@@ -164,6 +164,8 @@ func TestIssue9_U14_APITokenSettings(t *testing.T) {
 		{"IDENTITY_RETENTION__API_TOKENS__BATCH_SIZE", "1", true}, {"IDENTITY_RETENTION__API_TOKENS__BATCH_SIZE", "0", false},
 		{"IDENTITY_RETENTION__API_TOKENS__INTERVAL", "1m", true}, {"IDENTITY_RETENTION__API_TOKENS__INTERVAL", "59s", false},
 		{"IDENTITY_RETENTION__API_TOKENS__PERIOD", "0s", true}, {"IDENTITY_RETENTION__API_TOKENS__PERIOD", "-1h", false},
+		{"IDENTITY_RETENTION__AUDIT_OUTBOX__BATCH_SIZE", "1", true}, {"IDENTITY_RETENTION__AUDIT_OUTBOX__BATCH_SIZE", "0", false},
+		{"IDENTITY_RETENTION__AUDIT_STREAM__INTERVAL", "1m", true}, {"IDENTITY_RETENTION__AUDIT_STREAM__INTERVAL", "59s", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name+"="+tt.value, func(t *testing.T) {
@@ -196,6 +198,12 @@ func TestIssue9_U14_APITokenSettings(t *testing.T) {
 func wantName(env string) string {
 	if strings.HasPrefix(env, "IDENTITY_RETENTION__API_TOKENS__") {
 		return "RETENTION__API_TOKENS__"
+	}
+	if strings.HasPrefix(env, "IDENTITY_RETENTION__AUDIT_OUTBOX__") {
+		return "RETENTION__AUDIT_OUTBOX__"
+	}
+	if strings.HasPrefix(env, "IDENTITY_RETENTION__AUDIT_STREAM__") {
+		return "RETENTION__AUDIT_STREAM__"
 	}
 	return env
 }

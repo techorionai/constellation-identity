@@ -91,6 +91,9 @@ type PublishedManifest struct {
 	Hash        string
 	PublishedAt time.Time
 	PublishedBy string
+	// Changed is true when the publish wrote a new version. It is false when the
+	// stored manifest has the same hash. It is not stored.
+	Changed bool
 }
 
 // FieldError is one incorrect field. Field is a JSON Pointer into the

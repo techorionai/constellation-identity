@@ -47,7 +47,7 @@ func passkeyPages(t *testing.T, limits *commands.RateLimits) (http.Handler, stri
 	cmd, err := commands.NewMFA(commands.MFADeps{
 		Users: users, UserRoles: mock.NewUserRoles(users), Sessions: mock.NewSessions(), MFA: mfa, Passkeys: keys, WebAuthn: &mock.WebAuthn{},
 		Ceremonies: mock.NewCeremonies(), PasskeysOn: true, Pending: pending, Setups: mock.NewSetups(), Failures: mock.NewFailures(),
-		Events: &mock.Events{}, Tx: mock.Tx{}, MaxFailures: 10, FailureWindow: time.Minute,
+		Events: &mock.Events{}, Audit: &mock.Events{}, Tx: mock.Tx{}, MaxFailures: 10, FailureWindow: time.Minute,
 		Log: slog.New(slog.NewTextHandler(discardWriter{}, nil)),
 	})
 	if err != nil {

@@ -1,33 +1,50 @@
 package clientip_test
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"testing"
+
+	"github.com/techorionai/constellation-platform-go/clientinfo"
 
 	"github.com/techorionai/constellation-identity/internal/handlers/http/clientip"
 )
 
-// U2: the client IP.
-func TestU2_ClientIP(t *testing.T) {
-	trusted := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
+// I8 (unit part): the client IP comes from the clientinfo middleware. The
+// function never reads X-Forwarded-For. Without the middleware it gives the
+// remote address. A zone and an IPv4-mapped IPv6 address are removed.
+func TestIssue25_FromRequest(t *testing.T) {
+	trusted := clientinfo.Config{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("::ffff:10.0.0.0/104")}}
 	cases := []struct {
-		name    string
-		remote  string
-		xff     []string
-		trusted []netip.Prefix
-		want    string
+		name       string
+		remote     string
+		xff        string
+		middleware bool
+		want       string
 	}{
-		{"remote not trusted ignores the header", "203.0.113.5:4000", []string{"1.2.3.4"}, trusted, "203.0.113.5"},
-		{"trusted proxy uses the last untrusted address", "10.0.0.1:4000", []string{"1.2.3.4, 10.0.0.2"}, trusted, "1.2.3.4"},
-		{"a client cannot add an address in front", "10.0.0.1:4000", []string{"9.9.9.9, 1.2.3.4, 10.0.0.2"}, trusted, "1.2.3.4"},
-		{"two header lines", "10.0.0.1:4000", []string{"9.9.9.9", "1.2.3.4, 10.0.0.2"}, trusted, "1.2.3.4"},
-		{"all trusted gives the remote", "10.0.0.1:4000", []string{"10.0.0.3, 10.0.0.2"}, trusted, "10.0.0.1"},
-		{"bad value gives the remote", "10.0.0.1:4000", []string{"not-an-ip"}, trusted, "10.0.0.1"},
-		{"no proxies", "10.0.0.1:4000", []string{"1.2.3.4"}, nil, "10.0.0.1"},
-		{"IPv6", "[2001:db8::1]:4000", nil, trusted, "2001:db8::1"},
+		{"no middleware ignores the header", "203.0.113.5:4000", "1.2.3.4", false, "203.0.113.5"},
+		{"no middleware, mapped address", "[::ffff:203.0.113.5]:4000", "", false, "203.0.113.5"},
+		{"no middleware, zone", "[fe80::1%eth0]:4000", "", false, "fe80::1"},
+		{"untrusted remote ignores the header", "203.0.113.5:4000", "1.2.3.4", true, "203.0.113.5"},
+		{"trusted proxy uses the last untrusted address", "10.0.0.1:4000", "9.9.9.9, 1.2.3.4, 10.0.0.2", true, "1.2.3.4"},
+		{"trusted mapped proxy", "[::ffff:10.0.0.5]:4000", "1.2.3.4", true, "1.2.3.4"},
+		{"IPv6", "[2001:db8::1]:4000", "", true, "2001:db8::1"},
 	}
 	for _, c := range cases {
-		if got := clientip.ClientIP(c.remote, c.xff, c.trusted); got != c.want {
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+		r.RemoteAddr = c.remote
+		if c.xff != "" {
+			r.Header.Set("X-Forwarded-For", c.xff)
+		}
+		var got string
+		h := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = clientip.FromRequest(r) })
+		if c.middleware {
+			h = clientinfo.Middleware(trusted)(h).(http.HandlerFunc)
+		}
+		h.ServeHTTP(httptest.NewRecorder(), r)
+		if got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
@@ -82,14 +99,24 @@ func TestR11_CoarseKey(t *testing.T) {
 // its peer. A proxy that sends the header of the client unchanged lets the
 // client choose its IP.
 func TestR13_ProxyMustAppendPeerAddress(t *testing.T) {
-	trusted := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
-	const proxy, client, forged = "10.0.0.1:4000", "203.0.113.5", "198.51.100.7"
+	cfg := clientinfo.Config{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}}
+	const client, forged = "203.0.113.5", "198.51.100.7"
+	ipOf := func(xff string) string {
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.0.0.1:4000"
+		r.Header.Set("X-Forwarded-For", xff)
+		var got string
+		clientinfo.Middleware(cfg)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			got = clientip.FromRequest(r)
+		})).ServeHTTP(httptest.NewRecorder(), r)
+		return got
+	}
 	// The proxy appends the peer address: the forged value stays in front.
-	if got := clientip.ClientIP(proxy, []string{forged + ", " + client}, trusted); got != client {
+	if got := ipOf(forged + ", " + client); got != client {
 		t.Errorf("appending proxy: got %q, want %q", got, client)
 	}
 	// The proxy sends the header of the client unchanged: the client wins.
-	if got := clientip.ClientIP(proxy, []string{forged}, trusted); got != forged {
+	if got := ipOf(forged); got != forged {
 		t.Errorf("unchanged header: got %q, want %q", got, forged)
 	}
 }

@@ -5,16 +5,17 @@ package pages
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"errors"
 	"html/template"
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/auth"
 	"github.com/techorionai/constellation-platform-go/executor"
 
 	"github.com/techorionai/constellation-identity/internal/app/commands"
@@ -74,8 +75,6 @@ type Deps struct {
 	// Issuer is the issuer URL of the service. An https issuer turns on the
 	// Strict-Transport-Security header.
 	Issuer string
-	// TrustedProxies are the ranges whose X-Forwarded-For header the pages use.
-	TrustedProxies []netip.Prefix
 	// RateLimits counts the requests of the IP buckets of the pages. It can be nil.
 	RateLimits *commands.RateLimits
 	Log        *slog.Logger
@@ -297,7 +296,7 @@ func (h *Handler) parseForm(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (h *Handler) clientIP(r *http.Request) string {
-	return clientip.ClientIP(r.RemoteAddr, r.Header.Values("X-Forwarded-For"), h.d.TrustedProxies)
+	return clientip.FromRequest(r)
 }
 
 // setCookie sets the session cookie.
@@ -628,4 +627,12 @@ func (h *Handler) finishToken(w http.ResponseWriter, r *http.Request, page strin
 		return
 	}
 	h.serverError(w, r, err)
+}
+
+// sessionContext returns the context of the request with the user of the
+// account session as the authenticated principal. A handler calls it only
+// after it checked the session. The audit writer takes the actor of an entry
+// from this principal.
+func sessionContext(r *http.Request, userID string) context.Context {
+	return auth.ContextWithPrincipal(r.Context(), auth.Principal{ID: userID, Type: auth.PrincipalUser})
 }

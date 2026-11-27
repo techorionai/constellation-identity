@@ -24,19 +24,21 @@ func TestU3_RateLimitDefaults(t *testing.T) {
 		limit  int64
 		window time.Duration
 	}{
-		"public_meta":       {300, time.Minute},
-		"oauth_public":      {60, time.Minute},
-		"oauth_backend_ip":  {600, time.Minute},
-		"token_ip":          {600, time.Minute},
-		"introspect_ip":     {6000, time.Minute},
-		"token_client":      {300, time.Minute},
-		"introspect_client": {6000, time.Minute},
-		"setup_invite":      {10, 15 * time.Minute},
-		"api_token_create":  {20, time.Hour},
-		"manifest_publish":  {60, time.Hour},
-		"mfa_verify":        {30, time.Minute},
-		"passkey":           {30, time.Minute},
-		"idp":               {30, time.Minute},
+		"public_meta":        {300, time.Minute},
+		"oauth_public":       {60, time.Minute},
+		"oauth_backend_ip":   {600, time.Minute},
+		"token_ip":           {600, time.Minute},
+		"introspect_ip":      {6000, time.Minute},
+		"token_client":       {300, time.Minute},
+		"introspect_client":  {6000, time.Minute},
+		"setup_invite":       {10, 15 * time.Minute},
+		"api_token_create":   {20, time.Hour},
+		"manifest_publish":   {60, time.Hour},
+		"mfa_verify":         {30, time.Minute},
+		"passkey":            {30, time.Minute},
+		"idp":                {30, time.Minute},
+		"admin_denied":       {30, time.Minute},
+		"admin_denied_daily": {1000, 24 * time.Hour},
 	}
 	if len(rules) != len(want) || len(ratelimit.Buckets()) != len(want) {
 		t.Fatalf("rules = %v", rules)

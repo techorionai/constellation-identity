@@ -10,9 +10,9 @@ import (
 // Repository stores the role assignments of users. A call joins the
 // transaction in the context.
 type Repository interface {
-	// Assign gives a role to a user. A second call with the same role does
-	// nothing.
-	Assign(ctx context.Context, userID string, role domain.RoleRef, source domain.AssignmentSource) error
+	// Assign gives a role to a user. It returns true if it added a row, and false
+	// if the user had the role.
+	Assign(ctx context.Context, userID string, role domain.RoleRef, source domain.AssignmentSource) (bool, error)
 	// Delete removes an assignment. It returns false if the user does not have
 	// the role.
 	Delete(ctx context.Context, userID string, role domain.RoleRef) (bool, error)

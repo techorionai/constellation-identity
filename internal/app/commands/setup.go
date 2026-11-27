@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
 	"github.com/techorionai/constellation-platform-go/executor"
 	"github.com/techorionai/constellation-platform-go/transaction"
 
@@ -28,8 +29,10 @@ type SetupDeps struct {
 	Session sessions.Repository
 	Hasher  passwordhasher.Hasher
 	Tx      transaction.Transactor
-	Policy  domain.SessionPolicy
-	Log     *slog.Logger
+	// Audit writes the audit entries in the transaction of the change.
+	Audit  audit.Writer
+	Policy domain.SessionPolicy
+	Log    *slog.Logger
 	// Now is the clock. The default is time.Now.
 	Now Clock
 }
@@ -204,11 +207,14 @@ func (c *CompleteSetupCommand) Execute(ctx context.Context, in CompleteSetup) (I
 		if err := c.d.Users.Create(ctx, user); err != nil {
 			return createUserErr(err)
 		}
-		if err := c.d.Roles.Assign(ctx, user.ID, domain.AdminRole, domain.AssignmentAPI); err != nil {
+		if _, err := c.d.Roles.Assign(ctx, user.ID, domain.AdminRole, domain.AssignmentAPI); err != nil {
 			return err
 		}
 		issued, err = sessionIssuer{repo: c.d.Session, policy: c.d.Policy, now: c.d.Now}.issue(ctx, user.ID, in.UserAgent, in.IP, domain.MethodsPassword())
-		return err
+		if err != nil {
+			return err
+		}
+		return writeAudit(ctx, c.d.Audit, now, ActionSetupComplete, targetUser, user.ID, originDetails(OriginSetup, nil))
 	}, txName("complete_setup"))
 	if err != nil {
 		return IssuedSession{}, wrapUserErr("complete the setup", err)

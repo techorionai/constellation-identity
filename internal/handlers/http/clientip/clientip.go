@@ -4,51 +4,30 @@ package clientip
 
 import (
 	"net"
+	"net/http"
 	"net/netip"
-	"strings"
+
+	"github.com/techorionai/constellation-platform-go/clientinfo"
 )
 
-// ClientIP returns the client IP of a request. It is the remote address. If the
-// remote address is in a trusted proxy range, it is the last address of
-// X-Forwarded-For that is not in a trusted range. A value that is not an IP
-// address gives the remote address.
-func ClientIP(remoteAddr string, forwardedFor []string, trusted []netip.Prefix) string {
-	host, _, err := net.SplitHostPort(remoteAddr)
+// FromRequest returns the client IP of a request. It reads the value that the
+// clientinfo middleware of platform-go put into the context. That middleware is
+// the one place that reads X-Forwarded-For and the trusted proxies, so the rate
+// limits and the audit entries use the same address. If the context has no
+// valid address, the result is the remote address of the connection. This
+// function never reads X-Forwarded-For.
+func FromRequest(r *http.Request) string {
+	if info, ok := clientinfo.FromContext(r.Context()); ok && info.IP.IsValid() {
+		return info.IP.String()
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		host = remoteAddr
+		host = r.RemoteAddr
 	}
-	remote, err := netip.ParseAddr(host)
-	if err != nil {
-		return host
+	if a, err := netip.ParseAddr(host); err == nil {
+		return a.WithZone("").Unmap().String()
 	}
-	remote = remote.Unmap()
-	if !isTrusted(remote, trusted) {
-		return remote.String()
-	}
-	var chain []string
-	for _, v := range forwardedFor {
-		chain = append(chain, strings.Split(v, ",")...)
-	}
-	for i := len(chain) - 1; i >= 0; i-- {
-		a, err := netip.ParseAddr(strings.TrimSpace(chain[i]))
-		if err != nil {
-			return remote.String()
-		}
-		a = a.Unmap()
-		if !isTrusted(a, trusted) {
-			return a.String()
-		}
-	}
-	return remote.String()
-}
-
-func isTrusted(a netip.Addr, trusted []netip.Prefix) bool {
-	for _, p := range trusted {
-		if p.Contains(a) {
-			return true
-		}
-	}
-	return false
+	return host
 }
 
 // CoarseBits is the prefix length of the coarse key of an IPv6 address. One

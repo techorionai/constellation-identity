@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
 	"github.com/techorionai/constellation-platform-go/executor"
 	"github.com/techorionai/constellation-platform-go/transaction"
 
@@ -25,8 +26,10 @@ type InviteDeps struct {
 	Session sessions.Repository
 	Hasher  passwordhasher.Hasher
 	Tx      transaction.Transactor
-	Policy  domain.SessionPolicy
-	Log     *slog.Logger
+	// Audit writes the audit entries in the transaction of the change.
+	Audit  audit.Writer
+	Policy domain.SessionPolicy
+	Log    *slog.Logger
 	// Now is the clock. The default is time.Now.
 	Now Clock
 }
@@ -83,7 +86,13 @@ func (c *CreateUserCommand) Execute(ctx context.Context, in CreateUser) (CreateU
 			return createUserErr(err)
 		}
 		res.Invite, err = makeInvite(ctx, c.d, res.User.ID, now)
-		return err
+		if err != nil {
+			return err
+		}
+		if err := writeAudit(ctx, c.d.Audit, now, ActionUserCreate, targetUser, res.User.ID, map[string]any{"fields": []string{"email", "name"}}); err != nil {
+			return err
+		}
+		return writeAudit(ctx, c.d.Audit, now, ActionInviteCreate, targetUser, res.User.ID, nil)
 	}, txName("create_user"))
 	if err != nil {
 		return CreateUserResult{}, wrapUserErr("create the user", err)
@@ -142,8 +151,12 @@ func (c *CreateInviteCommand) Execute(ctx context.Context, in CreateInvite) (Lin
 		if err := c.d.Tokens.DeleteUnusedInvites(ctx, user.ID); err != nil {
 			return err
 		}
-		link, err = makeInvite(ctx, c.d, user.ID, c.d.Now().UTC())
-		return err
+		now := c.d.Now().UTC()
+		link, err = makeInvite(ctx, c.d, user.ID, now)
+		if err != nil {
+			return err
+		}
+		return writeAudit(ctx, c.d.Audit, now, ActionInviteCreate, targetUser, user.ID, nil)
 	}, txName("create_invite"))
 	if err != nil {
 		return Link{}, wrapUserErr("create the invite", err)
@@ -213,7 +226,10 @@ func (c *AcceptInviteCommand) Execute(ctx context.Context, in AcceptInvite) (Iss
 			return err
 		}
 		issued, err = sessionIssuer{repo: c.d.Session, policy: c.d.Policy, now: c.d.Now}.issue(ctx, user.ID, in.UserAgent, in.IP, domain.MethodsPassword())
-		return err
+		if err != nil {
+			return err
+		}
+		return writeAudit(ctx, c.d.Audit, now, ActionInviteAccept, targetUser, user.ID, originDetails(OriginInvite, nil))
 	}, txName("accept_invite"))
 	if err != nil {
 		return IssuedSession{}, wrapUserErr("accept the invite", err)

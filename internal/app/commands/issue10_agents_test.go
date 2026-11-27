@@ -39,7 +39,7 @@ func newAgentEnv(t *testing.T) *agentEnv {
 	e := &agentEnv{agents: mock.NewAgents(), aroles: mock.NewAgentRoles(), log: &bytes.Buffer{}}
 	e.aroles.Perms[roleMailAgent] = []string{"mail:message:read"}
 	e.admin = commands.NewAdmin(commands.AdminDeps{
-		Clients: f.clients, Agents: e.agents, AgentRoles: e.aroles, Manifests: &roleManifests{},
+		Clients: f.clients, Agents: e.agents, AgentRoles: e.aroles, Manifests: &roleManifests{}, Tx: mock.Tx{}, Audit: &mock.Events{},
 		Log: slog.New(slog.NewTextHandler(e.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Now: func() time.Time { return now },
 	})

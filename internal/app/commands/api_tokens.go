@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/techorionai/constellation-platform-go/audit"
 	"github.com/techorionai/constellation-platform-go/transaction"
 
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
@@ -48,8 +49,10 @@ type APITokensDeps struct {
 	Users      users.Repository
 	UserRoles  userroles.Repository
 	Tx         transaction.Transactor
-	Settings   APITokenSettings
-	Log        *slog.Logger
+	// Audit writes the audit entries in the transaction of the change.
+	Audit    audit.Writer
+	Settings APITokenSettings
+	Log      *slog.Logger
 	// Now is the clock. The default is time.Now.
 	Now Clock
 }
@@ -186,7 +189,10 @@ func (a *APITokens) Create(ctx context.Context, in CreateAPIToken) (CreatedAPITo
 		if all >= domain.APITokenTotalFactor*a.d.Settings.MaxPerUser {
 			return apperrors.NewUnprocessable(codeTokenLimit, "The user has the largest number of API token records. Revoked and expired tokens go after the retention period.")
 		}
-		return a.d.Tokens.Insert(ctx, hash, tok)
+		if err := a.d.Tokens.Insert(ctx, hash, tok); err != nil {
+			return err
+		}
+		return writeAudit(ctx, a.d.Audit, now, ActionAPITokenCreate, targetAPIToken, id, map[string]any{"scopes": slices.Clone(scope)})
 	}, txName("create_api_token"))
 	if err != nil {
 		return CreatedAPIToken{}, err
@@ -252,12 +258,18 @@ func (a *APITokens) Revoke(ctx context.Context, userID, tokenID string) error {
 	if !uuidPattern.MatchString(tokenID) {
 		return errAPITokenNotFound()
 	}
-	found, err := a.d.Tokens.Revoke(ctx, tokenID, userID, a.now())
+	err := a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		found, err := a.d.Tokens.Revoke(ctx, tokenID, userID, a.now())
+		if err != nil {
+			return fmt.Errorf("revoke the api token: %w", err)
+		}
+		if !found {
+			return errAPITokenNotFound()
+		}
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionAPITokenRevoke, targetAPIToken, tokenID, nil)
+	}, txName("revoke_api_token"))
 	if err != nil {
-		return fmt.Errorf("revoke the api token: %w", err)
-	}
-	if !found {
-		return errAPITokenNotFound()
+		return err
 	}
 	a.logChange(ctx, userID, "revoke", tokenID)
 	return nil
@@ -269,12 +281,18 @@ func (a *APITokens) AdminRevoke(ctx context.Context, actor, tokenID string) erro
 	if !uuidPattern.MatchString(tokenID) {
 		return errAPITokenNotFound()
 	}
-	found, err := a.d.Tokens.Revoke(ctx, tokenID, "", a.now())
+	err := a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		found, err := a.d.Tokens.Revoke(ctx, tokenID, "", a.now())
+		if err != nil {
+			return fmt.Errorf("revoke the api token: %w", err)
+		}
+		if !found {
+			return errAPITokenNotFound()
+		}
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionAPITokenRevoke, targetAPIToken, tokenID, nil)
+	}, txName("admin_revoke_api_token"))
 	if err != nil {
-		return fmt.Errorf("revoke the api token: %w", err)
-	}
-	if !found {
-		return errAPITokenNotFound()
+		return err
 	}
 	a.d.Log.InfoContext(ctx, "identity.admin.change", "event", "identity.admin.change",
 		"actor_id", actor, "operation", "api_token.revoke", "target_id", tokenID)

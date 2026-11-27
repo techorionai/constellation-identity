@@ -88,7 +88,7 @@ func (h *Handler) linkRemovePasskey(w http.ResponseWriter, r *http.Request) {
 		h.ceremonyFailed(w, r, err)
 		return
 	}
-	err = h.d.IdentityLinks.Remove(r.Context(), commands.RemoveIdentityLink{
+	err = h.d.IdentityLinks.Remove(sessionContext(r, res.User.ID), commands.RemoveIdentityLink{
 		UserID: res.User.ID, Provider: r.URL.Query().Get("provider"), Actor: res.User.ID, Self: true, FactorVerified: true,
 	})
 	switch {

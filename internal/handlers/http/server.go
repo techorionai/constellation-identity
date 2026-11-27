@@ -9,7 +9,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -44,6 +43,8 @@ type Server struct {
 	d      Deps
 	log    *slog.Logger
 	authMW func(http.Handler) http.Handler
+	// deniedFallback limits the denied entries when the shared limiter fails.
+	deniedFallback *fallbackLimiter
 }
 
 var _ gen.StrictServerInterface = (*Server)(nil)
@@ -79,16 +80,17 @@ type Deps struct {
 	// CORSOrigins gives the login redirect URIs of the public clients that are
 	// not disabled. The CORS middleware answers for these origins only.
 	CORSOrigins CORSOrigins
+	// Denied writes the audit entry of an admin request that fails the scope
+	// check. A nil value writes no entry.
+	Denied DeniedRecorder
 	// Verifier checks the bearer token of each /v1 request. Scopes gives the
 	// scopes of each /v1 operation. Without them, each /v1 request fails with
 	// a 500 Problem, because the service fails closed.
 	// RateLimits counts the requests of the IP buckets. It can be nil.
 	RateLimits *commands.RateLimits
-	// TrustedProxies are the ranges whose X-Forwarded-For header the service uses.
-	TrustedProxies []netip.Prefix
-	Verifier       auth.Verifier
-	Scopes         ScopeTable
-	Log            *slog.Logger
+	Verifier   auth.Verifier
+	Scopes     ScopeTable
+	Log        *slog.Logger
 }
 
 // New makes the server.
@@ -97,7 +99,7 @@ func New(d Deps) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	s := &Server{d: d, log: log}
+	s := &Server{d: d, log: log, deniedFallback: newFallbackLimiter(deniedFallbackLimit, deniedFallbackWindow, deniedFallbackKeys)}
 	if d.Verifier != nil {
 		s.authMW = auth.Middleware(d.Verifier)
 	}
@@ -136,7 +138,7 @@ func (s *Server) protect(next http.Handler) http.Handler {
 			s.writeProblem(w, r, http.StatusInternalServerError, "auth_not_configured", "Authentication not configured", "The server has an internal error.")
 			return
 		}
-		s.authMW(auth.RequireScopes(scopes...)(s.rejectUnknownClientFields(next))).ServeHTTP(w, r)
+		s.authMW(s.auditDenied(r.Pattern, scopes, auth.RequireScopes(scopes...)(s.rejectUnknownClientFields(next)))).ServeHTTP(w, r)
 	})
 }
 

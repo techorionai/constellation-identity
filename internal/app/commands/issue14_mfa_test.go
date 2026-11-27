@@ -8,13 +8,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
+
 	"github.com/pquerna/otp"
 	pqtotp "github.com/pquerna/otp/totp"
 
 	adaptertotp "github.com/techorionai/constellation-identity/internal/adapters/totp"
 	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/domain"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/securitynotices"
 	"github.com/techorionai/constellation-identity/resources/test/mock"
 )
 
@@ -35,6 +37,9 @@ type mfaEnv struct {
 	totp     adaptertotp.Service
 	cmd      *commands.MFA
 	require  bool
+	// writer replaces the mock audit writer when it is set. A test with the real
+	// writer uses it.
+	writer audit.Writer
 }
 
 func newMFAEnv(t *testing.T) *mfaEnv {
@@ -47,7 +52,7 @@ func newMFAEnv(t *testing.T) *mfaEnv {
 	m.addUser(userB, "b@example.com", domain.UserActive, "right password 1")
 	m.addUser(adminID, "admin@example.com", domain.UserActive, "right password 1")
 	m.roles.Perms[domain.AdminRole] = []string{domain.AdminPermission}
-	if err := m.roles.Assign(ctx, adminID, domain.AdminRole, domain.AssignmentAPI); err != nil {
+	if _, err := m.roles.Assign(ctx, adminID, domain.AdminRole, domain.AssignmentAPI); err != nil {
 		t.Fatal(err)
 	}
 	m.build(t)
@@ -58,7 +63,7 @@ func (m *mfaEnv) build(t *testing.T) {
 	t.Helper()
 	cmd, err := commands.NewMFA(commands.MFADeps{
 		Users: m.users, UserRoles: m.roles, Sessions: m.sessions, MFA: m.mfa, TOTP: m.totp, Sealer: mock.Sealer{},
-		Pending: m.pending, Setups: m.setups, Failures: m.failures, Limiter: m.limiter, Events: m.events, Tx: mock.Tx{},
+		Pending: m.pending, Setups: m.setups, Failures: m.failures, Limiter: m.limiter, Events: m.events, Audit: m.auditWriter(), Tx: mock.Tx{},
 		Policy: policy, RequireMFAForAdmins: m.require, Issuer: "Constellation", MaxFailures: 10, FailureWindow: 15 * time.Minute,
 		Log: slog.New(slog.NewTextHandler(discard{}, nil)), Now: m.clock,
 	})
@@ -404,17 +409,17 @@ func TestU14_RemoveRequired(t *testing.T) {
 func TestU20_RemoveSecurityEvents(t *testing.T) {
 	m := newMFAEnv(t)
 	m.enable(t, userA, "a@example.com")
-	if err := m.cmd.RemoveTOTP(ctx, commands.RemoveTOTP{UserID: userA, Actor: userA}); err != nil {
+	if err := m.cmd.RemoveTOTP(asUser(userA), commands.RemoveTOTP{UserID: userA, Actor: userA}); err != nil {
 		t.Fatal(err)
 	}
 	if len(m.events.Audits) != 1 || len(m.events.Notices) != 1 {
 		t.Fatalf("audits = %d, notices = %d", len(m.events.Audits), len(m.events.Notices))
 	}
 	a, n := m.events.Audits[0], m.events.Notices[0]
-	if a.Action != securityevents.ActionTotpRemove || a.TargetUserID != userA || a.Result != securityevents.ResultSuccess || a.Actor != userA {
+	if a.Action != commands.ActionTotpRemove || a.TargetUserID != userA || a.Result != "success" || a.Actor != userA {
 		t.Fatalf("audit = %+v", a)
 	}
-	if n.Kind != securityevents.NoticeTotpRemoved || n.TargetUserID != userA {
+	if n.Kind != securitynotices.NoticeTotpRemoved || n.TargetUserID != userA {
 		t.Fatalf("notice = %+v", n)
 	}
 	if st, _ := m.mfa.State(ctx, userA); st.Enabled() {
@@ -447,7 +452,7 @@ func TestU22_ResetSecurityEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.cmd.ResetMFA(ctx, commands.ResetMFA{UserID: userA, Actor: adminID}); err != nil {
+	if err := m.cmd.ResetMFA(asUser(adminID), commands.ResetMFA{UserID: userA, Actor: adminID}); err != nil {
 		t.Fatal(err)
 	}
 	if m.sessions.Rows[res.Session.SessionID].RevokedAt == nil {
@@ -456,15 +461,15 @@ func TestU22_ResetSecurityEvents(t *testing.T) {
 	if st, _ := m.mfa.State(ctx, userA); st.Enabled() {
 		t.Fatal("the factors must be removed")
 	}
-	if len(m.events.Audits) != 1 || m.events.Audits[0].Action != securityevents.ActionMfaReset || m.events.Audits[0].Actor != adminID ||
-		m.events.Audits[0].TargetUserID != userA || len(m.events.Notices) != 1 || m.events.Notices[0].Kind != securityevents.NoticeMfaReset {
+	if len(m.events.Audits) != 1 || m.events.Audits[0].Action != commands.ActionMfaReset || m.events.Audits[0].Actor != adminID ||
+		m.events.Audits[0].TargetUserID != userA || len(m.events.Notices) != 1 || m.events.Notices[0].Kind != securitynotices.NoticeMfaReset {
 		t.Fatalf("events = %+v %+v", m.events.Audits, m.events.Notices)
 	}
-	// The subcommand uses the actor cli, also for an admin that resets the own MFA.
-	if err := m.cmd.ResetMFA(ctx, commands.ResetMFA{UserID: adminID, Actor: securityevents.ActorCLI}); err != nil {
+	// The subcommand has no principal and the origin cli, also for an admin that resets the own MFA.
+	if err := m.cmd.ResetMFA(ctx, commands.ResetMFA{UserID: adminID, Operator: true}); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.events.Audits[1]; got.Actor != securityevents.ActorCLI || got.TargetUserID != adminID {
+	if got := m.events.Audits[1]; got.Actor != "" || got.Details["origin"] != commands.OriginCLI || got.TargetUserID != adminID {
 		t.Fatalf("cli audit = %+v", got)
 	}
 }
@@ -500,4 +505,12 @@ func TestU24_PortFailure(t *testing.T) {
 	if st, _ := m.mfa.State(ctx, userA); st.Enabled() {
 		t.Fatal("the removal must stay done")
 	}
+}
+
+// auditWriter returns the writer of the test. The default is the recorder.
+func (m *mfaEnv) auditWriter() audit.Writer {
+	if m.writer != nil {
+		return m.writer
+	}
+	return m.events
 }
