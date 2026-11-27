@@ -7,11 +7,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
+	"github.com/techorionai/constellation-platform-go/auth"
+
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/mfa"
 	"github.com/techorionai/constellation-identity/internal/ports/mfaflow"
 	"github.com/techorionai/constellation-identity/internal/ports/secretbox"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/securitynotices"
 )
 
 // MFA is an in-memory repository of the TOTP factors and the recovery codes.
@@ -301,29 +304,62 @@ func (Sealer) Open(userID string, sealed []byte) ([]byte, error) {
 	return append([]byte(nil), sealed[len(prefix):]...), nil
 }
 
-// Events is a recorder of the audit entries and the notices.
+// AuditRow is one audit entry that the mock writer recorded.
+type AuditRow struct {
+	Action string
+	// Actor is the ID of the principal in the context of the write. It is empty
+	// when the context has no principal.
+	Actor string
+	// TargetType and TargetUserID are the target of the entry. TargetUserID has
+	// the ID, also if the target is not a user.
+	TargetType   string
+	TargetUserID string
+	Result       string
+	Details      map[string]any
+}
+
+// Events is a recorder of the audit entries and the notices. It implements
+// audit.Writer and securitynotices.Notices.
 type Events struct {
 	mu      sync.Mutex
-	Audits  []securityevents.AuditEntry
-	Notices []securityevents.Notice
-	// Err is returned by both methods when it is set. The call is recorded first.
+	Audits  []AuditRow
+	Notices []securitynotices.Notice
+	// Err is returned by NotifyUser when it is set. The call is recorded first.
 	Err error
+	// AuditErr is returned by Write when it is set. The entry is not recorded.
+	AuditErr error
 }
 
-var _ securityevents.Events = (*Events)(nil)
-
-// RecordAudit records an entry.
-func (e *Events) RecordAudit(_ context.Context, a securityevents.AuditEntry) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.Audits = append(e.Audits, a)
-	return e.Err
-}
+var (
+	_ securitynotices.Notices = (*Events)(nil)
+	_ audit.Writer            = (*Events)(nil)
+)
 
 // NotifyUser records a notice.
-func (e *Events) NotifyUser(_ context.Context, n securityevents.Notice) error {
+func (e *Events) NotifyUser(_ context.Context, n securitynotices.Notice) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.Notices = append(e.Notices, n)
 	return e.Err
+}
+
+// Write records the entries.
+func (e *Events) Write(ctx context.Context, entries ...audit.Entry) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.AuditErr != nil {
+		return e.AuditErr
+	}
+	actor := ""
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		actor = p.ID
+	}
+	for _, en := range entries {
+		row := AuditRow{Action: en.Action, Actor: actor, Result: string(en.Result), Details: en.Details}
+		if en.Target != nil {
+			row.TargetType, row.TargetUserID = en.Target.Type, en.Target.ID
+		}
+		e.Audits = append(e.Audits, row)
+	}
+	return nil
 }
