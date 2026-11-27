@@ -131,8 +131,14 @@ func (c *ReplaceSetupTokenCommand) Execute(ctx context.Context, _ ReplaceSetupTo
 			if err := c.d.Tokens.DeleteUnusedSetup(ctx); err != nil {
 				return err
 			}
-			link, err = makeSetupToken(ctx, c.d, c.d.Now().UTC())
-			return err
+			now := c.d.Now().UTC()
+			link, err = makeSetupToken(ctx, c.d, now)
+			if err != nil {
+				return err
+			}
+			// The entry has the expiry time. It never has the link or the token.
+			return writeAudit(ctx, c.d.Audit, now, ActionSetupLinkNew, "", "",
+				originDetails(OriginCLI, map[string]any{"expiresAt": link.ExpiresAt.UTC().Format(time.RFC3339)}))
 		}, txName("replace_setup_token"))
 	})
 	if errors.Is(err, ErrAdminExists) {

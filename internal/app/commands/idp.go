@@ -647,7 +647,10 @@ func (i *Idp) continueLogin(ctx context.Context, in CallbackIdp, rec domain.IdpF
 		var err error
 		issued, err = sessionStarter{sessionIssuer{repo: i.d.Sessions, policy: i.d.Policy, now: i.d.Now}}.
 			start(ctx, userID, in.PreviousToken, in.UserAgent, in.IP, domain.MethodsFederated(), withUpstreamAuth(authTimeValid))
-		return err
+		if err != nil {
+			return err
+		}
+		return writeLoginSuccess(ctx, i.d.Audit, i.now(), userID, LoginMethodUpstream, "")
 	}, txName("login_upstream"))
 	if errors.Is(err, ErrIdpFailed) {
 		i.failed(ctx, in.Provider, domain.FlowLogin, IdpOutcomeNotLinked)

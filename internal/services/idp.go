@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/techorionai/constellation-platform-go/audit"
 	clientpg "github.com/techorionai/constellation-platform-go/clients/postgres"
 	platformsecrets "github.com/techorionai/constellation-platform-go/secrets"
 	secretspg "github.com/techorionai/constellation-platform-go/secrets/postgres"
+	"github.com/techorionai/constellation-platform-go/transaction"
+	transactionpg "github.com/techorionai/constellation-platform-go/transaction/postgres"
 
 	adapteroidc "github.com/techorionai/constellation-identity/internal/adapters/oidc"
 	adaptersecrets "github.com/techorionai/constellation-identity/internal/adapters/secrets"
+	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/config"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/idpsecrets"
@@ -89,7 +93,27 @@ func SetIdpSecret(ctx context.Context, cfg config.Config, provider, secret strin
 		return fmt.Errorf("master key: %w", err)
 	}
 	svc := platformsecrets.NewService(ring, secretspg.NewRepository(db.Pool))
-	if err := adaptersecrets.NewIdpSecrets(svc).PutClientSecret(ctx, provider, secret); err != nil {
+	// The command writes only the audit outbox row. The relay of a running
+	// service publishes it. The secret and the entry commit together. The entry
+	// never has the secret.
+	w, err := newAuditWriter()
+	if err != nil {
+		return err
+	}
+	err = transactionpg.NewTransactor(db.Pool).WithinTx(ctx, func(ctx context.Context) error {
+		if err := adaptersecrets.NewIdpSecrets(svc).PutClientSecret(ctx, provider, secret); err != nil {
+			return err
+		}
+		if err := w.Write(ctx, audit.Entry{
+			Action: commands.ActionIdpSecretSet, Result: audit.Success,
+			Target:  &audit.Target{Type: "idp_provider", ID: provider},
+			Details: map[string]any{"provider": provider, "origin": commands.OriginCLI},
+		}); err != nil {
+			return fmt.Errorf("write the audit entry: %w", err)
+		}
+		return nil
+	}, transaction.Name("set_idp_secret"))
+	if err != nil {
 		return err
 	}
 	log.InfoContext(ctx, "identity.idp.secret_stored", "event", "identity.idp.secret_stored", "provider", provider)

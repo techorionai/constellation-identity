@@ -84,6 +84,7 @@ func (m *mfaEnv) loginCmd(t *testing.T) *commands.LoginCommand {
 		Users: m.users, Session: m.sessions, Hasher: m.hasher, Limiter: m.limiter,
 		Limits: commands.LoginLimits{MaxFailuresPerEmail: 3, MaxFailuresPerIP: 50}, Policy: policy, Now: m.clock,
 		MFA: m.mfa, UserRoles: m.roles, Pending: m.pending, RequireMFAForAdmins: m.require,
+		Tx: mock.Tx{}, Audit: m.auditWriter(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -452,6 +453,8 @@ func TestU22_ResetSecurityEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The login wrote its entry. The test of the reset starts with no entry.
+	m.events.Audits = nil
 	if err := m.cmd.ResetMFA(asUser(adminID), commands.ResetMFA{UserID: userA, Actor: adminID}); err != nil {
 		t.Fatal(err)
 	}

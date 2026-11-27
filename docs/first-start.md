@@ -16,7 +16,7 @@ docker compose exec identity identity setup-link
 <IDENTITY_ISSUER>/setup?token=<value>
 ```
 
-Each run of `setup-link` deletes the unused setup tokens and makes a new one. Thus only the link of the last run works.
+Each run of `setup-link` deletes the unused setup tokens and makes a new one. Thus only the link of the last run works. Each run also writes the audit entry `identity:setup:link_create` with the actor `identity` and `details.origin` `cli`. The entry has the expiry time and never the link or the token.
 
 ## Make the first admin
 

@@ -11,7 +11,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/techorionai/constellation-platform-go/audit"
+	"github.com/techorionai/constellation-platform-go/auth"
 	"github.com/techorionai/constellation-platform-go/executor"
+	"github.com/techorionai/constellation-platform-go/transaction"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -71,6 +74,10 @@ type IssueServiceTokenDeps struct {
 	Signer      tokensigner.Signer
 	Parser      assertion.Parser
 	Log         *slog.Logger
+	// Tx and Audit write the audit entry of each token issue and of each denied
+	// request. A command with no writer issues no token.
+	Tx    transaction.Transactor
+	Audit audit.Writer
 	// Now is the clock. The default is time.Now.
 	Now func() time.Time
 	// NewID makes the jti of a token. The default is a random UUID.
@@ -114,6 +121,10 @@ func NewIssueServiceToken(d IssueServiceTokenDeps) (*IssueServiceTokenCommand, e
 type requestState struct {
 	clientID string
 	verified bool
+	// known is true if a client with clientID exists. authenticated is true
+	// after the client authentication works.
+	known         bool
+	authenticated bool
 }
 
 // Execute checks the request in the order of docs/tokens.md and signs the
@@ -127,6 +138,7 @@ func (c *IssueServiceTokenCommand) Execute(ctx context.Context, in IssueServiceT
 			code = oe.Code
 		}
 		c.errors.Add(ctx, 1, metric.WithAttributes(attribute.String("error", code)))
+		c.auditDenied(ctx, err, &st)
 		// The log record has the error code and the client ID. It never has
 		// the assertion, the form, or the cause text of a check.
 		field := "client.id_unverified"
@@ -144,6 +156,32 @@ func (c *IssueServiceTokenCommand) Execute(ctx context.Context, in IssueServiceT
 		attribute.String("grant_type", "client_credentials"),
 		attribute.String("principal_type", domain.PrincipalService)))
 	return res, nil
+}
+
+// auditDenied writes the denied entry of a refused request (decision D4). The
+// client ID is in the details only for a client that exists. The actor is the
+// client only after the client authentication worked.
+func (c *IssueServiceTokenCommand) auditDenied(ctx context.Context, err error, st *requestState) {
+	reason, ok := deniedCode(err)
+	if !ok {
+		return
+	}
+	details := map[string]any{"grant": "client_credentials"}
+	if st.known {
+		details["clientId"] = st.clientID
+	}
+	if st.authenticated {
+		ctx = asClient(ctx, st.clientID, auth.PrincipalService)
+	}
+	entryAuditor{tx: c.d.Tx, w: c.d.Audit, log: c.d.Log}.denied(ctx, "audit_token_denied", c.d.Now(), ActionTokenIssue, targetClient, targetIfKnown(st), reason, details)
+}
+
+// targetIfKnown returns the client ID of a known client, or an empty string.
+func targetIfKnown(st *requestState) string {
+	if st.known {
+		return st.clientID
+	}
+	return ""
 }
 
 func fail(code, description string, cause error) error {
@@ -172,6 +210,8 @@ func (c *IssueServiceTokenCommand) issue(ctx context.Context, in IssueServiceTok
 	if err != nil {
 		return IssueServiceTokenResult{}, err
 	}
+	st.authenticated = true
+	ctx = asClient(ctx, client.ID, auth.PrincipalService)
 	// The limit uses the client ID of the verified assertion, not the form value.
 	// One bucket counts the client credentials grant and the token exchange.
 	if err := oauthRateError(c.d.RateLimits.Check(ctx, ratelimit.BucketTokenClient, client.ID)); err != nil {
@@ -217,6 +257,15 @@ func (c *IssueServiceTokenCommand) issue(ctx context.Context, in IssueServiceTok
 		ExpiresIn:   int(domain.AccessTokenLifetime / time.Second),
 		Scope:       strings.Join(scopes, " "),
 	}
+	// The entry is written before the token leaves the service. A writer error
+	// gives no token. The entry has the jti and never the token text.
+	err = entryAuditor{tx: c.d.Tx, w: c.d.Audit, log: c.d.Log}.success(ctx, "audit_token_issue", now, ActionTokenIssue, targetClient, client.ID, map[string]any{
+		"grant": "client_credentials", "clientId": client.ID, "audience": in.Audience, "scopes": scopes,
+		"jti": token.JTI, "expiresAt": now.Add(domain.AccessTokenLifetime).UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return IssueServiceTokenResult{}, tokenAuditError(err)
+	}
 	return res, nil
 }
 
@@ -225,9 +274,18 @@ func (c *IssueServiceTokenCommand) issue(ctx context.Context, in IssueServiceTok
 // client, the key, the signature, the claims, and the one-time jti. The
 // revoke endpoint uses it too. Each failure is an *apperrors.OAuthError.
 func (c *IssueServiceTokenCommand) AuthenticateService(ctx context.Context, assertionType, assertionValue, formClientID string) (domain.Client, error) {
+	client, _, _, err := c.AuthenticateServiceState(ctx, assertionType, assertionValue, formClientID)
+	return client, err
+}
+
+// AuthenticateServiceState does the same as AuthenticateService. It also
+// returns the subject of the assertion and whether a client with that ID
+// exists. The denied audit entry of a caller uses them: a known client that
+// fails the authentication still gets its client ID in the entry.
+func (c *IssueServiceTokenCommand) AuthenticateServiceState(ctx context.Context, assertionType, assertionValue, formClientID string) (domain.Client, string, bool, error) {
 	var st requestState
 	if assertionType != domain.AssertionType || assertionValue == "" {
-		return domain.Client{}, fail(apperrors.OAuthInvalidRequest, "The client_assertion_type and the client_assertion are required.", nil)
+		return domain.Client{}, "", false, fail(apperrors.OAuthInvalidRequest, "The client_assertion_type and the client_assertion are required.", nil)
 	}
 	client, err := c.authenticate(ctx, assertionType, assertionValue, formClientID, false, &st)
 	if err != nil {
@@ -237,7 +295,7 @@ func (c *IssueServiceTokenCommand) AuthenticateService(ctx context.Context, asse
 		}
 		c.d.Log.WarnContext(ctx, "client authentication failed", "error_code", code, "client.id_unverified", truncate(st.clientID, 64))
 	}
-	return client, err
+	return client, st.clientID, st.known, err
 }
 
 func (c *IssueServiceTokenCommand) authenticate(ctx context.Context, assertionType, assertionValue, formClientID string, requireApp bool, st *requestState) (domain.Client, error) {
@@ -259,6 +317,7 @@ func (c *IssueServiceTokenCommand) authenticate(ctx context.Context, assertionTy
 	if err != nil {
 		return domain.Client{}, fail(apperrors.OAuthServerError, "The server has an internal error.", err)
 	}
+	st.known = true
 	if client.Disabled {
 		return domain.Client{}, fail(apperrors.OAuthInvalidClient, authFailed, errors.New("the client is disabled"))
 	}

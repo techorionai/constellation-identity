@@ -29,6 +29,18 @@ resources/test/                 mock, testserver, lint and image tests
 
 The `.golangci.yml` file has `depguard` rules for the import table of the guide. A handler calls `internal/app/` only. An adapter implements a port and does not import `internal/app/` or another adapter.
 
+## Signing key audit entries
+
+Each key change writes an audit entry in the same transaction as the row change. `createKey` stores the secret first. Then one transaction inserts the row and writes `identity:signing_key:create`. The activation writes `identity:signing_key:retire` for each old active key and `identity:signing_key:activate`, in the transaction of `Activate`. The delete of a retired row writes `identity:signing_key:delete`. The secret store call stays outside the transaction. The manager does not change a key if it has no audit writer.
+
+The forced rotation (`rotate-signing-keys --force`) does these steps in this order:
+
+1. It stores the new secret.
+2. One transaction writes the delete entries (with `forced` `true`), the create entry, and the `force_rotate` entry with the new `kid`. It deletes all rows and inserts the new active row.
+3. After the commit, it deletes the old secrets.
+
+If the transaction fails, the old keys stay, and the next pass deletes the new secret that has no row. If the delete of a secret fails after the commit, the next pass deletes the secrets that have no row.
+
 ## Ports
 
 | Port | Package | Implementation |

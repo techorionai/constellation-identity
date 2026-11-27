@@ -373,6 +373,11 @@ func (m *MFA) FinishPasskeyLogin(ctx context.Context, in PasskeyLogin) (Verified
 	if err != nil {
 		return VerifiedLogin{}, fmt.Errorf("get the user: %w", err)
 	}
+	// A failure after the user is known gets a denied entry with the user as target.
+	refuseKnown := func(outcome string) (VerifiedLogin, error) {
+		loginDenied(ctx, m.d.Tx, m.d.Audit, m.d.Log, m.now(), user.ID, LoginMethodPasskey, "", outcome)
+		return refuse(outcome)
+	}
 	wu, err := m.webauthnUser(ctx, user)
 	if err != nil {
 		return VerifiedLogin{}, err
@@ -380,15 +385,15 @@ func (m *MFA) FinishPasskeyLogin(ctx context.Context, in PasskeyLogin) (Verified
 	// The user handle of the response and the user of the credential must be the
 	// same user. A disabled user cannot log in.
 	if string(handle) != string(wu.Handle) || user.Status != domain.UserActive {
-		return refuse(CeremonyOutcomeUnknownCredential)
+		return refuseKnown(CeremonyOutcomeUnknownCredential)
 	}
 	res, err := m.d.WebAuthn.FinishLogin(ctx, cer.State, in.Body, wu, portCredential(cred))
 	if err != nil {
-		return refuse(ceremonyOutcome(err))
+		return refuseKnown(ceremonyOutcome(err))
 	}
 	if !domain.SignCountAccepted(cred.SignCount, res.SignCount) {
 		m.cloneWarning(ctx, user.ID)
-		return refuse(CeremonyOutcomeCloneWarning)
+		return refuseKnown(CeremonyOutcomeCloneWarning)
 	}
 	var issued IssuedSession
 	errNotAdvanced := errors.New("the sign count was not advanced")
@@ -402,11 +407,14 @@ func (m *MFA) FinishPasskeyLogin(ctx context.Context, in PasskeyLogin) (Verified
 		}
 		issued, err = sessionStarter{sessionIssuer{repo: m.d.Sessions, policy: m.d.Policy, now: m.d.Now}}.
 			start(ctx, user.ID, in.PreviousToken, in.UserAgent, in.IP, domain.MethodsPasskeyLogin())
-		return err
+		if err != nil {
+			return err
+		}
+		return writeLoginSuccess(ctx, m.d.Audit, m.now(), user.ID, LoginMethodPasskey, "")
 	}, txName("passkey_login"))
 	if errors.Is(err, errNotAdvanced) {
 		m.cloneWarning(ctx, user.ID)
-		return refuse(CeremonyOutcomeCloneWarning)
+		return refuseKnown(CeremonyOutcomeCloneWarning)
 	}
 	if err != nil {
 		return VerifiedLogin{}, err
@@ -517,6 +525,7 @@ func (m *MFA) FinishPasskeySecondFactor(ctx context.Context, in PasskeySecondFac
 	bad := func(outcome string) (VerifiedLogin, error) {
 		m.ceremony(ctx, CeremonyTypeSecondFactor, outcome)
 		m.count(ctx, methodHWK, MFAOutcomeBadCode)
+		loginDenied(ctx, m.d.Tx, m.d.Audit, m.d.Log, m.now(), p.UserID, firstFactorMethod(p), mfaPasskey, ReasonMFAFailed)
 		m.d.Log.InfoContext(ctx, "identity.mfa.failed", "event", "identity.mfa.failed", "user_id", p.UserID, "method", methodHWK, "outcome", outcome)
 		if n >= MaxPendingAttempts {
 			_ = m.d.Pending.Delete(ctx, hash)
@@ -572,7 +581,10 @@ func (m *MFA) FinishPasskeySecondFactor(ctx context.Context, in PasskeySecondFac
 		issued, err = sessionStarter{sessionIssuer{repo: m.d.Sessions, policy: m.d.Policy, now: m.d.Now}}.
 			start(ctx, p.UserID, in.PreviousToken, in.UserAgent, in.IP,
 				domain.WithSecondFactor(p.Methods, domain.PasskeyFactor(res.UserVerified)...))
-		return err
+		if err != nil {
+			return err
+		}
+		return writeLoginSuccess(ctx, m.d.Audit, m.now(), p.UserID, firstFactorMethod(p), mfaPasskey)
 	}, txName("verify_passkey_second_factor"))
 	if errors.Is(err, errNotAdvanced) {
 		m.cloneWarning(ctx, p.UserID)

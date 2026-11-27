@@ -56,6 +56,7 @@ func issueWithLimits(t *testing.T, f *fixture, rl *commands.RateLimits) *command
 		JTI:       f.jti, Keys: fakeKeySource{key: tokensigner.Key{KID: "sig-1", Private: f.sign}},
 		Signer: jose.Signer{}, Parser: jose.AssertionParser{},
 		Log: slog.New(slog.DiscardHandler), Now: func() time.Time { return now }, RateLimits: rl,
+		Tx: mock.Tx{}, Audit: f.ev,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -162,6 +163,7 @@ func TestIssue13_TokenExchangeSharesTokenClientBucket(t *testing.T) {
 		Log: slog.New(slog.DiscardHandler), Now: func() time.Time { return now },
 		NewID:      func() string { n++; return fmt.Sprintf("x-%d", n) },
 		RateLimits: newLimits(t, rl),
+		Tx:         mock.Tx{}, Audit: e.ev,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -277,7 +279,7 @@ func TestIssue13_U15_LoginIPKey(t *testing.T) {
 func TestIssue13_UnlockLogin(t *testing.T) {
 	l := mock.NewLimiter()
 	l.Emails["a@example.com"] = 6
-	cmd := commands.NewUnlockLogin(l, nil)
+	cmd := commands.NewUnlockLogin(l, nil).WithAudit(mock.NewUsers(), mock.Tx{}, &mock.Events{})
 	got, err := cmd.Execute(ctx, commands.UnlockLogin{Email: "  A@Example.COM "})
 	if err != nil || !got {
 		t.Fatalf("got %v, err %v, want unlocked", got, err)

@@ -87,8 +87,9 @@ func (e *exchangeEnv) newCommand(t *testing.T) *commands.TokenExchangeCommand {
 		Users:     e.users, UserRoles: e.roles, Agents: e.agents, AgentRoles: e.aroles,
 		Keys:   keySet{t: t, f: e.fixture, key: tokensigner.Key{KID: "sig-1", Private: e.sign}},
 		Signer: jose.Signer{}, Verifier: jose.Verifier{},
-		Log:   slog.New(slog.NewTextHandler(e.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		Now:   func() time.Time { return now },
+		Log: slog.New(slog.NewTextHandler(e.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Now: func() time.Time { return now },
+		Tx:  mock.Tx{}, Audit: e.ev,
 		NewID: func() string { n++; return fmt.Sprintf("exchanged-%d", n) },
 	})
 	if err != nil {

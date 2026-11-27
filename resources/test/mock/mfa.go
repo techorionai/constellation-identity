@@ -316,6 +316,8 @@ type AuditRow struct {
 	TargetUserID string
 	Result       string
 	Details      map[string]any
+	// Time is the time of the entry. It is zero if the writer sets it.
+	Time time.Time
 }
 
 // Events is a recorder of the audit entries and the notices. It implements
@@ -355,7 +357,7 @@ func (e *Events) Write(ctx context.Context, entries ...audit.Entry) error {
 		actor = p.ID
 	}
 	for _, en := range entries {
-		row := AuditRow{Action: en.Action, Actor: actor, Result: string(en.Result), Details: en.Details}
+		row := AuditRow{Action: en.Action, Actor: actor, Result: string(en.Result), Details: en.Details, Time: en.Time}
 		if en.Target != nil {
 			row.TargetType, row.TargetUserID = en.Target.Type, en.Target.ID
 		}
