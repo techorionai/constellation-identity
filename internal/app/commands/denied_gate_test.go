@@ -169,7 +169,8 @@ func TestU13_GateIPv6Keys(t *testing.T) {
 	f := gateFixture(t, rl, nil, nil)
 	badRequest(t, f, fromIP("2001:db8:1:1::1"))
 	calls := rl.CallsOf(ratelimit.BucketTokenDenied)
-	if len(calls) != 2 || calls[0].Key != "2001:db8:1::/48" || calls[1].Key != "2001:db8:1:1::/64" {
+	if len(calls) != 2 || calls[0].Key != "2001:db8:1::/48" || calls[0].Limit != 30*commands.CoarseFactor ||
+		calls[1].Key != "2001:db8:1:1::/64" || calls[1].Limit != 30 {
 		t.Fatalf("calls = %+v", calls)
 	}
 	if g := rl.CallsOf(ratelimit.BucketTokenDeniedGlobal); len(g) != 1 || g[0].Key != "all" {
@@ -177,14 +178,17 @@ func TestU13_GateIPv6Keys(t *testing.T) {
 	}
 }
 
-// U14: a context with no client IP uses the key unknown.
+// U14: a context with no client IP makes no IP key. Only the global bucket
+// applies, so all such clients do not share one IP key.
 func TestU14_GateNoIP(t *testing.T) {
 	rl := &mock.RateLimiter{}
 	f := gateFixture(t, rl, nil, nil)
 	badRequest(t, f, context.Background())
-	calls := rl.CallsOf(ratelimit.BucketTokenDenied)
-	if len(calls) != 1 || calls[0].Key != "unknown" || countDenied(f) != 1 {
-		t.Fatalf("calls = %+v, entries = %d", calls, countDenied(f))
+	if n := len(rl.CallsOf(ratelimit.BucketTokenDenied)) + len(rl.CallsOf(ratelimit.BucketTokenDeniedDaily)); n != 0 {
+		t.Fatalf("IP calls = %d, want 0", n)
+	}
+	if g := rl.CallsOf(ratelimit.BucketTokenDeniedGlobal); len(g) != 1 || countDenied(f) != 1 {
+		t.Fatalf("global calls = %+v, entries = %d", g, countDenied(f))
 	}
 }
 

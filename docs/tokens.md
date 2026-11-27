@@ -75,7 +75,7 @@ A request that fails with `invalid_client`, `invalid_grant` (also a refresh toke
 
 ## Logs
 
-The assertion, the token, and the form body never go to a log, a span, or an error text. A failed request writes one `warn` record with `error_code` and the client ID. The field is `client.id` after the signature check passed, and `client.id_unverified` before. Metrics: `identity.tokens.issued` (attributes `grant_type`, `principal_type`) and `identity.token.errors` (attribute `error`). A denied entry that the gate does not write adds 1 to `identity.audit.denied_dropped` (attributes `action` and `reason`, no ID). The gate writes the log record `identity.audit.denied_dropped` a maximum of one time each minute for each reason.
+The assertion, the token, and the form body never go to a log, a span, or an error text. A failed request writes one `warn` record with `error_code` and the client ID. The field is `client.id` after the signature check passed, and `client.id_unverified` before. Metrics: `identity.tokens.issued` (attributes `grant_type`, `principal_type`) and `identity.token.errors` (attribute `error`). A denied entry that the gate does not write adds 1 to `identity.audit.denied_dropped` (attributes `action` and `reason`, no ID). The gate writes the log record `identity.audit.denied_dropped` a maximum of one time each minute for each action and reason.
 
 ## The `/v1` API
 

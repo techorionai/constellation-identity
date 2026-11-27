@@ -11,8 +11,9 @@ import (
 
 // RateCall is one call of RateLimiter.Allow.
 type RateCall struct {
-	Rule string
-	Key  string
+	Rule  string
+	Key   string
+	Limit int64
 }
 
 // RateLimiter is an in-memory rate limiter. It allows each call, unless Deny
@@ -36,7 +37,7 @@ var _ ratelimit.Limiter = (*RateLimiter)(nil)
 func (l *RateLimiter) Allow(_ context.Context, rule ratelimit.Rule, key string) (ratelimit.Decision, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.Calls = append(l.Calls, RateCall{Rule: rule.Name, Key: key})
+	l.Calls = append(l.Calls, RateCall{Rule: rule.Name, Key: key, Limit: rule.Limit})
 	if l.Err != nil {
 		return ratelimit.Decision{}, errors.Join(errors.New("rate limiter"), l.Err)
 	}

@@ -42,6 +42,7 @@ func TestU3_RateLimitDefaults(t *testing.T) {
 		"token_denied":        {30, time.Minute},
 		"token_denied_daily":  {1000, 24 * time.Hour},
 		"token_denied_global": {100000, 24 * time.Hour},
+		"token_denied_client": {600, time.Hour},
 	}
 	if len(rules) != len(want) || len(ratelimit.Buckets()) != len(want) {
 		t.Fatalf("rules = %v", rules)

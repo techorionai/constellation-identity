@@ -88,3 +88,42 @@ func TestU12_TwoTotals(t *testing.T) {
 		t.Fatalf("allowed = %d, refused = %d, want 150 and 50", allowed, refused)
 	}
 }
+
+// R6: a full table is scanned at most one time each second.
+func TestR6_FullTableScanInterval(t *testing.T) {
+	now := time.Unix(1000, 0)
+	l := fallback.New(1, time.Minute, 10, fallback.WithClock(func() time.Time { return now }))
+	for i := range 10 {
+		if !l.Allow(fmt.Sprintf("k%d", i)) {
+			t.Fatalf("key %d must pass", i)
+		}
+	}
+	now = now.Add(59500 * time.Millisecond)
+	if l.Allow("new") {
+		t.Fatal("a new key must not pass when the table is full of live keys")
+	}
+	now = now.Add(700 * time.Millisecond) // the old keys ended, the last scan is 0.7 s old
+	if l.Allow("new") {
+		t.Fatal("the table must not be scanned again within one second")
+	}
+	now = now.Add(400 * time.Millisecond)
+	if !l.Allow("new") {
+		t.Fatal("a new key must pass after the scan")
+	}
+}
+
+// AllowTotal uses the totals only. AllowKey uses the key only.
+func TestAllowTotalAndKey(t *testing.T) {
+	l := fallback.New(1, time.Minute, 10, fallback.WithTotal(2, time.Minute))
+	for i, want := range []bool{true, true, false} {
+		if got := l.AllowTotal(); got != want {
+			t.Fatalf("total call %d = %v, want %v", i, got, want)
+		}
+	}
+	if l.Keys() != 0 {
+		t.Fatalf("keys = %d, want 0", l.Keys())
+	}
+	if !l.AllowKey("a") || l.AllowKey("a") || !l.AllowKey("b") {
+		t.Fatal("key limit")
+	}
+}

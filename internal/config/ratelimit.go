@@ -45,6 +45,7 @@ type RateLimit struct {
 	TokenDenied       RateBucket `envPrefix:"TOKEN_DENIED__"`
 	TokenDeniedDaily  RateBucket `envPrefix:"TOKEN_DENIED_DAILY__"`
 	TokenDeniedGlobal RateBucket `envPrefix:"TOKEN_DENIED_GLOBAL__"`
+	TokenDeniedClient RateBucket `envPrefix:"TOKEN_DENIED_CLIENT__"`
 }
 
 // DefaultRateRules returns the default rules of all buckets.
@@ -68,6 +69,7 @@ func DefaultRateRules() map[string]ratelimit.Rule {
 		ratelimit.BucketTokenDenied:       {Name: ratelimit.BucketTokenDenied, Limit: 30, Window: time.Minute},
 		ratelimit.BucketTokenDeniedDaily:  {Name: ratelimit.BucketTokenDeniedDaily, Limit: 1000, Window: 24 * time.Hour},
 		ratelimit.BucketTokenDeniedGlobal: {Name: ratelimit.BucketTokenDeniedGlobal, Limit: 100000, Window: 24 * time.Hour},
+		ratelimit.BucketTokenDeniedClient: {Name: ratelimit.BucketTokenDeniedClient, Limit: 600, Window: time.Hour},
 	}
 }
 
@@ -91,6 +93,7 @@ func (r RateLimit) buckets() map[string]RateBucket {
 		ratelimit.BucketTokenDenied:       r.TokenDenied,
 		ratelimit.BucketTokenDeniedDaily:  r.TokenDeniedDaily,
 		ratelimit.BucketTokenDeniedGlobal: r.TokenDeniedGlobal,
+		ratelimit.BucketTokenDeniedClient: r.TokenDeniedClient,
 	}
 }
 

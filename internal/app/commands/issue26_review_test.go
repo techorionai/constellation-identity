@@ -129,7 +129,7 @@ type oidcRig struct {
 	sess    *mock.Sessions
 }
 
-func newOIDCRig(t *testing.T) *oidcRig {
+func newOIDCRig(t *testing.T, opts ...func(*commands.OIDCDeps)) *oidcRig {
 	t.Helper()
 	e := newExchangeEnv(t)
 	r := &oidcRig{exchangeEnv: e, sess: mock.NewSessions(), codes: &memCodes{codes: map[string]domain.AuthCode{}, used: map[string]domain.UsedCode{}}}
@@ -138,12 +138,16 @@ func newOIDCRig(t *testing.T) *oidcRig {
 		IdleExpiresAt: now.Add(time.Hour), ExpiresAt: now.Add(2 * time.Hour),
 	}
 	r.refresh = &memRefresh{sessions: r.sess, families: map[string]domain.RefreshFamily{}, tokens: map[string]domain.RefreshToken{}}
-	o, err := commands.NewOIDC(commands.OIDCDeps{
+	deps := commands.OIDCDeps{
 		Issuer: issuer, Clients: e.clients, Users: e.users, UserRoles: e.roles, Sessions: r.sess, Refresh: r.refresh,
 		Codes: r.codes, Keys: keySet{t: t, f: e.fixture, key: tokensigner.Key{KID: "sig-1", Private: e.sign}},
 		Signer: jose.Signer{}, Verifier: jose.Verifier{}, Tx: mock.Tx{}, Audit: e.ev,
 		Now: func() time.Time { return now }, Log: slog.New(slog.NewTextHandler(&strings.Builder{}, nil)),
-	})
+	}
+	for _, opt := range opts {
+		opt(&deps)
+	}
+	o, err := commands.NewOIDC(deps)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ package services_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -91,6 +92,13 @@ func TestIssue29Integration(t *testing.T) {
 		return testserver.TokenForm(g.a.Assertion(t, wrong, nil), "identity", "identity:manifest:publish")
 	}
 
+	// unknown makes a bad request for a client ID that does not exist. The
+	// request of bad names the registered client demo with a wrong key.
+	unknown := func(g *fixture) url.Values {
+		nobody := testserver.NewServiceClient(t, "nobody", "demo")
+		return testserver.TokenForm(g.a.Assertion(t, nobody, nil), "identity", "identity:manifest:publish")
+	}
+
 	// I1: more bad requests than the limit of one IP. The responses do not
 	// change. The entries stop at the limit. The counter has the drops.
 	t.Run("I1_token_denied_limit", func(t *testing.T) {
@@ -120,7 +128,7 @@ func TestIssue29Integration(t *testing.T) {
 		}))
 		for _, ip := range []string{"203.0.113.1", "203.0.113.2"} {
 			for range 3 {
-				if status, body := postTokenFrom(t, g.a.Server, bad(g), ip); status != http.StatusUnauthorized || !strings.Contains(body, "invalid_client") {
+				if status, body := postTokenFrom(t, g.a.Server, unknown(g), ip); status != http.StatusUnauthorized || !strings.Contains(body, "invalid_client") {
 					t.Fatalf("%s: %d %s", ip, status, body)
 				}
 			}
@@ -146,12 +154,12 @@ func TestIssue29Integration(t *testing.T) {
 				"redirect_uri": {"https://app.example.com/cb"}, "code_verifier": {strings.Repeat("a", 50)},
 			}
 			resp, body := g.a.PostToken(t, code)
-			if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusBadRequest {
+			if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(body), "invalid_client") {
 				t.Fatalf("code: %d %s", resp.StatusCode, body)
 			}
 			refresh := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {"random-refresh-token"}, "client_id": {"unknown-client"}}
 			resp, body = g.a.PostToken(t, refresh)
-			if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusBadRequest {
+			if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), `"error":"invalid_grant"`) {
 				t.Fatalf("refresh: %d %s", resp.StatusCode, body)
 			}
 		}
@@ -163,13 +171,38 @@ func TestIssue29Integration(t *testing.T) {
 		}
 	})
 
+	// I5: an attacker uses up the global bucket with unknown clients. The entries
+	// of a registered client still pass, and its own bucket limits them.
+	t.Run("I5_registered_client_bucket", func(t *testing.T) {
+		g, _ := withOwnValkey(t, h, trusted, testserver.WithRateLimits(map[string]ratelimit.Rule{
+			ratelimit.BucketTokenDeniedGlobal: {Limit: 2, Window: time.Hour},
+			ratelimit.BucketTokenDeniedClient: {Limit: 3, Window: time.Hour},
+		}))
+		for i := range 5 {
+			if status, body := postTokenFrom(t, g.a.Server, unknown(g), fmt.Sprintf("203.0.113.%d", i+1)); status != http.StatusUnauthorized || !strings.Contains(body, "invalid_client") {
+				t.Fatalf("unknown %d: %d %s", i, status, body)
+			}
+		}
+		if n := deniedTokenEntries(t, g); n != 2 {
+			t.Fatalf("entries after the flood = %d, want 2", n)
+		}
+		for i := range 5 {
+			if status, body := postTokenFrom(t, g.a.Server, bad(g), fmt.Sprintf("203.0.113.%d", i+20)); status != http.StatusUnauthorized || !strings.Contains(body, "invalid_client") {
+				t.Fatalf("registered %d: %d %s", i, status, body)
+			}
+		}
+		if n := deniedTokenEntries(t, g); n != 5 {
+			t.Fatalf("entries = %d, want 2 + 3", n)
+		}
+	})
+
 	// I4: with the rate limits off, the in-process limit of 10 entries for each
 	// IP applies.
 	t.Run("I4_rate_limits_off", func(t *testing.T) {
 		before := deniedDropCount(t, "fallback_limit")
 		g, _ := withOwnValkey(t, h, testserver.WithConfigure(func(c *config.Config) { c.RateLimit.Enabled = false }))
 		for i := range 15 {
-			resp, body := g.a.PostToken(t, bad(g))
+			resp, body := g.a.PostToken(t, unknown(g))
 			if resp.StatusCode != http.StatusUnauthorized {
 				t.Fatalf("request %d: %d %s", i, resp.StatusCode, body)
 			}

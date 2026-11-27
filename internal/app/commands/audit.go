@@ -201,9 +201,10 @@ func (a entryAuditor) success(ctx context.Context, name string, at time.Time, ac
 
 // denied writes an entry with the result denied. A writer error is logged and
 // does not change the response, because the request changed nothing. The log
-// record has the action and the reason only.
+// record has the action and the reason only. For a token entry, targetID is the
+// ID of a registered client, or an empty string. The gate uses it.
 func (a entryAuditor) denied(ctx context.Context, name string, at time.Time, action, targetType, targetID, reason string, details map[string]any) {
-	if name == tokenDeniedTx && !a.gate.Allow(ctx, action) {
+	if name == tokenDeniedTx && !a.gate.Allow(ctx, action, targetID) {
 		return
 	}
 	d := make(map[string]any, len(details)+1)
