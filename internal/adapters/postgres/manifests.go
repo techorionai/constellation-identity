@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	clientspg "github.com/techorionai/constellation-platform-go/clients/postgres"
 
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/manifests"
@@ -37,7 +38,17 @@ type querier interface {
 func (r *Manifests) Publish(ctx context.Context, m domain.Manifest, publishedBy string) (domain.PublishedManifest, error) {
 	hash := m.Hash()
 	now := r.now().UTC()
-	tx, err := r.pool.Begin(ctx)
+	// With a transaction in the context, the work is a savepoint in it, so the
+	// caller can write the audit entry in the same transaction.
+	var (
+		tx  pgx.Tx
+		err error
+	)
+	if outer, ok := clientspg.TxFromContext(ctx); ok {
+		tx, err = outer.Begin(ctx)
+	} else {
+		tx, err = r.pool.Begin(ctx)
+	}
 	if err != nil {
 		return domain.PublishedManifest{}, fmt.Errorf("begin: %w", err)
 	}
@@ -86,6 +97,7 @@ func (r *Manifests) Publish(ctx context.Context, m domain.Manifest, publishedBy 
 	if err := tx.Commit(ctx); err != nil {
 		return domain.PublishedManifest{}, fmt.Errorf("commit: %w", err)
 	}
+	out.Changed = true
 	return out, nil
 }
 

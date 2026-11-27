@@ -13,7 +13,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
+	auditpg "github.com/techorionai/constellation-platform-go/audit/postgres"
 	"github.com/techorionai/constellation-platform-go/auth/jwt"
+	"github.com/techorionai/constellation-platform-go/clientinfo"
 	clientpg "github.com/techorionai/constellation-platform-go/clients/postgres"
 	clientvk "github.com/techorionai/constellation-platform-go/clients/valkey"
 	"github.com/techorionai/constellation-platform-go/decorators"
@@ -22,9 +25,12 @@ import (
 	healthvk "github.com/techorionai/constellation-platform-go/health/valkey"
 	"github.com/techorionai/constellation-platform-go/migrate"
 	migratepg "github.com/techorionai/constellation-platform-go/migrate/postgres"
+	"github.com/techorionai/constellation-platform-go/outbox"
 	"github.com/techorionai/constellation-platform-go/requestid"
 	platformsecrets "github.com/techorionai/constellation-platform-go/secrets"
 	secretspg "github.com/techorionai/constellation-platform-go/secrets/postgres"
+	"github.com/techorionai/constellation-platform-go/transaction"
+	transactionpg "github.com/techorionai/constellation-platform-go/transaction/postgres"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -152,21 +158,27 @@ func newOptions(opts []Option) options {
 
 // App is a running service.
 type App struct {
-	cfg    config.Config
-	log    *slog.Logger
-	db     *clientpg.Client
-	kv     *clientvk.Client
-	pgChk  *healthpg.Checker
-	state  *health.State
-	adminL net.Listener
-	admin  *http.Server
-	pubL   net.Listener
-	pub    *http.Server
-	mgr    *keys.Manager
-	limits *commands.RateLimits
-	cache  *keys.Cache
-	verify *jwt.Verifier
-	reg    metric.Registration
+	cfg   config.Config
+	log   *slog.Logger
+	db    *clientpg.Client
+	kv    *clientvk.Client
+	pgChk *healthpg.Checker
+	// audit writes the audit entries in the transaction of a change. tx is the
+	// transactor of all use cases. auditRelay moves the audit outbox rows to the
+	// audit stream.
+	audit      audit.Writer
+	tx         transaction.Transactor
+	auditRelay *outbox.Relay
+	state      *health.State
+	adminL     net.Listener
+	admin      *http.Server
+	pubL       net.Listener
+	pub        *http.Server
+	mgr        *keys.Manager
+	limits     *commands.RateLimits
+	cache      *keys.Cache
+	verify     *jwt.Verifier
+	reg        metric.Registration
 	// ring is the key ring of the secrets. The TOTP sealer uses it.
 	ring *platformsecrets.KeyRing
 	// secrets is the secrets service. The client secrets of the upstream
@@ -284,15 +296,27 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 	}
 	migrated.Store(true)
 
+	// Make the audit writer and the audit relay. The own manifest publish and
+	// the sync of the clients file write audit entries, so they come first.
+	a.tx = transactionpg.NewTransactor(a.db.Pool)
+	rawAudit, err := newAuditWriter()
+	if err != nil {
+		return nil, err
+	}
+	if a.auditRelay, err = newAuditRelay(a.db.Pool, a.kv); err != nil {
+		return nil, err
+	}
+	a.audit = notifyWriter{inner: rawAudit, tx: a.tx, relay: a.auditRelay}
+
 	// Publish the own manifest before the public server starts, so that the
 	// roles of the identity service exist before the first request.
 	clientRepo := postgres.NewClients(a.db.Pool)
 	manifestRepo := postgres.NewManifests(a.db.Pool)
 	publish := decorators.ApplyTracing(decorators.ApplyLogging(
-		commands.NewPublishManifest(manifestRepo, clientRepo, log), "PublishManifest",
+		commands.NewPublishManifest(manifestRepo, clientRepo, log).WithAudit(a.tx, a.audit), "PublishManifest",
 		decorators.WithLogger(log), decorators.WithErrorLevel(errorLevel)), "PublishManifest")
 	// The publish of the HTTP API has the rate limit. The own publish does not.
-	publishAPI := newPublishAPI(manifestRepo, clientRepo, limits, log)
+	publishAPI := newPublishAPI(manifestRepo, clientRepo, limits, a.tx, a.audit, log)
 	if _, err := publish.Execute(ctx, commands.PublishManifest{
 		Manifest: ownManifest, PublishedBy: domain.IdentityApp, Internal: true,
 	}); err != nil {
@@ -342,10 +366,15 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		defer a.retentionWG.Done()
 		_ = users.retention.Run(retentionCtx)
 	}()
+	a.retentionWG.Add(1)
+	go func() {
+		defer a.retentionWG.Done()
+		_ = a.auditRelay.Run(retentionCtx)
+	}()
 
 	// 5. Sync the clients file.
 	syncClients := decorators.ApplyTracingNoResult(decorators.ApplyLoggingNoResult[commands.SyncClients](
-		commands.NewSyncClients(clientRepo, log), "SyncClients"), "SyncClients")
+		commands.NewSyncClients(clientRepo, log).WithAudit(a.tx, a.audit, postgres.NewClientRoles(a.db.Pool)), "SyncClients"), "SyncClients")
 	if err := syncClients.Execute(ctx, commands.SyncClients{Clients: clientConfigs}); err != nil {
 		return nil, fmt.Errorf("sync the clients file: %w", err)
 	}
@@ -416,12 +445,14 @@ func Start(ctx context.Context, cfg config.Config, opts ...Option) (_ *App, err 
 		ListManifests: listManifests, GetManifest: getManifest, ListRoles: listRoles, GetRole: getRole,
 		ExchangeCode: users.exchangeCode, RefreshTokens: users.refreshTokens, RevokeToken: users.revokeToken, UserInfo: users.userInfo,
 		Admin: users.admin, IdentityLinks: users.identityLinks, APITokens: users.apiTokens, Introspect: introspect, CreateUser: users.createUser, CreateInvite: users.createInvite, CORSOrigins: users.cors, MFA: users.mfa, Now: o.clock,
-		Verifier: a.verify, Scopes: scopes, Log: log, RateLimits: limits, TrustedProxies: trustedProxies,
+		Verifier: a.verify, Scopes: scopes, Log: log, RateLimits: limits,
+		Denied: commands.NewDeniedAudit(a.tx, a.audit),
 	})
 	// RedactToken is outside the tracing handler, so no span has a secret value
 	// of the query. RestoreQuery puts the real query back for the router.
 	handler := pages.RedactToken(otelhttp.NewHandler(
-		requestid.Middleware()(pages.LogRedirects(log)(pages.RestoreQuery(publicHandler(api.Handler(), users.pages.Routes())))), "identity"))
+		requestid.Middleware()(clientinfo.Middleware(clientinfo.Config{TrustedProxies: trustedProxies})(
+			pages.LogRedirects(log)(pages.RestoreQuery(publicHandler(api.Handler(), users.pages.Routes()))))), "identity"))
 	if a.pubL, err = (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.HTTP.Addr); err != nil {
 		return nil, fmt.Errorf("listen on the public address: %w", err)
 	}
@@ -552,9 +583,18 @@ func (a *App) release(ctx context.Context) {
 	})
 }
 
-// RunMigrations runs the migrations of the secrets store, then the migrations
-// of the service.
+// RunMigrations runs the migrations of the audit outbox, the migrations of the
+// secrets store, then the migrations of the service.
 func RunMigrations(ctx context.Context, db *clientpg.Client) error {
+	auditMigrator, err := migratepg.NewMigrator(db.Pool, auditpg.Migrations(),
+		migratepg.MigratorOptions{MigrationsTable: auditpg.MigrationsTable})
+	if err != nil {
+		return fmt.Errorf("make the audit migrator: %w", err)
+	}
+	if _, err := migrate.Run(ctx, migratepg.NewLocker(db.Pool, auditpg.MigrationsTable), auditMigrator,
+		migrate.Options{Name: auditpg.MigrationsTable}); err != nil {
+		return fmt.Errorf("run the audit migrations: %w", err)
+	}
 	secretsMigrator, err := migratepg.NewMigrator(db.Pool, secretspg.Migrations(),
 		migratepg.MigratorOptions{MigrationsTable: secretspg.MigrationsTable})
 	if err != nil {

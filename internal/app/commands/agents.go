@@ -92,7 +92,13 @@ func (a *Admin) CreateAgent(ctx context.Context, actor, name, clientID string) (
 	}
 	now := a.agentNow()
 	ag := domain.Agent{ID: newUUID(), Name: n, ClientID: c.ID, Enabled: true, CreatedAt: now, UpdatedAt: now}
-	if err := a.d.Agents.Create(ctx, ag); errors.Is(err, agents.ErrNameTaken) {
+	err = a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if err := a.d.Agents.Create(ctx, ag); err != nil {
+			return err
+		}
+		return writeAudit(ctx, a.d.Audit, now, ActionAgentCreate, targetAgent, ag.ID, map[string]any{"clientId": c.ID})
+	}, txName("create_agent"))
+	if errors.Is(err, agents.ErrNameTaken) {
 		return domain.Agent{}, errAgentNameTaken()
 	} else if err != nil {
 		return domain.Agent{}, fmt.Errorf("create the agent: %w", err)
@@ -118,7 +124,21 @@ func (a *Admin) UpdateAgent(ctx context.Context, actor, id string, name *string,
 		}
 		name = &n
 	}
-	ag, err = a.d.Agents.Patch(ctx, ag.ID, name, enabled, a.agentNow())
+	var fields []string
+	if name != nil {
+		fields = append(fields, "name")
+	}
+	if enabled != nil {
+		fields = append(fields, "enabled")
+	}
+	err = a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		var err error
+		ag, err = a.d.Agents.Patch(ctx, ag.ID, name, enabled, a.agentNow())
+		if err != nil {
+			return err
+		}
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionAgentUpdate, targetAgent, ag.ID, map[string]any{"fields": fields})
+	}, txName("update_agent"))
 	if errors.Is(err, agents.ErrNameTaken) {
 		return domain.Agent{}, errAgentNameTaken()
 	} else if errors.Is(err, agents.ErrNotFound) {
@@ -161,7 +181,13 @@ func (a *Admin) AssignAgentRole(ctx context.Context, actor, agentID string, ref 
 	if err := a.roleExists(ctx, ref); err != nil {
 		return domain.RoleAssignment{}, err
 	}
-	if err := a.d.AgentRoles.Assign(ctx, ag.ID, ref, domain.AssignmentAPI); err != nil {
+	err = a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if err := a.d.AgentRoles.Assign(ctx, ag.ID, ref, domain.AssignmentAPI); err != nil {
+			return err
+		}
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionAgentRoleAssign, targetAgent, ag.ID, map[string]any{"role": ref.String()})
+	}, txName("assign_agent_role"))
+	if err != nil {
 		return domain.RoleAssignment{}, err
 	}
 	a.LogChange(ctx, actor, "AgentRoles_assign", ag.ID)
@@ -183,7 +209,15 @@ func (a *Admin) RemoveAgentRole(ctx context.Context, actor, agentID string, ref 
 	if err != nil {
 		return err
 	}
-	deleted, err := a.d.AgentRoles.Delete(ctx, ag.ID, ref)
+	deleted := false
+	err = a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		var err error
+		deleted, err = a.d.AgentRoles.Delete(ctx, ag.ID, ref)
+		if err != nil || !deleted {
+			return err
+		}
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionAgentRoleRemove, targetAgent, ag.ID, map[string]any{"role": ref.String()})
+	}, txName("remove_agent_role"))
 	if err != nil {
 		return err
 	}

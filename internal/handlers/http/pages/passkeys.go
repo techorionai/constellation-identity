@@ -277,7 +277,7 @@ func (h *Handler) passkeyRegisterFinish(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	added, err := h.d.MFA.FinishPasskeyRegistration(r.Context(), commands.FinishPasskey{
+	added, err := h.d.MFA.FinishPasskeyRegistration(sessionContext(r, res.User.ID), commands.FinishPasskey{
 		SessionID: res.Session.ID, UserID: res.User.ID, SessionMethods: res.Session.AuthMethods, Body: body,
 	})
 	if err != nil {
@@ -304,7 +304,7 @@ func (h *Handler) passkeyRename(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, err := h.d.MFA.RenamePasskey(r.Context(), commands.RenamePasskey{
+	_, err := h.d.MFA.RenamePasskey(sessionContext(r, res.User.ID), commands.RenamePasskey{
 		UserID: res.User.ID, PasskeyID: r.PathValue("id"), Name: r.PostForm.Get("name"), Actor: res.User.ID,
 	})
 	switch {
@@ -329,7 +329,7 @@ func (h *Handler) passkeyRemove(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	err := h.d.MFA.RemovePasskey(r.Context(), commands.RemovePasskey{
+	err := h.d.MFA.RemovePasskey(sessionContext(r, res.User.ID), commands.RemovePasskey{
 		UserID: res.User.ID, PasskeyID: r.PathValue("id"), Actor: res.User.ID,
 	})
 	switch {

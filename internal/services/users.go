@@ -23,7 +23,7 @@ import (
 	adapterjose "github.com/techorionai/constellation-identity/internal/adapters/jose"
 	"github.com/techorionai/constellation-identity/internal/adapters/postgres"
 	adaptersecrets "github.com/techorionai/constellation-identity/internal/adapters/secrets"
-	adaptersecurityevents "github.com/techorionai/constellation-identity/internal/adapters/securityevents"
+	adaptersecuritynotices "github.com/techorionai/constellation-identity/internal/adapters/securitynotices"
 	adaptertotp "github.com/techorionai/constellation-identity/internal/adapters/totp"
 	adaptervalkey "github.com/techorionai/constellation-identity/internal/adapters/valkey"
 	adapterwebauthn "github.com/techorionai/constellation-identity/internal/adapters/webauthn"
@@ -33,7 +33,6 @@ import (
 	"github.com/techorionai/constellation-identity/internal/config"
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/handlers/http/pages"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
 	"github.com/techorionai/constellation-identity/internal/ports/users"
 	portwebauthn "github.com/techorionai/constellation-identity/internal/ports/webauthn"
 )
@@ -112,15 +111,13 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	if err != nil {
 		return nil, fmt.Errorf("make the password hasher: %w", err)
 	}
-	trusted, err := cfg.HTTP.TrustedProxyPrefixes()
-	if err != nil {
-		return nil, fmt.Errorf("%sHTTP__TRUSTED_PROXIES: %w", config.Prefix, err)
-	}
 	tokens := postgres.NewOneTimeTokens(pool)
 	userRepo := postgres.NewUsers(pool)
 	roles := postgres.NewUserRoles(pool)
 	sessionRepo := postgres.NewSessions(pool)
-	tx := transactionpg.NewTransactor(pool)
+	tx := a.tx
+	auditW := a.audit
+	notices := adaptersecuritynotices.NewLogOnly(log)
 	limiter := adaptervalkey.NewLoginLimiter(a.kv.Raw, a.kv.Keys, cfg.Login.FailureWindow)
 	policy := cfg.Session.Policy()
 	clock := o.clock
@@ -134,11 +131,11 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 
 	setupDeps := commands.SetupDeps{
 		Issuer: cfg.Issuer, TTL: cfg.Setup.TTL, Tokens: tokens, Roles: roles, Users: userRepo,
-		Session: sessionRepo, Hasher: hasher, Tx: tx, Policy: policy, Log: log, Now: clock,
+		Session: sessionRepo, Hasher: hasher, Tx: tx, Audit: auditW, Policy: policy, Log: log, Now: clock,
 	}
 	inviteDeps := commands.InviteDeps{
 		Issuer: cfg.Issuer, TTL: cfg.Invite.TTL, Tokens: tokens, Users: userRepo,
-		Session: sessionRepo, Hasher: hasher, Tx: tx, Policy: policy, Log: log, Now: clock,
+		Session: sessionRepo, Hasher: hasher, Tx: tx, Audit: auditW, Policy: policy, Log: log, Now: clock,
 	}
 	mfaRepo := postgres.NewMFA(pool)
 	mfaFlow := adaptervalkey.NewMFAFlow(store)
@@ -185,7 +182,7 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		Sealer: adaptersecrets.NewSealer(a.ring), Pending: mfaFlow.Pending(), Setups: mfaFlow.Setups(),
 		Passkeys: passkeyRepo, WebAuthn: webauthnService, Ceremonies: mfaFlow.Ceremonies(), PasskeysOn: passkeysOn,
 		Links: linkRepo, APITokens: apiTokenRepo, ProviderOn: providerOn,
-		Failures: mfaFlow.FailureCounter(), Limiter: limiter, Events: adaptersecurityevents.NewLogOnly(log), Tx: tx,
+		Failures: mfaFlow.FailureCounter(), Limiter: limiter, Events: notices, Audit: auditW, Tx: tx,
 		Policy: policy, RequireMFAForAdmins: cfg.MFA.RequireForAdmins, Issuer: cfg.MFA.TOTPIssuer,
 		MaxFailures: int64(cfg.MFA.MaxFailuresPerUser), FailureWindow: cfg.MFA.FailureWindow, Log: log, Now: clock,
 	})
@@ -196,17 +193,16 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	st.admin = commands.NewAdmin(commands.AdminDeps{
 		Users: userRepo, UserRoles: roles, Sessions: sessionRepo, Clients: clientRepo,
 		ClientRoles: postgres.NewClientRoles(pool), Agents: postgres.NewAgents(pool), AgentRoles: postgres.NewAgentRoles(pool), Manifests: postgres.NewManifests(pool), Tokens: tokens,
-		Refresh: refreshRepo, APITokens: apiTokenRepo, Lock: postgres.NewAdminLock(pool), Tx: tx, Log: log, Now: clock,
+		Refresh: refreshRepo, APITokens: apiTokenRepo, Lock: postgres.NewAdminLock(pool), Tx: tx, Audit: auditW, Log: log, Now: clock,
 		MFA: mfaRepo, Links: linkRepo, PasskeysOn: passkeysOn, ProviderOn: providerOn,
 	})
-	events := adaptersecurityevents.NewLogOnly(log)
 	st.identityLinks = commands.NewIdentityLinks(commands.IdentityLinksDeps{
-		Users: userRepo, Links: linkRepo, Sessions: sessionRepo, APITokens: apiTokenRepo, MFA: mfaRepo, Events: events, Tx: tx,
+		Users: userRepo, Links: linkRepo, Sessions: sessionRepo, APITokens: apiTokenRepo, MFA: mfaRepo, Events: notices, Audit: auditW, Tx: tx,
 		PasskeysOn: passkeysOn, ProviderOn: providerOn, Log: log, Now: clock,
 	})
 	idpCmd, err := commands.NewIdp(commands.IdpDeps{
 		Client: idpClient, Flows: adaptervalkey.NewIdpFlow(store), Links: linkRepo, Users: userRepo, Sessions: sessionRepo,
-		Tokens: tokens, MFA: mfaRepo, UserRoles: roles, Pending: mfaFlow.Pending(), Factors: mfaCmd, Remover: st.identityLinks, Events: events, Tx: tx, Policy: policy,
+		Tokens: tokens, MFA: mfaRepo, UserRoles: roles, Pending: mfaFlow.Pending(), Factors: mfaCmd, Remover: st.identityLinks, Events: notices, Audit: auditW, Tx: tx, Policy: policy,
 		LookupAuthRequest: oidc.LookupAuthRequest, PasskeysOn: passkeysOn, RequireMFAForAdmins: cfg.MFA.RequireForAdmins,
 		Timeout: cfg.IDP.HTTPTimeout, Log: log, Now: clock,
 	})
@@ -214,10 +210,10 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		return nil, err
 	}
 	st.idp, st.links, st.providers, st.passkeysOn = idpCmd, linkRepo, providers, passkeysOn
-	setPassword := commands.NewSetPassword(commands.SetPasswordDeps{Users: userRepo, Hasher: hasher, Tx: tx, Events: events, Log: log, Now: clock})
+	setPassword := commands.NewSetPassword(commands.SetPasswordDeps{Users: userRepo, Hasher: hasher, Tx: tx, Events: notices, Audit: auditW, Log: log, Now: clock})
 	st.apiTokenRepo, st.userRoles = apiTokenRepo, roles
 	st.apiTokens = commands.NewAPITokens(commands.APITokensDeps{
-		Tokens: apiTokenRepo, Users: userRepo, UserRoles: roles, Tx: tx, Log: log, Now: clock, RateLimits: a.limits,
+		Tokens: apiTokenRepo, Users: userRepo, UserRoles: roles, Tx: tx, Audit: auditW, Log: log, Now: clock, RateLimits: a.limits,
 		Settings: commands.APITokenSettings{
 			DefaultTTLDays: cfg.APIToken.DefaultTTLDays, MaxTTLDays: cfg.APIToken.MaxTTLDays, MaxPerUser: cfg.APIToken.MaxPerUser,
 		},
@@ -260,7 +256,6 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 		ConfirmEndSession: decorators.ApplyTracingNoResult(decorators.ApplyLoggingNoResult[string](executor.Func[string](oidc.ConfirmEndSession), "ConfirmEndSession", decorators.WithLogger(log), decorators.WithErrorLevel(userErrorLevel)), "ConfirmEndSession"),
 		Now:               clock,
 		Issuer:            cfg.Issuer,
-		TrustedProxies:    trusted,
 		RateLimits:        a.limits,
 		Log:               log,
 	})
@@ -273,13 +268,18 @@ func (a *App) buildUsers(o options) (*userStack, error) {
 	if err != nil {
 		return nil, fmt.Errorf("make the retention locker: %w", err)
 	}
-	st.retention, err = retention.NewRunner(locker, []retention.Job{
+	auditJobs, err := auditRetentionJobs(pool, a.kv, cfg.Retention.AuditOutbox, cfg.Retention.AuditStream, config.DefaultRetentionPeriod)
+	if err != nil {
+		return nil, err
+	}
+	jobs := []retention.Job{
 		{Name: "one_time_tokens", Config: cfg.Retention.Tokens, DefaultPeriod: config.DefaultRetentionPeriod, Purger: postgres.NewTokenPurger(pool)},
 		{Name: "sessions", Config: cfg.Retention.Sessions, DefaultPeriod: config.DefaultRetentionPeriod, Purger: postgres.NewSessionPurger(pool)},
 		{Name: "refresh_tokens", Config: cfg.Retention.RefreshTokens, DefaultPeriod: config.DefaultRetentionPeriod, Purger: postgres.NewRefreshTokenPurger(pool)},
 		{Name: "refresh_token_families", Config: cfg.Retention.RefreshTokenFamilies, DefaultPeriod: config.DefaultRetentionPeriod, Purger: postgres.NewRefreshFamilyPurger(pool)},
 		{Name: "api_tokens", Config: cfg.Retention.APITokens, DefaultPeriod: config.DefaultRetentionPeriod, Purger: postgres.NewAPITokenPurger(pool)},
-	}, retention.RunnerOptions{After: o.retentionAfter})
+	}
+	st.retention, err = retention.NewRunner(locker, append(jobs, auditJobs...), retention.RunnerOptions{After: o.retentionAfter})
 	if err != nil {
 		return nil, fmt.Errorf("make the retention runner: %w", err)
 	}
@@ -423,17 +423,25 @@ func ResetMFA(ctx context.Context, cfg config.Config, email string, log *slog.Lo
 	if err != nil {
 		return fmt.Errorf("find the user: %w", err)
 	}
+	tx := transactionpg.NewTransactor(db.Pool)
+	// The service identity is the actor, because the subcommand has no principal.
+	// Details.origin tells the entry from an automatic action. The relay of the
+	// running service moves the row to the audit stream.
+	cliAudit, err := newAuditWriter()
+	if err != nil {
+		return err
+	}
 	providers := cfg.IDP.Providers()
 	cmd, err := commands.NewMFA(commands.MFADeps{
 		Users: userRepo, Sessions: postgres.NewSessions(db.Pool), MFA: postgres.NewMFA(db.Pool),
 		Passkeys: postgres.NewPasskeys(db.Pool), Links: postgres.NewIdentityLinks(db.Pool),
 		APITokens:  postgres.NewAPITokens(db.Pool),
 		ProviderOn: func(p string) bool { return slices.Contains(providers, p) },
-		Events:     adaptersecurityevents.NewLogOnly(log), Tx: transactionpg.NewTransactor(db.Pool), Log: log,
+		Events:     adaptersecuritynotices.NewLogOnly(log), Audit: cliAudit, Tx: tx, Log: log,
 	})
 	if err != nil {
 		return err
 	}
 	// The operator has a path around the rule "last login method".
-	return cmd.ResetMFA(ctx, commands.ResetMFA{UserID: u.ID, Actor: securityevents.ActorCLI, Operator: true})
+	return cmd.ResetMFA(ctx, commands.ResetMFA{UserID: u.ID, Operator: true})
 }

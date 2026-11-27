@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
 	"github.com/techorionai/constellation-platform-go/transaction"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -22,7 +23,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/ports/passkeys"
 	"github.com/techorionai/constellation-identity/internal/ports/passwordhasher"
 	"github.com/techorionai/constellation-identity/internal/ports/secretbox"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/securitynotices"
 	"github.com/techorionai/constellation-identity/internal/ports/sessions"
 	"github.com/techorionai/constellation-identity/internal/ports/totp"
 	"github.com/techorionai/constellation-identity/internal/ports/userroles"
@@ -109,9 +110,12 @@ type MFADeps struct {
 	Setups     mfaflow.SetupSecrets
 	Failures   mfaflow.Failures
 	Limiter    loginlimiter.Limiter
-	Events     securityevents.Events
-	Tx         transaction.Transactor
-	Policy     domain.SessionPolicy
+	// Events sends the security notices. Audit writes the audit entries in the
+	// transaction of the change.
+	Events securitynotices.Notices
+	Audit  audit.Writer
+	Tx     transaction.Transactor
+	Policy domain.SessionPolicy
 	// RequireMFAForAdmins is the setting IDENTITY_MFA__REQUIRE_FOR_ADMINS.
 	RequireMFAForAdmins bool
 	// Issuer is the issuer name in the authenticator app.
@@ -409,8 +413,8 @@ func (m *MFA) releaseFailure(ctx context.Context, userID string) {
 // This can mean that someone knows the password.
 func (m *MFA) notifyLimit(ctx context.Context, userID string) {
 	m.d.Log.WarnContext(ctx, "identity.mfa.limit_reached", "event", "identity.mfa.limit_reached", "user_id", userID)
-	if err := m.d.Events.NotifyUser(ctx, securityevents.Notice{Kind: securityevents.NoticeMfaLimited, TargetUserID: userID, At: m.now()}); err != nil {
-		m.d.Log.ErrorContext(ctx, "identity.security_notice.failed", "event", "identity.security_notice.failed", "kind", securityevents.NoticeMfaLimited, "error", err)
+	if err := m.d.Events.NotifyUser(ctx, securitynotices.Notice{Kind: securitynotices.NoticeMfaLimited, TargetUserID: userID, At: m.now()}); err != nil {
+		m.d.Log.ErrorContext(ctx, "identity.security_notice.failed", "event", "identity.security_notice.failed", "kind", securitynotices.NoticeMfaLimited, "error", err)
 	}
 }
 
@@ -756,7 +760,10 @@ func (m *MFA) RemoveTOTP(ctx context.Context, in RemoveTOTP) error {
 		if _, err := m.d.MFA.RemoveAll(ctx, in.UserID); err != nil {
 			return err
 		}
-		return m.d.Sessions.DropSecondFactor(ctx, in.UserID)
+		if err := m.d.Sessions.DropSecondFactor(ctx, in.UserID); err != nil {
+			return err
+		}
+		return writeAudit(ctx, m.d.Audit, m.now(), ActionTotpRemove, targetUser, in.UserID, nil)
 	}, txName("remove_totp"))
 	if errors.Is(err, ErrTOTPNotFound) || errors.Is(err, ErrMFARequired) {
 		return err
@@ -768,14 +775,14 @@ func (m *MFA) RemoveTOTP(ctx context.Context, in RemoveTOTP) error {
 		return fmt.Errorf("remove the factors: %w", err)
 	}
 	m.d.Log.InfoContext(ctx, "identity.mfa.removed", "event", "identity.mfa.removed", "user_id", in.UserID)
-	m.securityEvent(ctx, securityevents.ActionTotpRemove, securityevents.NoticeTotpRemoved, in.Actor, in.UserID)
+	m.notify(ctx, securitynotices.NoticeTotpRemoved, in.UserID)
 	return nil
 }
 
 // ResetMFA is the input of the reset of the MFA of a user.
 type ResetMFA struct {
 	UserID string
-	// Actor is the ID of the admin, or securityevents.ActorCLI for the subcommand.
+	// Actor is the ID of the admin. It is empty for the subcommand. The audit\n	// actor is the principal of the context, not this field.
 	Actor string
 	// Operator is true for the subcommand. It skips the rule "last login method",
 	// so the operator has a way back into the service. The use case logs the
@@ -840,7 +847,14 @@ func (m *MFA) ResetMFA(ctx context.Context, in ResetMFA) error {
 		if _, err := m.d.Sessions.RevokeAllOfUser(ctx, in.UserID, m.now()); err != nil {
 			return err
 		}
-		return m.revokeAPITokens(ctx, in.UserID, domain.AMRHardwareKey)
+		if err := m.revokeAPITokens(ctx, in.UserID, domain.AMRHardwareKey); err != nil {
+			return err
+		}
+		origin := ""
+		if in.Operator {
+			origin = OriginCLI
+		}
+		return writeAudit(ctx, m.d.Audit, m.now(), ActionMfaReset, targetUser, in.UserID, originDetails(origin, nil))
 	}, txName("reset_mfa"))
 	if errors.Is(err, ErrLastLoginMethod) {
 		return ErrLastLoginMethod
@@ -852,20 +866,14 @@ func (m *MFA) ResetMFA(ctx context.Context, in ResetMFA) error {
 		m.d.Log.WarnContext(ctx, "identity.mfa.reset_last_login_method", "event", "identity.mfa.reset_last_login_method", "user_id", in.UserID)
 	}
 	m.d.Log.InfoContext(ctx, "identity.mfa.reset", "event", "identity.mfa.reset", "user_id", in.UserID)
-	m.securityEvent(ctx, securityevents.ActionMfaReset, securityevents.NoticeMfaReset, in.Actor, in.UserID)
+	m.notify(ctx, securitynotices.NoticeMfaReset, in.UserID)
 	return nil
 }
 
-// securityEvent writes the audit entry and sends the notice. A failure of the
-// port is logged. It does not undo the change.
-func (m *MFA) securityEvent(ctx context.Context, action, notice, actor, target string) {
-	now := m.now()
-	if err := m.d.Events.RecordAudit(ctx, securityevents.AuditEntry{
-		Action: action, Actor: actor, TargetUserID: target, Result: securityevents.ResultSuccess, At: now,
-	}); err != nil {
-		m.d.Log.ErrorContext(ctx, "identity.audit.failed", "event", "identity.audit.failed", "action", action, "error", err)
-	}
-	if err := m.d.Events.NotifyUser(ctx, securityevents.Notice{Kind: notice, TargetUserID: target, At: now}); err != nil {
-		m.d.Log.ErrorContext(ctx, "identity.security_notice.failed", "event", "identity.security_notice.failed", "kind", notice, "error", err)
+// notify sends the notice. A failure of the port is logged. It does not undo the
+// change.
+func (m *MFA) notify(ctx context.Context, kind, target string) {
+	if err := m.d.Events.NotifyUser(ctx, securitynotices.Notice{Kind: kind, TargetUserID: target, At: m.now()}); err != nil {
+		m.d.Log.ErrorContext(ctx, "identity.security_notice.failed", "event", "identity.security_notice.failed", "kind", kind, "error", err)
 	}
 }

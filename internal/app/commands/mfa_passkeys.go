@@ -15,7 +15,7 @@ import (
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/mfaflow"
 	"github.com/techorionai/constellation-identity/internal/ports/passkeys"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/securitynotices"
 	"github.com/techorionai/constellation-identity/internal/ports/sessions"
 	"github.com/techorionai/constellation-identity/internal/ports/users"
 	"github.com/techorionai/constellation-identity/internal/ports/webauthn"
@@ -258,9 +258,11 @@ func (m *MFA) FinishPasskeyRegistration(ctx context.Context, in FinishPasskey) (
 			return err
 		}
 		if !domain.HasMFA(in.SessionMethods) {
-			return m.d.Sessions.SetMethods(ctx, in.SessionID, withPasskeyMethods(in.SessionMethods))
+			if err := m.d.Sessions.SetMethods(ctx, in.SessionID, withPasskeyMethods(in.SessionMethods)); err != nil {
+				return err
+			}
 		}
-		return nil
+		return writeAudit(ctx, m.d.Audit, m.now(), ActionPasskeyAdd, targetUser, in.UserID, map[string]any{"passkeyId": pk.ID})
 	}, txName("finish_passkey_registration"))
 	switch {
 	case errors.Is(err, ErrCeremonyGone):
@@ -276,7 +278,7 @@ func (m *MFA) FinishPasskeyRegistration(ctx context.Context, in FinishPasskey) (
 	}
 	m.ceremony(ctx, CeremonyTypeRegister, CeremonyOutcomeOK)
 	m.d.Log.InfoContext(ctx, "identity.passkey.registered", "event", "identity.passkey.registered", "user_id", in.UserID)
-	m.securityEvent(ctx, securityevents.ActionPasskeyAdd, securityevents.NoticePasskeyAdded, in.UserID, in.UserID)
+	m.notify(ctx, securitynotices.NoticePasskeyAdded, in.UserID)
 	return PasskeyAdded{Passkey: pk.Passkey, AuthRequest: cer.AuthRequest, ReturnTo: cer.ReturnTo}, nil
 }
 
@@ -652,7 +654,14 @@ func (m *MFA) RenamePasskey(ctx context.Context, in RenamePasskey) (domain.Passk
 	if err := domain.ValidatePasskeyName(in.Name); err != nil {
 		return domain.Passkey{}, err
 	}
-	old, err := m.d.Passkeys.Rename(ctx, in.UserID, in.PasskeyID, in.Name)
+	err = m.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		old, err := m.d.Passkeys.Rename(ctx, in.UserID, in.PasskeyID, in.Name)
+		if err != nil {
+			return err
+		}
+		return writeAudit(ctx, m.d.Audit, m.now(), ActionPasskeyRename, targetUser, in.UserID,
+			map[string]any{"passkeyId": in.PasskeyID, "oldName": old, "newName": in.Name})
+	}, txName("rename_passkey"))
 	if errors.Is(err, passkeys.ErrNotFound) {
 		return domain.Passkey{}, ErrPasskeyNotFound
 	}
@@ -660,13 +669,6 @@ func (m *MFA) RenamePasskey(ctx context.Context, in RenamePasskey) (domain.Passk
 		return domain.Passkey{}, fmt.Errorf("rename the passkey: %w", err)
 	}
 	pk.Name = in.Name
-	if err := m.d.Events.RecordAudit(ctx, securityevents.AuditEntry{
-		Action: securityevents.ActionPasskeyRename, Actor: in.Actor, TargetUserID: in.UserID,
-		Result: securityevents.ResultSuccess, At: m.now(),
-		Changes: map[string]string{"old_name": old, "new_name": in.Name},
-	}); err != nil {
-		m.d.Log.ErrorContext(ctx, "identity.audit.failed", "event", "identity.audit.failed", "action", securityevents.ActionPasskeyRename, "error", err)
-	}
 	return pk, nil
 }
 
@@ -728,7 +730,10 @@ func (m *MFA) RemovePasskey(ctx context.Context, in RemovePasskey) error {
 		if _, err := m.d.Sessions.RevokeWithMethod(ctx, in.UserID, domain.AMRHardwareKey, m.now()); err != nil {
 			return err
 		}
-		return m.revokeAPITokens(ctx, in.UserID, domain.AMRHardwareKey)
+		if err := m.revokeAPITokens(ctx, in.UserID, domain.AMRHardwareKey); err != nil {
+			return err
+		}
+		return writeAudit(ctx, m.d.Audit, m.now(), ActionPasskeyRemove, targetUser, in.UserID, map[string]any{"passkeyId": in.PasskeyID})
 	}, txName("remove_passkey"))
 	if errors.Is(err, ErrMFARequired) {
 		return ErrMFARequired
@@ -746,6 +751,6 @@ func (m *MFA) RemovePasskey(ctx context.Context, in RemovePasskey) error {
 		return fmt.Errorf("remove the passkey: %w", err)
 	}
 	m.d.Log.InfoContext(ctx, "identity.passkey.removed", "event", "identity.passkey.removed", "user_id", in.UserID)
-	m.securityEvent(ctx, securityevents.ActionPasskeyRemove, securityevents.NoticePasskeyRemoved, in.Actor, in.UserID)
+	m.notify(ctx, securitynotices.NoticePasskeyRemoved, in.UserID)
 	return nil
 }

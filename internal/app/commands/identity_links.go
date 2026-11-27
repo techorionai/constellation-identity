@@ -7,13 +7,14 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
 	"github.com/techorionai/constellation-platform-go/transaction"
 
 	"github.com/techorionai/constellation-identity/internal/domain"
 	"github.com/techorionai/constellation-identity/internal/ports/apitokens"
 	"github.com/techorionai/constellation-identity/internal/ports/identitylinks"
 	"github.com/techorionai/constellation-identity/internal/ports/mfa"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/securitynotices"
 	"github.com/techorionai/constellation-identity/internal/ports/sessions"
 	"github.com/techorionai/constellation-identity/internal/ports/users"
 )
@@ -32,7 +33,8 @@ type IdentityLinksDeps struct {
 	Sessions  sessions.Repository
 	APITokens apitokens.Repository
 	MFA       mfa.Repository
-	Events    securityevents.Events
+	Events    securitynotices.Notices
+	Audit     audit.Writer
 	Tx        transaction.Transactor
 	// PasskeysOn is true when the service accepts passkeys. ProviderOn tells if a
 	// provider is on.
@@ -214,7 +216,7 @@ func (l *IdentityLinks) Remove(ctx context.Context, in RemoveIdentityLink) error
 				return err
 			}
 		}
-		return nil
+		return writeAudit(ctx, l.d.Audit, now, ActionLinkRemove, targetUser, u.ID, map[string]any{"provider": in.Provider})
 	}, txName("remove_identity_link"))
 	if errors.Is(err, ErrUserNotFound) || errors.Is(err, ErrIdentityLinkNotFound) || errors.Is(err, ErrLastLoginMethod) ||
 		errors.Is(err, ErrLocalFactorMissing) || errors.Is(err, ErrLocalFactorRequired) {
@@ -224,25 +226,17 @@ func (l *IdentityLinks) Remove(ctx context.Context, in RemoveIdentityLink) error
 		return fmt.Errorf("remove the link: %w", err)
 	}
 	l.d.Log.InfoContext(ctx, "identity.idp.unlinked", "event", "identity.idp.unlinked", "user_id", in.UserID, "provider", in.Provider)
-	recordLinkEvent(ctx, l.d.Events, l.d.Log, securityevents.ActionIdentityLinkRemove,
-		securityevents.NoticeIdentityLinkRemoved, in.Actor, in.UserID, in.Provider, l.now())
+	notifyLink(ctx, l.d.Events, l.d.Log, securitynotices.NoticeIdentityLinkRemoved, in.UserID, l.now())
 	return nil
 }
 
-// recordLinkEvent writes the audit entry and sends the notice of a change of a
-// link. A failure is logged and does not undo the change. The entry has the
-// provider and no subject and no email.
-func recordLinkEvent(ctx context.Context, ev securityevents.Events, log *slog.Logger, action, notice, actor, target, provider string, at time.Time) {
+// notifyLink sends the notice of a change of a link. A failure is logged and does
+// not undo the change.
+func notifyLink(ctx context.Context, ev securitynotices.Notices, log *slog.Logger, notice, target string, at time.Time) {
 	if ev == nil {
 		return
 	}
-	if err := ev.RecordAudit(ctx, securityevents.AuditEntry{
-		Action: action, Actor: actor, TargetUserID: target, Result: securityevents.ResultSuccess, At: at,
-		Changes: map[string]string{"provider": provider},
-	}); err != nil {
-		log.ErrorContext(ctx, "identity.audit.failed", "event", "identity.audit.failed", "action", action, "error", err)
-	}
-	if err := ev.NotifyUser(ctx, securityevents.Notice{Kind: notice, TargetUserID: target, At: at}); err != nil {
+	if err := ev.NotifyUser(ctx, securitynotices.Notice{Kind: notice, TargetUserID: target, At: at}); err != nil {
 		log.ErrorContext(ctx, "identity.security_notice.failed", "event", "identity.security_notice.failed", "kind", notice, "error", err)
 	}
 }

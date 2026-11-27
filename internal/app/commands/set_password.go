@@ -7,10 +7,11 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
 	"github.com/techorionai/constellation-platform-go/transaction"
 
 	"github.com/techorionai/constellation-identity/internal/ports/passwordhasher"
-	"github.com/techorionai/constellation-identity/internal/ports/securityevents"
+	"github.com/techorionai/constellation-identity/internal/ports/securitynotices"
 	"github.com/techorionai/constellation-identity/internal/ports/users"
 )
 
@@ -23,8 +24,10 @@ type SetPasswordDeps struct {
 	Users  users.Repository
 	Hasher passwordhasher.Hasher
 	Tx     transaction.Transactor
-	// Events writes the audit entry and sends the notice. A nil value does neither.
-	Events securityevents.Events
+	// Events sends the notice. A nil value sends none. Audit writes the audit
+	// entry in the transaction of the change.
+	Events securitynotices.Notices
+	Audit  audit.Writer
 	Log    *slog.Logger
 	// Now is the clock. The default is time.Now.
 	Now Clock
@@ -50,8 +53,11 @@ type SetPassword struct {
 	UserID   string
 	Password string
 	// Actor is the ID of the principal that sets the password. It is the user
-	// for the hosted page.
+	// for the hosted page. The audit actor is the principal of the context.
 	Actor string
+	// Origin is OriginPasswordLink when a one-time link starts the flow. It is
+	// empty when a session of the user starts it.
+	Origin string
 }
 
 // Execute checks the password rules, hashes the password, and stores the hash
@@ -69,7 +75,10 @@ func (c *SetPasswordCommand) Execute(ctx context.Context, in SetPassword) error 
 		if u.PasswordHash != "" {
 			return ErrPasswordSet
 		}
-		return c.d.Users.SetPasswordHash(ctx, in.UserID, hash, c.d.Now().UTC())
+		if err := c.d.Users.SetPasswordHash(ctx, in.UserID, hash, c.d.Now().UTC()); err != nil {
+			return err
+		}
+		return writeAudit(ctx, c.d.Audit, c.d.Now().UTC(), ActionPasswordSet, targetUser, in.UserID, originDetails(in.Origin, nil))
 	}, txName("set_password"))
 	if errors.Is(err, ErrPasswordSet) {
 		return err
@@ -82,24 +91,15 @@ func (c *SetPasswordCommand) Execute(ctx context.Context, in SetPassword) error 
 	return nil
 }
 
-// record writes the audit entry and sends the notice of a new password. A
-// first password is a new login method (VISION sections 7 and 11). A failure is
-// logged and does not undo the change.
+// record sends the notice of a new password. A first password is a new login
+// method (VISION sections 7 and 11). A failure is logged and does not undo the
+// change.
 func (c *SetPasswordCommand) record(ctx context.Context, in SetPassword) {
 	if c.d.Events == nil {
 		return
 	}
-	actor := in.Actor
-	if actor == "" {
-		actor = in.UserID
-	}
 	at := c.d.Now().UTC().Truncate(time.Microsecond)
-	if err := c.d.Events.RecordAudit(ctx, securityevents.AuditEntry{
-		Action: securityevents.ActionPasswordSet, Actor: actor, TargetUserID: in.UserID, Result: securityevents.ResultSuccess, At: at,
-	}); err != nil {
-		c.d.Log.ErrorContext(ctx, "identity.audit.failed", "event", "identity.audit.failed", "action", securityevents.ActionPasswordSet, "error", err)
-	}
-	if err := c.d.Events.NotifyUser(ctx, securityevents.Notice{Kind: securityevents.NoticePasswordSet, TargetUserID: in.UserID, At: at}); err != nil {
-		c.d.Log.ErrorContext(ctx, "identity.security_notice.failed", "event", "identity.security_notice.failed", "kind", securityevents.NoticePasswordSet, "error", err)
+	if err := c.d.Events.NotifyUser(ctx, securitynotices.Notice{Kind: securitynotices.NoticePasswordSet, TargetUserID: in.UserID, At: at}); err != nil {
+		c.d.Log.ErrorContext(ctx, "identity.security_notice.failed", "event", "identity.security_notice.failed", "kind", securitynotices.NoticePasswordSet, "error", err)
 	}
 }

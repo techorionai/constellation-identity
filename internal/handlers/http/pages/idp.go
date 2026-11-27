@@ -248,7 +248,7 @@ func (h *Handler) linkRemove(w http.ResponseWriter, r *http.Request) {
 		UserID: res.User.ID, Password: r.PostForm.Get("password"), Code: r.PostForm.Get("code"),
 	})
 	if err == nil {
-		err = h.d.IdentityLinks.Remove(r.Context(), commands.RemoveIdentityLink{
+		err = h.d.IdentityLinks.Remove(sessionContext(r, res.User.ID), commands.RemoveIdentityLink{
 			UserID: res.User.ID, Provider: r.PathValue("provider"), Actor: res.User.ID, Self: true, FactorVerified: true,
 		})
 	}
@@ -309,7 +309,7 @@ func (h *Handler) passwordSet(w http.ResponseWriter, r *http.Request) {
 		h.render(w, r, http.StatusBadRequest, "account_password", v)
 		return
 	}
-	err := h.d.SetPassword.Execute(r.Context(), commands.SetPassword{UserID: res.User.ID, Password: r.PostForm.Get("password"), Actor: res.User.ID})
+	err := h.d.SetPassword.Execute(sessionContext(r, res.User.ID), commands.SetPassword{UserID: res.User.ID, Password: r.PostForm.Get("password"), Actor: res.User.ID})
 	switch {
 	case err == nil, errors.Is(err, commands.ErrPasswordSet):
 		http.Redirect(w, r, "/account/security", http.StatusSeeOther)

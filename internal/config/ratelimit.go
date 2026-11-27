@@ -40,6 +40,7 @@ type RateLimit struct {
 	MFAVerify        RateBucket `envPrefix:"MFA_VERIFY__"`
 	Passkey          RateBucket `envPrefix:"PASSKEY__"`
 	Idp              RateBucket `envPrefix:"IDP__"`
+	AdminDenied      RateBucket `envPrefix:"ADMIN_DENIED__"`
 }
 
 // DefaultRateRules returns the default rules of all buckets.
@@ -58,6 +59,7 @@ func DefaultRateRules() map[string]ratelimit.Rule {
 		ratelimit.BucketMFAVerify:        {Name: ratelimit.BucketMFAVerify, Limit: 30, Window: time.Minute},
 		ratelimit.BucketPasskey:          {Name: ratelimit.BucketPasskey, Limit: 30, Window: time.Minute},
 		ratelimit.BucketIdp:              {Name: ratelimit.BucketIdp, Limit: 30, Window: time.Minute},
+		ratelimit.BucketAdminDenied:      {Name: ratelimit.BucketAdminDenied, Limit: 30, Window: time.Minute},
 	}
 }
 
@@ -76,6 +78,7 @@ func (r RateLimit) buckets() map[string]RateBucket {
 		ratelimit.BucketMFAVerify:        r.MFAVerify,
 		ratelimit.BucketPasskey:          r.Passkey,
 		ratelimit.BucketIdp:              r.Idp,
+		ratelimit.BucketAdminDenied:      r.AdminDenied,
 	}
 }
 

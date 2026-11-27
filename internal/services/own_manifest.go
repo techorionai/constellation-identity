@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/techorionai/constellation-platform-go/audit"
 	"github.com/techorionai/constellation-platform-go/decorators"
 	"github.com/techorionai/constellation-platform-go/executor"
 	"github.com/techorionai/constellation-platform-go/manifest"
+	"github.com/techorionai/constellation-platform-go/transaction"
 
 	"github.com/techorionai/constellation-identity/api/openapi"
 	"github.com/techorionai/constellation-identity/internal/app/commands"
@@ -67,9 +69,9 @@ func withObservability[P, R any](e executor.ExecutorWithReturn[P, R], name strin
 // logging, and the tracing. A request that the rate limit stops is not an
 // error log record and not a span error. The own publish of the service does
 // not use it.
-func newPublishAPI(repo manifests.Repository, cl clients.Repository, limits *commands.RateLimits, log *slog.Logger) executor.ExecutorWithReturn[commands.PublishManifest, domain.PublishedManifest] {
+func newPublishAPI(repo manifests.Repository, cl clients.Repository, limits *commands.RateLimits, tx transaction.Transactor, w audit.Writer, log *slog.Logger) executor.ExecutorWithReturn[commands.PublishManifest, domain.PublishedManifest] {
 	return decorators.ApplyTracing(decorators.ApplyLogging(
-		commands.NewPublishManifest(repo, cl, log).WithRateLimits(limits), "PublishManifest",
+		commands.NewPublishManifest(repo, cl, log).WithRateLimits(limits).WithAudit(tx, w), "PublishManifest",
 		decorators.WithLogger(log), decorators.WithErrorLevel(errorLevel)), "PublishManifest",
 		decorators.WithErrorClassifier(rateLimitClassifier))
 }

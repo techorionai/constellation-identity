@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/techorionai/constellation-platform-go/audit"
 	"github.com/techorionai/constellation-platform-go/transaction"
 
 	apperrors "github.com/techorionai/constellation-identity/internal/common/errors"
@@ -50,7 +51,9 @@ type AdminDeps struct {
 	APITokens   apitokens.Repository
 	Lock        adminlock.Locker
 	Tx          transaction.Transactor
-	Log         *slog.Logger
+	// Audit writes the audit entries in the transaction of the change.
+	Audit audit.Writer
+	Log   *slog.Logger
 	// MFA, Links, PasskeysOn, and ProviderOn give the login methods of a user for
 	// the enable rule. A nil repository means that the user has none of that kind.
 	MFA        mfa.Repository
@@ -254,6 +257,7 @@ func (a *Admin) GetUser(ctx context.Context, id string) (domain.User, error) {
 func (a *Admin) UpdateUser(ctx context.Context, actor, id string, name *string, disabled *bool) (domain.User, error) {
 	var newName string
 	revokedTokens := -1
+	var changed []string
 	if name != nil {
 		n, err := domain.CheckName(*name)
 		if err != nil {
@@ -277,6 +281,7 @@ func (a *Admin) UpdateUser(ctx context.Context, actor, id string, name *string, 
 			if err := a.d.Users.SetName(ctx, id, newName, now); err != nil {
 				return err
 			}
+			changed = append(changed, "name")
 		}
 		switch {
 		case disabled != nil && *disabled && u.Status != domain.UserDisabled:
@@ -287,6 +292,7 @@ func (a *Admin) UpdateUser(ctx context.Context, actor, id string, name *string, 
 			if err := a.d.Users.SetStatus(ctx, id, domain.UserDisabled, now); err != nil {
 				return err
 			}
+			changed = append(changed, "disabled")
 			if _, err := a.d.Sessions.RevokeAllOfUser(ctx, id, now); err != nil {
 				return err
 			}
@@ -311,8 +317,12 @@ func (a *Admin) UpdateUser(ctx context.Context, actor, id string, name *string, 
 			if err := a.d.Users.SetStatus(ctx, id, status, now); err != nil {
 				return err
 			}
+			changed = append(changed, "disabled")
 		}
-		return nil
+		if len(changed) == 0 {
+			return nil
+		}
+		return writeAudit(ctx, a.d.Audit, now, ActionUserUpdate, targetUser, id, map[string]any{"fields": changed})
 	}, txName("update_user"))
 	if err != nil {
 		return domain.User{}, err
@@ -454,7 +464,13 @@ func (a *Admin) AssignUserRole(ctx context.Context, actor, userID string, ref do
 	if err := a.roleExists(ctx, ref); err != nil {
 		return domain.RoleAssignment{}, err
 	}
-	if err := a.d.UserRoles.Assign(ctx, userID, ref, domain.AssignmentAPI); err != nil {
+	err := a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if err := a.d.UserRoles.Assign(ctx, userID, ref, domain.AssignmentAPI); err != nil {
+			return err
+		}
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionUserRoleAssign, targetUser, userID, map[string]any{"role": ref.String()})
+	}, txName("assign_user_role"))
+	if err != nil {
 		return domain.RoleAssignment{}, err
 	}
 	a.LogChange(ctx, actor, "UserRoles_assign", userID)
@@ -501,9 +517,11 @@ func (a *Admin) RemoveUserRole(ctx context.Context, actor, userID string, ref do
 			return apperrors.NewNotFound("the user does not have the role")
 		}
 		if holder {
-			return a.checkAdminLeft(ctx)
+			if err := a.checkAdminLeft(ctx); err != nil {
+				return err
+			}
 		}
-		return nil
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionUserRoleRemove, targetUser, userID, map[string]any{"role": ref.String()})
 	}, txName("remove_user_role"))
 	if err != nil {
 		return err
@@ -545,12 +563,18 @@ func (a *Admin) RevokeSession(ctx context.Context, actor, sessionID string) erro
 	if !uuidPattern.MatchString(sessionID) {
 		return apperrors.NewNotFound("the session does not exist")
 	}
-	found, err := a.d.Sessions.RevokeCascade(ctx, sessionID, a.now())
+	err := a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		found, err := a.d.Sessions.RevokeCascade(ctx, sessionID, a.now())
+		if err != nil {
+			return fmt.Errorf("revoke the session: %w", err)
+		}
+		if !found {
+			return apperrors.NewNotFound("the session does not exist")
+		}
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionSessionRevoke, targetSession, sessionID, nil)
+	}, txName("revoke_session"))
 	if err != nil {
-		return fmt.Errorf("revoke the session: %w", err)
-	}
-	if !found {
-		return apperrors.NewNotFound("the session does not exist")
+		return err
 	}
 	a.LogChange(ctx, actor, "Sessions_revoke", sessionID)
 	return nil
@@ -561,8 +585,15 @@ func (a *Admin) RevokeUserSessions(ctx context.Context, actor, userID string) er
 	if _, err := a.requireUser(ctx, userID); err != nil {
 		return err
 	}
-	if _, err := a.d.Sessions.RevokeAllOfUser(ctx, userID, a.now()); err != nil {
-		return fmt.Errorf("revoke the sessions: %w", err)
+	err := a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		n, err := a.d.Sessions.RevokeAllOfUser(ctx, userID, a.now())
+		if err != nil {
+			return fmt.Errorf("revoke the sessions: %w", err)
+		}
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionSessionRevokeAll, targetUser, userID, map[string]any{"sessions": n})
+	}, txName("revoke_user_sessions"))
+	if err != nil {
+		return err
 	}
 	a.LogChange(ctx, actor, "Sessions_revokeAll", userID)
 	return nil
@@ -759,8 +790,14 @@ func (a *Admin) CreateClient(ctx context.Context, actor string, in CreateClientI
 	if key != nil {
 		key.ClientID, key.CreatedAt = id, now
 	}
-	if err := a.d.Clients.Create(ctx, c, key); err != nil {
-		return ClientView{}, fmt.Errorf("create the client: %w", err)
+	err = a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if err := a.d.Clients.Create(ctx, c, key); err != nil {
+			return fmt.Errorf("create the client: %w", err)
+		}
+		return writeAudit(ctx, a.d.Audit, now, ActionClientCreate, targetClient, id, map[string]any{"type": string(in.Type), "app": in.App})
+	}, txName("create_client"))
+	if err != nil {
+		return ClientView{}, err
 	}
 	a.LogChange(ctx, actor, "Clients_create", id)
 	return a.GetClient(ctx, id)
@@ -828,9 +865,11 @@ func (a *Admin) UpdateClient(ctx context.Context, actor, id string, in UpdateCli
 			return err
 		}
 		if disabling {
-			return a.d.Refresh.RevokeClientFamilies(ctx, id, a.now())
+			if err := a.d.Refresh.RevokeClientFamilies(ctx, id, a.now()); err != nil {
+				return err
+			}
 		}
-		return nil
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionClientUpdate, targetClient, id, map[string]any{"fields": clientFields(in)})
 	}, txName("update_client"))
 	if err != nil {
 		return ClientView{}, err
@@ -856,7 +895,13 @@ func (a *Admin) AddClientKey(ctx context.Context, actor, clientID string, in JWK
 		return domain.ClientKey{}, err
 	}
 	k.ClientID, k.CreatedAt = clientID, a.now()
-	if err := a.d.Clients.AddKey(ctx, k); errors.Is(err, clients.ErrKeyExists) {
+	err = a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if err := a.d.Clients.AddKey(ctx, k); err != nil {
+			return err
+		}
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionClientKeyAdd, targetClient, clientID, map[string]any{"kid": k.KID})
+	}, txName("add_client_key"))
+	if errors.Is(err, clients.ErrKeyExists) {
 		return domain.ClientKey{}, apperrors.NewConflictCode("key_exists", "the client has a key with this kid")
 	} else if err != nil {
 		return domain.ClientKey{}, fmt.Errorf("add the key: %w", err)
@@ -877,12 +922,18 @@ func (a *Admin) RemoveClientKey(ctx context.Context, actor, clientID, kid string
 	if c.Type != domain.ClientTypeService {
 		return errTypeUnsupported()
 	}
-	deleted, err := a.d.Clients.DeleteKey(ctx, clientID, kid)
+	err = a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		deleted, err := a.d.Clients.DeleteKey(ctx, clientID, kid)
+		if err != nil {
+			return fmt.Errorf("remove the key: %w", err)
+		}
+		if !deleted {
+			return apperrors.NewNotFound("the client does not have this key")
+		}
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionClientKeyRemove, targetClient, clientID, map[string]any{"kid": kid})
+	}, txName("remove_client_key"))
 	if err != nil {
-		return fmt.Errorf("remove the key: %w", err)
-	}
-	if !deleted {
-		return apperrors.NewNotFound("the client does not have this key")
+		return err
 	}
 	a.LogChange(ctx, actor, "ClientKeys_remove", clientID)
 	return nil
@@ -947,7 +998,13 @@ func (a *Admin) AssignClientRole(ctx context.Context, actor, clientID string, re
 	if err := a.roleExists(ctx, ref); err != nil {
 		return domain.RoleAssignment{}, err
 	}
-	if err := a.d.ClientRoles.Assign(ctx, clientID, ref, domain.AssignmentAPI); err != nil {
+	err := a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if err := a.d.ClientRoles.Assign(ctx, clientID, ref, domain.AssignmentAPI); err != nil {
+			return err
+		}
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionClientRoleAssign, targetClient, clientID, map[string]any{"role": ref.String()})
+	}, txName("assign_client_role"))
+	if err != nil {
 		return domain.RoleAssignment{}, err
 	}
 	a.LogChange(ctx, actor, "ClientRoles_assign", clientID)
@@ -980,9 +1037,33 @@ func (a *Admin) RemoveClientRole(ctx context.Context, actor, clientID string, re
 	if all[i].Source == domain.AssignmentConfig {
 		return errManagedByConfig()
 	}
-	if _, err := a.d.ClientRoles.Delete(ctx, clientID, ref); err != nil {
+	err = a.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if _, err := a.d.ClientRoles.Delete(ctx, clientID, ref); err != nil {
+			return err
+		}
+		return writeAudit(ctx, a.d.Audit, a.now(), ActionClientRoleRemove, targetClient, clientID, map[string]any{"role": ref.String()})
+	}, txName("remove_client_role"))
+	if err != nil {
 		return err
 	}
 	a.LogChange(ctx, actor, "ClientRoles_remove", clientID)
 	return nil
+}
+
+// clientFields returns the names of the fields that a client change sets.
+func clientFields(in UpdateClientInput) []string {
+	var out []string
+	if in.Name != nil {
+		out = append(out, "name")
+	}
+	if in.RedirectURIs != nil {
+		out = append(out, "redirectUris")
+	}
+	if in.PostLogoutRedirectURIs != nil {
+		out = append(out, "postLogoutRedirectUris")
+	}
+	if in.Disabled != nil {
+		out = append(out, "disabled")
+	}
+	return out
 }
