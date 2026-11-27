@@ -204,7 +204,7 @@ func (c *TokenExchangeCommand) auditDenied(ctx context.Context, err error, st *r
 	if st.authenticated {
 		ctx = asClient(ctx, st.clientID, auth.PrincipalService)
 	}
-	entryAuditor{tx: c.d.Tx, w: c.d.Audit, log: c.d.Log, gate: c.d.DeniedGate}.denied(ctx, tokenDeniedTx, c.d.Now(), ActionTokenIssue, targetClient, target, reason, details)
+	entryAuditor{tx: c.d.Tx, w: c.d.Audit, log: c.d.Log, gate: c.d.DeniedGate, authClient: authClientOf(st)}.denied(ctx, tokenDeniedTx, c.d.Now(), ActionTokenIssue, targetClient, target, reason, details)
 }
 
 func (c *TokenExchangeCommand) exchange(ctx context.Context, in TokenExchange, st *requestState) (TokenExchangeResult, error) {

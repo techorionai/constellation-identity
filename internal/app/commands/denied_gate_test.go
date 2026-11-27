@@ -89,7 +89,7 @@ func gateFixture(t *testing.T, rl *mock.RateLimiter, log *slog.Logger, clock fun
 func countDenied(f *fixture) int {
 	n := 0
 	for _, a := range f.ev.Audits {
-		if a.Result == "denied" {
+		if a.Result == "denied" && a.Details["reason"] != commands.ReasonDeniedDropped {
 			n++
 		}
 	}
@@ -121,6 +121,9 @@ func TestU7_U8_GateRefuses(t *testing.T) {
 			}
 			if countDenied(f) != 0 {
 				t.Fatalf("entries = %d, want 0", countDenied(f))
+			}
+			if s := summaries(f); len(s) != 1 || s[0].Details["dropped"] != 1 || s[0].Details["droppedReason"] != "rate_limit_"+bucket {
+				t.Fatalf("summaries = %+v, want one", s)
 			}
 			if got := metrics()["rate_limit_"+bucket]; got != 5 {
 				t.Fatalf("counter = %d, want 5", got)
@@ -227,4 +230,15 @@ func TestU16_CheckQuietUnavailable(t *testing.T) {
 	if strings.Count(buf.String(), `"msg":"identity.rate_limit.unavailable"`) != 1 {
 		t.Fatalf("log = %s", buf.String())
 	}
+}
+
+// summaries returns the summary entries of the gate drops.
+func summaries(f *fixture) []mock.AuditRow {
+	var out []mock.AuditRow
+	for _, a := range f.ev.Audits {
+		if a.Details["reason"] == commands.ReasonDeniedDropped {
+			out = append(out, a)
+		}
+	}
+	return out
 }

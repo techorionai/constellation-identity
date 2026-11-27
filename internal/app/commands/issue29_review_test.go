@@ -59,8 +59,8 @@ func TestIssue29_R1_ReuseEntryNotGated(t *testing.T) {
 	if _, err = r.oidc.ExchangeCode(ctx, r.exchange("bad-code")); oauthCode(t, err) != apperrors.OAuthInvalidGrant {
 		t.Fatalf("err = %v", err)
 	}
-	if len(r.ev.Audits) != 0 {
-		t.Fatalf("entries = %+v, want none", r.ev.Audits)
+	if a := oneTokenEntry(t, r.ev, "denied"); a.Details["reason"] != commands.ReasonDeniedDropped {
+		t.Fatalf("entries = %+v, want the summary only", r.ev.Audits)
 	}
 }
 
