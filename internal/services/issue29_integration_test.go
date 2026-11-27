@@ -14,6 +14,7 @@ import (
 
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
+	"github.com/techorionai/constellation-identity/internal/app/commands"
 	"github.com/techorionai/constellation-identity/internal/config"
 	"github.com/techorionai/constellation-identity/internal/ports/ratelimit"
 	"github.com/techorionai/constellation-identity/resources/test/testserver"
@@ -68,17 +69,39 @@ func postTokenFrom(t *testing.T, s *testserver.Server, form url.Values, xff stri
 	return resp.StatusCode, string(b)
 }
 
-// deniedTokenEntries counts the denied token entries on the audit stream.
-func deniedTokenEntries(t *testing.T, g *fixture) int {
+// deniedTokenEntries counts the denied token entries on the audit stream. It
+// does not count the summary entries of the gate. It returns the number of
+// summary entries and the sum of their dropped counts as well.
+func deniedTokenEntries(t *testing.T, g *fixture) (denied, summaries int, dropped int) {
 	t.Helper()
 	g.a.WaitAuditRelayed(t)
-	n := 0
 	for _, e := range g.a.audit.Find(t, "identity:token:issue") {
-		if e.Data.Result == "denied" {
-			n++
+		if e.Data.Result != "denied" {
+			continue
 		}
+		if e.Data.Details["reason"] == commands.ReasonDeniedDropped {
+			summaries++
+			if v, ok := e.Data.Details["dropped"].(float64); ok {
+				dropped += int(v)
+			}
+			continue
+		}
+		denied++
 	}
-	return n
+	return denied, summaries, dropped
+}
+
+// checkEntries asserts the number of denied entries, and that the gate wrote
+// one summary entry for the window. The counter has the full number of drops.
+func checkEntries(t *testing.T, g *fixture, wantDenied, wantDropped int) {
+	t.Helper()
+	denied, summaries, dropped := deniedTokenEntries(t, g)
+	if denied != wantDenied {
+		t.Fatalf("entries = %d, want %d", denied, wantDenied)
+	}
+	if summaries != 1 || dropped < 1 || dropped > wantDropped {
+		t.Fatalf("summary entries = %d with dropped = %d, want 1 with 1 to %d", summaries, dropped, wantDropped)
+	}
 }
 
 // The tests of the limits of the denied token entries. Each test uses its own
@@ -112,9 +135,7 @@ func TestIssue29Integration(t *testing.T) {
 				t.Fatalf("request %d: %d %s", i, resp.StatusCode, body)
 			}
 		}
-		if n := deniedTokenEntries(t, g); n != 5 {
-			t.Fatalf("entries = %d, want 5", n)
-		}
+		checkEntries(t, g, 5, 3)
 		if got := deniedDropCount(t, "rate_limit_token_denied") - before; got != 3 {
 			t.Fatalf("counter = %d, want 3", got)
 		}
@@ -133,9 +154,7 @@ func TestIssue29Integration(t *testing.T) {
 				}
 			}
 		}
-		if n := deniedTokenEntries(t, g); n != 4 {
-			t.Fatalf("entries = %d, want 4", n)
-		}
+		checkEntries(t, g, 4, 2)
 		if got := deniedDropCount(t, "rate_limit_token_denied_global") - before; got != 2 {
 			t.Fatalf("counter = %d, want 2", got)
 		}
@@ -163,9 +182,7 @@ func TestIssue29Integration(t *testing.T) {
 				t.Fatalf("refresh: %d %s", resp.StatusCode, body)
 			}
 		}
-		if n := deniedTokenEntries(t, g); n != 2 {
-			t.Fatalf("entries = %d, want 2", n)
-		}
+		checkEntries(t, g, 2, 4)
 		if got := deniedDropCount(t, "rate_limit_token_denied") - before; got != 4 {
 			t.Fatalf("counter = %d, want 4", got)
 		}
@@ -183,16 +200,26 @@ func TestIssue29Integration(t *testing.T) {
 				t.Fatalf("unknown %d: %d %s", i, status, body)
 			}
 		}
-		if n := deniedTokenEntries(t, g); n != 2 {
+		if n, _, _ := deniedTokenEntries(t, g); n != 2 {
 			t.Fatalf("entries after the flood = %d, want 2", n)
 		}
+		// A registered client that authenticates and asks for a scope that it
+		// does not have gets a denied entry, which the client bucket limits.
 		for i := range 5 {
-			if status, body := postTokenFrom(t, g.a.Server, bad(g), fmt.Sprintf("203.0.113.%d", i+20)); status != http.StatusUnauthorized || !strings.Contains(body, "invalid_client") {
+			form := testserver.TokenForm(g.a.Assertion(t, g.serviceClient, nil), "identity", "identity:no:such:scope")
+			if status, body := postTokenFrom(t, g.a.Server, form, fmt.Sprintf("203.0.113.%d", i+20)); status != http.StatusBadRequest || !strings.Contains(body, "invalid_scope") {
 				t.Fatalf("registered %d: %d %s", i, status, body)
 			}
 		}
-		if n := deniedTokenEntries(t, g); n != 5 {
-			t.Fatalf("entries = %d, want 2 + 3", n)
+		denied, summaries, _ := deniedTokenEntries(t, g)
+		if denied != 5 {
+			t.Fatalf("entries = %d, want 2 + 3", denied)
+		}
+		// The global bucket dropped the flood, and the client bucket dropped two
+		// entries of the registered client. The gate writes one summary entry for
+		// each window, action, and reason.
+		if summaries != 2 {
+			t.Fatalf("summary entries = %d, want 2", summaries)
 		}
 	})
 
@@ -207,9 +234,7 @@ func TestIssue29Integration(t *testing.T) {
 				t.Fatalf("request %d: %d %s", i, resp.StatusCode, body)
 			}
 		}
-		if n := deniedTokenEntries(t, g); n != 10 {
-			t.Fatalf("entries = %d, want 10", n)
-		}
+		checkEntries(t, g, 10, 5)
 		if got := deniedDropCount(t, "fallback_limit") - before; got != 5 {
 			t.Fatalf("counter = %d, want 5", got)
 		}
