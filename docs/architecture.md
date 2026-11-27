@@ -60,14 +60,17 @@ The `.golangci.yml` file has `depguard` rules for the import table of the guide.
 | Pending login, setup secret, failure counter of the second factor, state of the WebAuthn ceremonies | `internal/ports/mfaflow` | `internal/adapters/valkey` (`SET`, `GET`, `GETDEL`, `DEL`, `MULTI`, `INCR`, `EXPIRE NX`) |
 | Passkeys and WebAuthn user handles (table `webauthn_credentials`, column `users.webauthn_user_handle`) | `internal/ports/passkeys` | `internal/adapters/postgres` |
 | WebAuthn ceremonies | `internal/ports/webauthn` | `internal/adapters/webauthn` (`github.com/go-webauthn/webauthn`) |
-| Audit entries and security notices | `internal/ports/securityevents` | `internal/adapters/securityevents` (log only) |
+| Security notices | `internal/ports/securitynotices` | `internal/adapters/securitynotices` (log only) |
+| Audit entries | `audit.Writer` of `platform-go` (`audit/postgres`) | Table `platform_audit_outbox`, relay `audit`, Valkey stream `audit.stream:identity` |
 | Links to upstream accounts (table `identity_links`) | `internal/ports/identitylinks` | `internal/adapters/postgres` |
 | Upstream `auth_time` flag (columns `sessions.upstream_auth_valid` and `refresh_token_families.upstream_auth_valid`, table `upstream_auth_tokens`, migration `0015`) | `internal/ports/sessions` | `internal/adapters/postgres` |
 | Upstream providers (Google, Microsoft) | `internal/ports/upstreamidp` | `internal/adapters/oidc` (`go-oidc`, `x/oauth2`, and a key set for the Microsoft tenant `organizations`) |
 | Records of the upstream flows | `internal/ports/idpflow` | `internal/adapters/valkey` (`SET`, `GETDEL`) |
 | Client secrets of the upstream providers | `internal/ports/idpsecrets` | `internal/adapters/secrets` (`platform-go` `secrets.Service`) |
 
-The port `securityevents` has one method for the audit entry and one for the security notice. The service has no audit store and no email channel yet, so the adapter writes one log record for each call. R08, R09, and R12 replace the adapter. The commands do not change.
+The port `securitynotices` has one method, `NotifyUser`. The service has no email channel yet, so the adapter writes one log record for each notice. R12 replaces the adapter. The commands do not change.
+
+The audit entries do not use a port of the service. Each command that changes data gets the `audit.Writer` of `platform-go`. The command calls it in the transaction of the change. The writer inserts one row into the table `platform_audit_outbox`. If the insert fails, the transaction rolls back and the request gets 503. The audit relay (`outbox.Relay` with the name `audit`) reads the unpublished rows and adds each entry to the Valkey stream `audit.stream:identity`. The transactor wakes the relay after the commit. The relay also polls each second. Only the audit service reads the stream. The retention jobs `audit_outbox` and `audit_stream` delete the old rows and trim the stream. The migrations of the audit outbox run before the migrations of the service. The `clientinfo` middleware of `platform-go` puts the client IP and the user agent into the context of each request. The writer copies them and the request ID into the entry. See [security.md](security.md) for the entries.
 
 The ports of the sessions, users, user roles, clients, and client roles have the methods that the code flow and the admin API need: the session `Reauthenticate` and `RevokeCascade`, the lists with a cursor, the role `Page`, and the client create, update, and key methods.
 

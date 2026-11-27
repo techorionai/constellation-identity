@@ -2,7 +2,7 @@
 
 The `/v1` operations for users, invites, role assignments, clients, client keys, agents, and sessions. The contract is in `constellation-contracts`. A caller needs an access token for the audience `identity` with the scopes of the operation. See [tokens.md](tokens.md). An admin UI is a public client with `app: identity`. It gets the token with the code flow.
 
-Each change writes one `info` log record (`identity.admin.change`) with `actor_id`, `operation`, and `target_id`. The record has no secret value. Audit entries come with R08 and R09.
+Each change writes one `info` log record (`identity.admin.change`) with `actor_id`, `operation`, and `target_id`. The record has no secret value. Each change also writes one audit entry in the transaction of the change. An admin request that fails the scope check writes an entry with the result `denied`. See the section "Audit entries" of [security.md](security.md) for the actions, the actor, and the details. If the audit entry cannot be written, the change rolls back and the answer is 503.
 
 ## Operations and scopes
 
@@ -44,7 +44,7 @@ Only the role `admin` holds `identity:admin`. A holder of `identity:client:write
 - `MeTotp_remove` and `UserMfa_reset` need a fresh MFA login: `amr` has `mfa` and `auth_time` is 5 minutes old or less. A token with `act`, an agent or exchange token, and an API token do not satisfy this. The refusal is 401 with the code `reauthentication_required` and the header `WWW-Authenticate: Bearer error="insufficient_user_authentication", error_description="A fresh MFA login is necessary", max_age="300"`. See the step-up section of [tokens.md](tokens.md).
 - Fields of `MfaStatus`: `enabled` (a TOTP row, an unused recovery code, or a passkey that the service accepts exists), `required` (the policy needs MFA for the user), `totp` (absent when TOTP is off, else `createdAt` and `lastUsedAt`, and `lastUsedAt` is absent until a code is used), `recoveryCodesRemaining` (0 to 10), and `passkeys` (the number of stored passkeys, also 0, also when passkeys are off).
 - The audit entries and the notices of the passkeys: `identity:mfa:passkey_add` with the notice `mfa_passkey_added` (a registration on the hosted page), `identity:mfa:passkey_rename`, and `identity:mfa:passkey_remove` with the notice `mfa_passkey_removed`.
-- `MeTotp_remove` and `UserMfa_reset` write an audit entry (`identity:mfa:totp_remove` and `identity:mfa:reset`) and send a security notice to the user through the port `securityevents`. For now, the log has both. See [security.md](security.md).
+- `MeTotp_remove` and `UserMfa_reset` write an audit entry (`identity:mfa:totp_remove` and `identity:mfa:reset`) and send a security notice to the user The entry is in the transaction of the change. The notice goes through the port `securitynotices`. For now, the log has the notice. See [security.md](security.md).
 - The service gives the keys `identity:mfa:manage_own` to the roles `admin` and `user`, and `identity:mfa:reset` and `identity:mfa:read` to the role `admin`. The publish of the own manifest at start replaces the role permissions, so an existing role gets the new keys with no other step. A client must request `identity:mfa:manage_own` in the `scope` of the authorization request.
 
 ## Identity links
