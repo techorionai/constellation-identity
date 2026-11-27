@@ -83,10 +83,10 @@ func TestIssue25Integration(t *testing.T) {
 		if fields, _ := e.Data.Details["fields"].([]any); len(fields) != 1 || fields[0] != "name" {
 			t.Fatalf("details = %v", e.Data.Details)
 		}
-		// The set audit.streams has the app identity.
+		// Publish sends no index command. The set audit.streams has no identity.
 		vk := h.env.VK.Admin(t)
 		ok, err := vk.Do(context.Background(), vk.B().Sismember().Key("audit.streams").Member("identity").Build()).AsBool()
-		if err != nil || !ok {
+		if err != nil || ok {
 			t.Fatalf("audit.streams has identity = %v, %v", ok, err)
 		}
 	})
